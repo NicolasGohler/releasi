@@ -1,0 +1,53 @@
+# Copy this file to config/settings.yaml and adjust values
+db_url: "sqlite+aiosqlite:///data/linauto.db"
+
+# Working hours (actions only execute during these hours)
+work_days: [0, 1, 2, 3, 4]  # Mon-Fri
+work_start_hour: 9
+work_end_hour: 17
+
+# Limits (conservative defaults - increase once your account is warmed up)
+default_daily_limit: 20
+default_weekly_limit: 80
+
+# Delays between actions (seconds)
+min_action_delay_seconds: 720   # 12 minutes
+max_action_delay_seconds: 2700  # 45 minutes
+
+# Page interaction delays (seconds)
+page_load_delay_min: 1.0
+page_load_delay_max: 3.0
+
+# Typing speed (milliseconds per character)
+typing_delay_min_ms: 50
+typing_delay_max_ms: 150
+
+# Warm-up ramp for new accounts
+warmup_ramp:
+  - daily: 5
+    weekly: 20
+  - daily: 10
+    weekly: 40
+  - daily: 15
+    weekly: 60
+
+# Cooldown (when weekly limit is hit, resume on Monday between these hours)
+cooldown_resume_hour_min: 8
+cooldown_resume_hour_max: 11
+
+# Browser
+browser_headless: true
+browser_viewport_width: 1920
+browser_viewport_height: 1080
+browser_locale: "en-US"
+
+# Acceptance checking
+acceptance_check_interval_hours: 3
+max_profiles_per_acceptance_check: 30
+
+# Follow-up
+default_followup_delay_hours: 24
+
+# Logging
+log_level: "INFO"
+log_file: "data/logs/linauto.log"
