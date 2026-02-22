@@ -10,15 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Copy application
+COPY . .
+
 # Install Python dependencies
-COPY pyproject.toml .
 RUN pip install --no-cache-dir .
 
 # Install Playwright Chromium browser
 RUN playwright install chromium
-
-# Copy application
-COPY . .
 
 # Create data directories
 RUN mkdir -p data/browser_data data/logs
