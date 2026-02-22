@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  linauto:
+    build: .
+    container_name: linauto
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - ./config/settings.yaml:/app/config/settings.yaml:ro
+    environment:
+      - LINAUTO_LOG_LEVEL=INFO
+      - TZ=Europe/Berlin
+    # Uncomment for future API access:
+    # ports:
+    #   - "8000:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"

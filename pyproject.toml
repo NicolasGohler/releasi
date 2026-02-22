@@ -1,12 +1,12 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "linauto"
 version = "0.1.0"
 description = "LinkedIn automation tool for connection requests and follow-up messaging"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 dependencies = [
     "playwright>=1.40",
     "sqlalchemy[asyncio]>=2.0",
@@ -19,6 +19,7 @@ dependencies = [
     "typer[all]>=0.9",
     "structlog>=23.2",
     "python-dateutil>=2.8",
+    "playwright-stealth>=2.0.2",
 ]
 
 [project.optional-dependencies]

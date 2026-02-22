@@ -1,0 +1,183 @@
+"""Playwright browser lifecycle management per LinkedIn account."""
+from __future__ import annotations
+
+import random
+from pathlib import Path
+from typing import Optional
+
+import structlog
+from playwright.async_api import async_playwright, BrowserContext, Playwright
+
+from linauto.config import get_settings
+from linauto.linkedin.selectors import FEED_URL, LOGIN_URL_PATTERNS
+
+logger = structlog.get_logger()
+
+# Realistic user agents (updated periodically)
+_USER_AGENTS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+]
+
+# Timezone to locale mapping for natural browser fingerprint
+_TIMEZONE_LOCALE_MAP = {
+    "Europe/Berlin": "de-DE",
+    "Europe/London": "en-GB",
+    "Europe/Paris": "fr-FR",
+    "Europe/Amsterdam": "nl-NL",
+    "Europe/Zurich": "de-CH",
+    "Europe/Vienna": "de-AT",
+    "Europe/Madrid": "es-ES",
+    "Europe/Rome": "it-IT",
+    "America/New_York": "en-US",
+    "America/Chicago": "en-US",
+    "America/Denver": "en-US",
+    "America/Los_Angeles": "en-US",
+    "America/Toronto": "en-CA",
+    "America/Sao_Paulo": "pt-BR",
+    "Asia/Tokyo": "ja-JP",
+    "Asia/Shanghai": "zh-CN",
+    "Asia/Singapore": "en-SG",
+    "Asia/Dubai": "en-AE",
+    "Australia/Sydney": "en-AU",
+}
+
+
+def _timezone_to_locale(timezone_str: Optional[str]) -> str:
+    """Map a timezone to a reasonable browser locale."""
+    if not timezone_str:
+        return "en-US"
+    return _TIMEZONE_LOCALE_MAP.get(timezone_str, "en-US")
+
+
+class LinkedInBrowser:
+    """Manages Playwright browser instances per LinkedIn account."""
+
+    def __init__(self):
+        self._playwright: Optional[Playwright] = None
+        self._context: Optional[BrowserContext] = None
+
+    async def launch(
+        self,
+        account_id: str,
+        li_at_cookie: str,
+        user_agent: Optional[str] = None,
+        proxy_url: Optional[str] = None,
+        timezone: Optional[str] = None,
+    ) -> BrowserContext:
+        """
+        Launch a persistent Playwright Chromium browser context.
+        Injects the li_at session cookie for authentication.
+        Optionally applies stealth patches, proxy, and timezone.
+        """
+        settings = get_settings()
+
+        # Ensure browser data directory exists
+        user_data_dir = Path("data/browser_data") / account_id
+        user_data_dir.mkdir(parents=True, exist_ok=True)
+
+        self._playwright = await async_playwright().start()
+
+        ua = user_agent or random.choice(_USER_AGENTS)
+        tz = timezone or settings.default_timezone
+        locale = _timezone_to_locale(tz)
+
+        # Build context kwargs
+        context_kwargs = dict(
+            user_data_dir=str(user_data_dir),
+            headless=settings.browser_headless,
+            viewport={
+                "width": settings.browser_viewport_width,
+                "height": settings.browser_viewport_height,
+            },
+            locale=locale,
+            timezone_id=tz,
+            user_agent=ua,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+            ],
+        )
+
+        # Add proxy if provided
+        if proxy_url:
+            context_kwargs["proxy"] = {"server": proxy_url}
+            logger.info("browser.proxy_configured", proxy=proxy_url.split("@")[-1])
+
+        self._context = await self._playwright.chromium.launch_persistent_context(
+            **context_kwargs
+        )
+
+        # Apply stealth patches
+        if settings.stealth_enabled:
+            try:
+                from playwright_stealth import Stealth
+                stealth = Stealth()
+                await stealth.apply_stealth_async(self._context)
+                logger.info("browser.stealth_applied")
+            except ImportError:
+                logger.warning("browser.stealth_not_installed", hint="pip install playwright-stealth")
+
+        # Inject LinkedIn session cookie
+        await self._context.add_cookies([
+            {
+                "name": "li_at",
+                "value": li_at_cookie,
+                "domain": ".linkedin.com",
+                "path": "/",
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "None",
+            }
+        ])
+
+        logger.info(
+            "browser.launched",
+            account_id=account_id,
+            headless=settings.browser_headless,
+            timezone=tz,
+            locale=locale,
+        )
+        return self._context
+
+    async def validate_session(self) -> bool:
+        """Navigate to LinkedIn feed and check if we're logged in."""
+        if not self._context:
+            return False
+
+        page = await self._context.new_page()
+        try:
+            await page.goto(FEED_URL, wait_until="domcontentloaded", timeout=30000)
+            current_url = page.url
+
+            for pattern in LOGIN_URL_PATTERNS:
+                if pattern in current_url:
+                    logger.warning("session.expired", url=current_url)
+                    return False
+
+            logger.info("session.valid")
+            return True
+        except Exception as e:
+            logger.error("session.validation_failed", error=str(e))
+            return False
+        finally:
+            await page.close()
+
+    async def new_page(self):
+        """Get a new page from the browser context."""
+        if not self._context:
+            raise RuntimeError("Browser not launched. Call launch() first.")
+        return await self._context.new_page()
+
+    async def close(self):
+        """Clean shutdown of browser context and Playwright."""
+        if self._context:
+            await self._context.close()
+            self._context = None
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
+        logger.info("browser.closed")

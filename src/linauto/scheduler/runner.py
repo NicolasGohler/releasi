@@ -1,0 +1,366 @@
+"""APScheduler-based scheduler daemon for unattended operation."""
+from __future__ import annotations
+
+import asyncio
+import signal
+from datetime import date, datetime
+from typing import Optional
+
+import structlog
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+
+from linauto.config import get_settings
+from linauto.db.engine import init_db, get_session_factory, close_db
+from linauto.db.models import (
+    Account, AccountStatus, Campaign, CampaignStatus,
+    Lead, LeadStatus, ActionType, ActionLogStatus,
+)
+from linauto.db.repository import Repository
+from linauto.scheduler.planner import generate_daily_plan, SlotType
+from linauto.safety.cooldown import is_cooldown_expired, calculate_cooldown_resume, push_cooldown_one_day
+from linauto.safety import limits as rate_limits
+
+logger = structlog.get_logger()
+
+
+async def _get_repo() -> tuple:
+    """Get a Repository + session."""
+    session = get_session_factory()()
+    return Repository(session), session
+
+
+async def daily_planning_sweep():
+    """
+    Generate today's plan for all active accounts/campaigns.
+
+    Runs daily at 06:00. Assigns scheduled_at to pending leads
+    based on clustered timing.
+    """
+    repo, session = await _get_repo()
+    try:
+        accounts = await repo.list_active_accounts()
+        for account in accounts:
+            if account.paused_until and not is_cooldown_expired(account.paused_until):
+                logger.info(
+                    "planner.account_paused",
+                    account=account.name,
+                    until=str(account.paused_until),
+                )
+                continue
+
+            campaigns = await repo.get_active_campaigns(account.id)
+            for campaign in campaigns:
+                pending = await repo.get_pending_leads(campaign.id)
+                if not pending:
+                    continue
+
+                lead_ids = [l.id for l in pending]
+                warmup_start = account.warmup_start_date if account.warmup_enabled else None
+
+                plan = generate_daily_plan(
+                    account_id=account.id,
+                    day=date.today(),
+                    pending_lead_ids=lead_ids,
+                    warmup_start=warmup_start,
+                    timezone_str=account.timezone,
+                )
+
+                # Assign scheduled_at to leads for connection_request slots
+                for slot in plan:
+                    if slot.slot_type == SlotType.CONNECTION_REQUEST and slot.lead_id:
+                        await repo.update_lead_schedule(
+                            slot.lead_id, slot.scheduled_at, LeadStatus.SCHEDULED
+                        )
+
+                # Log the plan
+                await repo.log_action(
+                    account_id=account.id,
+                    campaign_id=campaign.id,
+                    action_type=ActionType.DAILY_PLAN_GENERATED,
+                    status=ActionLogStatus.SUCCESS,
+                    details={
+                        "date": date.today().isoformat(),
+                        "total_slots": len(plan),
+                        "connection_requests": sum(
+                            1 for s in plan if s.slot_type == SlotType.CONNECTION_REQUEST
+                        ),
+                    },
+                )
+
+                logger.info(
+                    "planner.campaign_planned",
+                    campaign=campaign.name,
+                    slots=len(plan),
+                )
+
+    except Exception as e:
+        logger.error("planner.sweep_failed", error=str(e))
+    finally:
+        await session.close()
+
+
+async def dispatch():
+    """
+    Execute due actions.
+
+    Runs every 5 minutes. Picks up leads where scheduled_at <= now()
+    and executes them.
+    """
+    repo, session = await _get_repo()
+    try:
+        now = datetime.utcnow()
+        accounts = await repo.list_active_accounts()
+
+        for account in accounts:
+            # Skip paused accounts
+            if account.paused_until and not is_cooldown_expired(account.paused_until):
+                continue
+
+            # Check warmup limits
+            sent_today_count = await repo.get_daily_requests_sent(account.id)
+            can_send, remaining = await rate_limits.can_send_today(
+                account.id,
+                account.warmup_start_date if account.warmup_enabled else None,
+                sent_today_count,
+            )
+
+            if not can_send:
+                logger.info("dispatch.daily_limit_reached", account=account.name)
+                continue
+
+            campaigns = await repo.get_active_campaigns(account.id)
+            for campaign in campaigns:
+                due_leads = await repo.get_scheduled_leads(campaign.id, before=now)
+                if not due_leads:
+                    continue
+
+                # Limit to remaining daily target
+                if remaining is not None:
+                    due_leads = due_leads[:remaining]
+
+                from linauto.campaign.executor import CampaignExecutor
+                executor = CampaignExecutor(repo)
+
+                for lead in due_leads:
+                    result = await executor.execute_single_lead(account, campaign, lead)
+
+                    if result.get("limit_reached"):
+                        # Trigger cooldown
+                        resume = calculate_cooldown_resume(account.timezone)
+                        await repo.update_account(account, paused_until=resume)
+                        await repo.bulk_update_lead_status(
+                            campaign.id,
+                            from_status=LeadStatus.SCHEDULED,
+                            to_status=LeadStatus.LIMIT_PAUSED,
+                        )
+                        await repo.log_action(
+                            account_id=account.id,
+                            campaign_id=campaign.id,
+                            action_type=ActionType.COOLDOWN_STARTED,
+                            status=ActionLogStatus.SUCCESS,
+                            details={"paused_until": str(resume)},
+                        )
+                        logger.warning(
+                            "dispatch.cooldown_started",
+                            account=account.name,
+                            resume=str(resume),
+                        )
+                        break
+
+                    if result.get("fatal"):
+                        # CAPTCHA or session expired — stop this account
+                        break
+
+    except Exception as e:
+        logger.error("dispatch.failed", error=str(e))
+    finally:
+        await session.close()
+
+
+async def check_cooldowns():
+    """
+    Check if paused accounts can resume.
+
+    Runs daily. When cooldown expires, verifies with LinkedIn
+    invitation manager. If still blocked, pushes to next day.
+    """
+    repo, session = await _get_repo()
+    try:
+        accounts = await repo.list_paused_accounts()
+        for account in accounts:
+            if not is_cooldown_expired(account.paused_until):
+                continue
+
+            logger.info("cooldown.checking", account=account.name)
+
+            # For now, just clear cooldown and let the dispatcher verify
+            # A future improvement could check the invitation manager page
+            await repo.update_account(account, paused_until=None)
+            await repo.bulk_update_lead_status_for_account(
+                account.id,
+                from_status=LeadStatus.LIMIT_PAUSED,
+                to_status=LeadStatus.PENDING,
+            )
+
+            await repo.log_action(
+                account_id=account.id,
+                action_type=ActionType.COOLDOWN_ENDED,
+                status=ActionLogStatus.SUCCESS,
+                details={"resumed_at": datetime.utcnow().isoformat()},
+            )
+            logger.info("cooldown.resumed", account=account.name)
+
+    except Exception as e:
+        logger.error("cooldown.check_failed", error=str(e))
+    finally:
+        await session.close()
+
+
+async def check_acceptances():
+    """
+    Check for accepted connection requests.
+
+    Runs every 3 hours. Visits invitation manager and individual
+    profiles to detect newly accepted connections.
+    """
+    repo, session = await _get_repo()
+    settings = get_settings()
+    try:
+        accounts = await repo.list_active_accounts()
+        for account in accounts:
+            if account.paused_until and not is_cooldown_expired(account.paused_until):
+                continue
+
+            campaigns = await repo.get_active_campaigns(account.id)
+            for campaign in campaigns:
+                requested_leads = await repo.get_leads_by_status(
+                    campaign.id, LeadStatus.CONNECTION_REQUESTED
+                )
+                if not requested_leads:
+                    continue
+
+                # Limit checks per cycle
+                to_check = requested_leads[:settings.max_profiles_per_acceptance_check]
+
+                from linauto.linkedin.browser import LinkedInBrowser
+                from linauto.linkedin.actions import LinkedInActions
+
+                browser = LinkedInBrowser()
+                try:
+                    await browser.launch(
+                        account_id=account.id,
+                        li_at_cookie=account.li_at_cookie,
+                        user_agent=account.user_agent,
+                        proxy_url=account.proxy_url,
+                        timezone=account.timezone,
+                    )
+                    valid = await browser.validate_session()
+                    if not valid:
+                        logger.warning("acceptance.session_expired", account=account.name)
+                        continue
+
+                    page = await browser.new_page()
+                    actions = LinkedInActions(page)
+
+                    for lead in to_check:
+                        status = await actions.check_connection_status(lead.linkedin_url)
+                        if status == "connected":
+                            await repo.update_lead(
+                                lead,
+                                status=LeadStatus.CONNECTED,
+                                connection_accepted_at=datetime.utcnow(),
+                            )
+                            await repo.log_action(
+                                account_id=account.id,
+                                campaign_id=campaign.id,
+                                lead_id=lead.id,
+                                action_type=ActionType.CHECK_ACCEPTANCE,
+                                status=ActionLogStatus.SUCCESS,
+                                details={"accepted": True},
+                            )
+                            await repo.increment_daily_stat(
+                                account.id, "connections_accepted"
+                            )
+                            logger.info("acceptance.connected", url=lead.linkedin_url)
+
+                        # Small delay between checks
+                        from linauto.safety.delays import DelayGenerator
+                        await DelayGenerator().micro_delay(2, 5)
+
+                    await page.close()
+                finally:
+                    await browser.close()
+
+    except Exception as e:
+        logger.error("acceptance.check_failed", error=str(e))
+    finally:
+        await session.close()
+
+
+async def start_scheduler():
+    """Start the APScheduler daemon. Blocks until interrupted."""
+    await init_db()
+
+    scheduler = AsyncIOScheduler()
+
+    # Daily planning sweep at 06:00
+    scheduler.add_job(
+        daily_planning_sweep,
+        CronTrigger(hour=6, minute=0),
+        id="daily_planner",
+        name="Daily Planning Sweep",
+        replace_existing=True,
+    )
+
+    # Dispatcher every 5 minutes
+    scheduler.add_job(
+        dispatch,
+        IntervalTrigger(minutes=5),
+        id="dispatcher",
+        name="Action Dispatcher",
+        replace_existing=True,
+    )
+
+    # Acceptance checker every 3 hours
+    settings = get_settings()
+    scheduler.add_job(
+        check_acceptances,
+        IntervalTrigger(hours=settings.acceptance_check_interval_hours),
+        id="acceptance_checker",
+        name="Acceptance Checker",
+        replace_existing=True,
+    )
+
+    # Cooldown checker daily at midnight
+    scheduler.add_job(
+        check_cooldowns,
+        CronTrigger(hour=0, minute=0),
+        id="cooldown_checker",
+        name="Cooldown Checker",
+        replace_existing=True,
+    )
+
+    scheduler.start()
+    logger.info("scheduler.started", jobs=len(scheduler.get_jobs()))
+
+    # Also run planning sweep immediately on startup
+    await daily_planning_sweep()
+
+    # Keep running until interrupted
+    stop_event = asyncio.Event()
+
+    def _signal_handler():
+        logger.info("scheduler.stopping")
+        stop_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _signal_handler)
+
+    await stop_event.wait()
+
+    scheduler.shutdown(wait=True)
+    await close_db()
+    logger.info("scheduler.stopped")
