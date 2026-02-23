@@ -16,8 +16,8 @@ COPY . .
 # Install Python dependencies
 RUN pip install --no-cache-dir .
 
-# Install Playwright Chromium browser
-RUN playwright install chromium
+# Install Playwright Chromium browser + system dependencies
+RUN playwright install --with-deps chromium
 
 # Create data directories
 RUN mkdir -p data/browser_data data/logs
