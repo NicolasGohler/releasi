@@ -507,6 +507,54 @@ def campaign_list():
     _run(_list())
 
 
+@campaign_app.command("reset-leads")
+def campaign_reset_leads(
+    campaign_name: str = typer.Option(..., "--campaign", "-c", help="Campaign name"),
+    all_leads: bool = typer.Option(
+        False, "--all", help="Reset ALL non-completed leads (including connection_requested)"
+    ),
+):
+    """Reset leads back to pending so they can be reprocessed. By default resets error, skipped, and limit_paused leads."""
+    async def _reset():
+        repo, session = await _get_repo()
+        campaign = await repo.get_campaign_by_name(campaign_name)
+        if not campaign:
+            console.print(f"[red]Campaign '{campaign_name}' not found.[/red]")
+            raise typer.Exit(1)
+
+        from linauto.db.models import LeadStatus
+        if all_leads:
+            statuses = [
+                LeadStatus.ERROR,
+                LeadStatus.SKIPPED,
+                LeadStatus.LIMIT_PAUSED,
+                LeadStatus.SCHEDULED,
+                LeadStatus.CONNECTION_REQUESTED,
+            ]
+        else:
+            statuses = None  # defaults to error, skipped, limit_paused
+
+        # Show what will be reset
+        counts = await repo.get_campaign_status_counts(campaign.id)
+        target_statuses = [s.value for s in statuses] if statuses else ["error", "skipped", "limit_paused"]
+        total_to_reset = sum(counts.get(s, 0) for s in target_statuses)
+
+        if total_to_reset == 0:
+            console.print("[yellow]No leads to reset.[/yellow]")
+            return
+
+        reset_count = await repo.reset_campaign_leads(campaign.id, statuses)
+        console.print(f"[green]Reset {reset_count} leads back to pending in '{campaign_name}'.[/green]")
+        for s in target_statuses:
+            c = counts.get(s, 0)
+            if c > 0:
+                console.print(f"  {s}: {c}")
+
+        await _cleanup(session)
+
+    _run(_reset())
+
+
 @campaign_app.command("activate")
 def campaign_activate(
     campaign_name: str = typer.Option(..., "--campaign", "-c", help="Campaign name"),

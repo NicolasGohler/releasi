@@ -3,42 +3,43 @@ Centralized LinkedIn page selectors.
 
 When LinkedIn changes their DOM, update THIS FILE ONLY.
 Each selector has a primary and fallback list for resilience.
+
+Selector strategy: prefer text-based selectors (:text-is, :has-text) over
+class-based selectors, since LinkedIn frequently changes class names but
+button labels stay stable.
 """
 
 # ── Profile page: Connect button ──────────────────────────────────────────
 
-# Primary Connect button — only matches when Connect is a top-level action button
+# Primary Connect button — only matches when Connect is a top-level action button.
+# Ordered: text-exact → scoped class → aria-label.
 CONNECT_BUTTON_PRIMARY = [
+    # Scoped to profile actions area to avoid matching sidebar "Connect" buttons
+    '.pv-top-card button:text-is("Connect")',
+    '.pvs-profile-actions button:text-is("Connect")',
     'button.pv-s-profile-actions--connect',
-    # Scoped: only match Connect buttons inside the profile actions area
-    '.pv-top-card .artdeco-button:has-text("Connect")',
-    '.pvs-profile-actions button:has-text("Connect")',
     'main section button[aria-label*="Invite"][aria-label*="connect"]',
 ]
 
-# "More" button on profile — the dropdown trigger next to Follow/Message
+# "More" button on profile — the dropdown trigger next to Follow/Message.
+# This is the most critical selector — on Follow-primary profiles, Connect
+# is hidden behind this dropdown.
 CONNECT_BUTTON_MORE_DROPDOWN = [
-    # aria-label based (most reliable when LinkedIn sets it)
+    # Exact text match — safe because "Show more"/"Load more" won't match
+    'button:text-is("More")',
+    # aria-label fallback
     'button[aria-label="More actions"]',
-    # Scoped to profile actions area by class
-    '.pvs-profile-actions button.artdeco-dropdown__trigger',
-    '.pv-top-card .artdeco-dropdown__trigger:has-text("More")',
-    '.pv-s-profile-actions .artdeco-dropdown__trigger:has-text("More")',
-    # Scoped to main profile section — avoids "Show more" in experience etc.
-    'main section:first-of-type button:text-is("More")',
-    # Broader fallback: any dropdown trigger with exact "More" text in upper page
+    # Class-based fallbacks
     '.artdeco-dropdown__trigger:text-is("More")',
 ]
 
 # Connect option inside the More dropdown menu
 CONNECT_IN_DROPDOWN = [
-    # role="menuitem" is the standard for dropdown items
+    # Dropdown items use role="menuitem" or are inside artdeco-dropdown__content
     '[role="menuitem"]:has-text("Connect")',
-    # Dropdown content area with Connect text
-    '.artdeco-dropdown__content span:has-text("Connect")',
     '.artdeco-dropdown__content li:has-text("Connect")',
-    'div.artdeco-dropdown__content [aria-label*="connect" i]',
-    'li-icon[type="connect"] ~ span:has-text("Connect")',
+    '.artdeco-dropdown__content span:text-is("Connect")',
+    '.artdeco-dropdown__content [aria-label*="connect" i]',
 ]
 
 # ── Connection request modal ──────────────────────────────────────────────
@@ -57,7 +58,6 @@ NOTE_TEXTAREA = [
 SEND_INVITATION_BUTTON = [
     'button[aria-label="Send invitation"]',
     'button[aria-label="Send now"]',
-    # Inside a modal dialog only — avoid matching random Send buttons
     '[role="dialog"] button:has-text("Send")',
     'button:has-text("Send")',
 ]
@@ -101,6 +101,15 @@ ALREADY_CONNECTED_INDICATORS = [
 PENDING_CONNECTION_INDICATORS = [
     'button:has-text("Pending")',
     'button[aria-label*="Pending"]',
+]
+
+# ── Profile action buttons (used for page-load wait) ─────────────────────
+
+PROFILE_ACTION_BUTTONS = [
+    'button:text-is("More")',
+    'button:text-is("Connect")',
+    'button:has-text("Follow")',
+    'button:has-text("Message")',
 ]
 
 # ── Message dialog ────────────────────────────────────────────────────────
@@ -160,6 +169,8 @@ PROFILE_NO_PHOTO = [
 PROFILE_CONNECTION_COUNT = [
     '.pv-top-card--list-bullet li:has-text("connections") span.t-bold',
     'a[href*="/connections/"] span.t-bold',
+    # Broader: any element near top of page with connection count text
+    'span:has-text("connections")',
 ]
 
 # ── Session validation ────────────────────────────────────────────────────

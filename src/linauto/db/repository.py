@@ -288,6 +288,35 @@ class Repository:
         await self.session.commit()
         return result.rowcount
 
+    async def reset_campaign_leads(
+        self,
+        campaign_id: str,
+        statuses: list[LeadStatus] | None = None,
+    ) -> int:
+        """
+        Reset leads back to PENDING so they can be reprocessed.
+        If statuses is None, resets error, skipped, and limit_paused leads.
+        Also clears error_message, retry_count, and timestamp fields.
+        """
+        if statuses is None:
+            statuses = [LeadStatus.ERROR, LeadStatus.SKIPPED, LeadStatus.LIMIT_PAUSED]
+
+        result = await self.session.execute(
+            update(Lead)
+            .where(Lead.campaign_id == campaign_id, Lead.status.in_(statuses))
+            .values(
+                status=LeadStatus.PENDING,
+                error_message=None,
+                retry_count=0,
+                connection_requested_at=None,
+                connection_accepted_at=None,
+                followup_sent_at=None,
+                scheduled_at=None,
+            )
+        )
+        await self.session.commit()
+        return result.rowcount
+
     async def bulk_update_lead_status_for_account(
         self,
         account_id: str,

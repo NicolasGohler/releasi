@@ -12,6 +12,7 @@ from playwright.async_api import Page
 from linauto.config import get_settings
 from linauto.linkedin.selectors import (
     FEED_URL, LOGIN_URL_PATTERNS, INVITATION_MANAGER_URL,
+    PROFILE_ACTION_BUTTONS,
 )
 
 logger = structlog.get_logger()
@@ -46,16 +47,37 @@ class LinkedInNavigator:
                 return False
         return True
 
+    async def _wait_for_profile_rendered(self, timeout_ms: int = 10000):
+        """Wait until LinkedIn profile action buttons are visible (page fully rendered)."""
+        from playwright.async_api import TimeoutError as PlaywrightTimeout
+        per_sel_timeout = max(timeout_ms // len(PROFILE_ACTION_BUTTONS), 2000)
+        for sel in PROFILE_ACTION_BUTTONS:
+            try:
+                await self.page.locator(sel).first.wait_for(
+                    state="visible", timeout=per_sel_timeout
+                )
+                logger.debug("navigator.profile_rendered", indicator=sel)
+                return
+            except (PlaywrightTimeout, Exception):
+                continue
+        logger.warning("navigator.profile_render_timeout")
+
     async def go_to_profile(self, profile_url: str) -> NavigationResult:
         """Navigate to a LinkedIn profile page."""
         try:
             await self._random_delay(0.5, 2.0)
-            await self.page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
+            await self.page.goto(profile_url, wait_until="load", timeout=30000)
             await self._random_delay()
 
             session_valid = self._check_session(self.page.url)
             if not session_valid:
                 logger.warning("navigator.session_expired", target=profile_url)
+                return NavigationResult(
+                    success=True, url=self.page.url, session_valid=False
+                )
+
+            # Wait for profile to be fully rendered by JS
+            await self._wait_for_profile_rendered()
 
             return NavigationResult(
                 success=True, url=self.page.url, session_valid=session_valid
