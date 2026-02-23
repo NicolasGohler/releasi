@@ -7,23 +7,37 @@ Each selector has a primary and fallback list for resilience.
 
 # ── Profile page: Connect button ──────────────────────────────────────────
 
+# Primary Connect button — only matches when Connect is a top-level action button
 CONNECT_BUTTON_PRIMARY = [
     'button.pv-s-profile-actions--connect',
-    'button:has-text("Connect")',
-    '[aria-label*="Invite"][aria-label*="connect"]',
+    # Scoped: only match Connect buttons inside the profile actions area
+    '.pv-top-card .artdeco-button:has-text("Connect")',
+    '.pvs-profile-actions button:has-text("Connect")',
+    'main section button[aria-label*="Invite"][aria-label*="connect"]',
 ]
 
+# "More" button on profile — the dropdown trigger next to Follow/Message
 CONNECT_BUTTON_MORE_DROPDOWN = [
+    # aria-label based (most reliable when LinkedIn sets it)
     'button[aria-label="More actions"]',
-    'button.artdeco-dropdown__trigger:has-text("More")',
-    'div.pvs-profile-actions button:has-text("More")',
-    'button.pvs-profile-actions__action:has-text("More")',
+    # Scoped to profile actions area by class
+    '.pvs-profile-actions button.artdeco-dropdown__trigger',
+    '.pv-top-card .artdeco-dropdown__trigger:has-text("More")',
+    '.pv-s-profile-actions .artdeco-dropdown__trigger:has-text("More")',
+    # Scoped to main profile section — avoids "Show more" in experience etc.
+    'main section:first-of-type button:text-is("More")',
+    # Broader fallback: any dropdown trigger with exact "More" text in upper page
+    '.artdeco-dropdown__trigger:text-is("More")',
 ]
 
+# Connect option inside the More dropdown menu
 CONNECT_IN_DROPDOWN = [
+    # role="menuitem" is the standard for dropdown items
     '[role="menuitem"]:has-text("Connect")',
+    # Dropdown content area with Connect text
+    '.artdeco-dropdown__content span:has-text("Connect")',
+    '.artdeco-dropdown__content li:has-text("Connect")',
     'div.artdeco-dropdown__content [aria-label*="connect" i]',
-    'div.artdeco-dropdown__content span:has-text("Connect")',
     'li-icon[type="connect"] ~ span:has-text("Connect")',
 ]
 
@@ -43,6 +57,8 @@ NOTE_TEXTAREA = [
 SEND_INVITATION_BUTTON = [
     'button[aria-label="Send invitation"]',
     'button[aria-label="Send now"]',
+    # Inside a modal dialog only — avoid matching random Send buttons
+    '[role="dialog"] button:has-text("Send")',
     'button:has-text("Send")',
 ]
 

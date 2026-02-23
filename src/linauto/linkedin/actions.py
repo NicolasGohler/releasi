@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import structlog
@@ -14,6 +16,8 @@ from linauto.linkedin import selectors
 from linauto.safety.delays import DelayGenerator
 
 logger = structlog.get_logger()
+
+SCREENSHOT_DIR = Path("data/debug_screenshots")
 
 
 class ActionStatus(str, enum.Enum):
@@ -54,6 +58,56 @@ class LinkedInActions:
                 continue
         return None
 
+    async def _debug_screenshot(self, label: str):
+        """Save a debug screenshot for diagnosing selector failures."""
+        try:
+            SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+            ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            path = SCREENSHOT_DIR / f"{label}_{ts}.png"
+            await self.page.screenshot(path=str(path), full_page=False)
+            logger.info("debug.screenshot_saved", path=str(path))
+        except Exception as e:
+            logger.warning("debug.screenshot_failed", error=str(e))
+
+    async def _find_connect_button(self, profile_url: str):
+        """
+        Find the Connect button on a profile page.
+        Handles both layouts:
+          - Connect as primary action button
+          - Connect inside More dropdown (when Follow is primary)
+        """
+        # Strategy 1: Direct Connect button
+        connect_btn = await self._find_element(
+            selectors.CONNECT_BUTTON_PRIMARY, timeout_ms=3000
+        )
+        if connect_btn:
+            logger.info("action.connect_found_primary", url=profile_url)
+            return connect_btn
+
+        # Strategy 2: More dropdown → Connect
+        logger.info("action.trying_more_dropdown", url=profile_url)
+        more_btn = await self._find_element(
+            selectors.CONNECT_BUTTON_MORE_DROPDOWN, timeout_ms=5000
+        )
+        if not more_btn:
+            logger.warning("action.more_button_not_found", url=profile_url)
+            await self._debug_screenshot("more_btn_missing")
+            return None
+
+        await more_btn.click()
+        await self.delay.micro_delay(0.5, 1.5)
+
+        connect_btn = await self._find_element(
+            selectors.CONNECT_IN_DROPDOWN, timeout_ms=5000
+        )
+        if not connect_btn:
+            logger.warning("action.connect_not_in_dropdown", url=profile_url)
+            await self._debug_screenshot("connect_in_dropdown_missing")
+            return None
+
+        logger.info("action.connect_found_in_dropdown", url=profile_url)
+        return connect_btn
+
     async def send_connection_request(
         self, profile_url: str, message: Optional[str] = None, filters=None
     ) -> ActionResult:
@@ -90,26 +144,8 @@ class LinkedInActions:
         if pending:
             return ActionResult(ActionStatus.SKIPPED, reason="pending_request")
 
-        # 4. Find Connect button (primary location)
-        connect_btn = await self._find_element(selectors.CONNECT_BUTTON_PRIMARY, timeout_ms=3000)
-
-        # 5. If not found, try More dropdown (profile may show Follow as primary)
-        if not connect_btn:
-            logger.info("action.connect_primary_not_found, trying More dropdown", url=profile_url)
-            more_btn = await self._find_element(
-                selectors.CONNECT_BUTTON_MORE_DROPDOWN, timeout_ms=3000
-            )
-            if more_btn:
-                await more_btn.click()
-                await self.delay.micro_delay(0.5, 1.0)
-                connect_btn = await self._find_element(
-                    selectors.CONNECT_IN_DROPDOWN, timeout_ms=3000
-                )
-                if not connect_btn:
-                    logger.warning("action.connect_not_in_dropdown", url=profile_url)
-            else:
-                logger.warning("action.more_button_not_found", url=profile_url)
-
+        # 4. Find Connect button (primary or via More dropdown)
+        connect_btn = await self._find_connect_button(profile_url)
         if not connect_btn:
             return ActionResult(
                 ActionStatus.SKIPPED,
@@ -117,11 +153,11 @@ class LinkedInActions:
                 details={"url": profile_url},
             )
 
-        # 6. Click Connect
+        # 5. Click Connect
         await connect_btn.click()
         await self.delay.micro_delay(0.5, 1.5)
 
-        # 7. Handle the "Add a note to your invitation?" modal
+        # 6. Handle the "Add a note to your invitation?" modal
         if message:
             # Click "Add a note" to open the note field
             add_note_btn = await self._find_element(selectors.ADD_NOTE_BUTTON, timeout_ms=3000)
@@ -147,18 +183,19 @@ class LinkedInActions:
                 # Fallback: some modals just have a "Send" button
                 send_btn = await self._find_element(selectors.SEND_INVITATION_BUTTON, timeout_ms=2000)
 
-        # 8. Click Send
+        # 7. Click Send
         if send_btn:
             await send_btn.click()
             await self.delay.micro_delay(1.0, 2.0)
         else:
+            await self._debug_screenshot("send_btn_missing")
             return ActionResult(
                 ActionStatus.ERROR,
                 reason="send_button_not_found",
                 details={"url": profile_url},
             )
 
-        # 9. Check for limit/safety signals
+        # 8. Check for limit/safety signals
         detection = await self.detector.check_after_action(self.page)
         if detection.requires_cooldown:
             return ActionResult(
