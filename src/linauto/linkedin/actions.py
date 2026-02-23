@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import enum
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import structlog
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
+from playwright.async_api import Page, Locator, TimeoutError as PlaywrightTimeout
 
 from linauto.linkedin.navigator import LinkedInNavigator
 from linauto.linkedin.detector import LimitDetector, DetectionResult, DetectionType
@@ -45,8 +46,10 @@ class LinkedInActions:
         self.detector = LimitDetector()
         self.delay = DelayGenerator()
 
+    # ── Element finding: multi-strategy approach ──────────────────────────
+
     async def _find_element(self, selector_list: list, timeout_ms: int = 5000):
-        """Try each selector in order. Return the first visible match."""
+        """Try each CSS selector in order. Return the first visible match."""
         per_selector_timeout = max(timeout_ms // len(selector_list), 1000)
         for sel in selector_list:
             try:
@@ -56,6 +59,73 @@ class LinkedInActions:
                 return locator
             except (PlaywrightTimeout, Exception):
                 continue
+        return None
+
+    async def _try_locator(self, locator: Locator, timeout_ms: int = 3000):
+        """Check if a Playwright Locator matches a visible element."""
+        try:
+            if await locator.count() > 0:
+                await locator.first.wait_for(state="visible", timeout=timeout_ms)
+                return locator.first
+        except (PlaywrightTimeout, Exception):
+            pass
+        return None
+
+    async def _find_button_by_js(self, text: str) -> Optional[Locator]:
+        """
+        Nuclear fallback: find a button by visible text using JavaScript.
+        Returns a Playwright Locator bound to the found element.
+        """
+        # Use JavaScript to find the element, then return its index so we can
+        # create a reliable locator for it
+        index = await self.page.evaluate("""
+            (text) => {
+                const buttons = document.querySelectorAll('button');
+                for (let i = 0; i < buttons.length; i++) {
+                    const btn = buttons[i];
+                    // Check visibility
+                    const style = window.getComputedStyle(btn);
+                    if (style.display === 'none' || style.visibility === 'hidden') continue;
+                    if (btn.offsetParent === null && style.position !== 'fixed') continue;
+                    // Check text
+                    const btnText = btn.innerText.trim();
+                    if (btnText === text) return i;
+                }
+                return -1;
+            }
+        """, text)
+
+        if index >= 0:
+            locator = self.page.locator(f"button >> nth={index}")
+            logger.info("element.found_by_js", text=text, index=index)
+            return locator
+        return None
+
+    async def _find_dropdown_item_by_js(self, text: str) -> Optional[Locator]:
+        """Find a dropdown menu item by visible text using JavaScript."""
+        index = await self.page.evaluate("""
+            (text) => {
+                // Look for any visible element containing the exact text
+                // in dropdown menus, list items, or elements with role attributes
+                const candidates = document.querySelectorAll(
+                    '[role="menuitem"], [role="button"], .artdeco-dropdown__item, li'
+                );
+                for (let i = 0; i < candidates.length; i++) {
+                    const el = candidates[i];
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden') continue;
+                    const elText = el.innerText.trim();
+                    if (elText === text) return i;
+                }
+                return -1;
+            }
+        """, text)
+
+        if index >= 0:
+            selector = f':is([role="menuitem"], [role="button"], .artdeco-dropdown__item, li) >> nth={index}'
+            locator = self.page.locator(selector)
+            logger.info("element.dropdown_item_found_by_js", text=text, index=index)
+            return locator
         return None
 
     async def _debug_screenshot(self, label: str):
@@ -69,44 +139,153 @@ class LinkedInActions:
         except Exception as e:
             logger.warning("debug.screenshot_failed", error=str(e))
 
+    async def _dump_buttons_debug(self):
+        """Dump all visible button text on the page for debugging."""
+        try:
+            buttons = await self.page.evaluate("""
+                () => {
+                    const result = [];
+                    const buttons = document.querySelectorAll('button');
+                    for (const btn of buttons) {
+                        const style = window.getComputedStyle(btn);
+                        const visible = style.display !== 'none' && style.visibility !== 'hidden';
+                        const text = btn.innerText.trim().substring(0, 50);
+                        if (text && visible) {
+                            result.push({
+                                text: text,
+                                tag: btn.tagName,
+                                classes: btn.className.substring(0, 80),
+                                ariaLabel: btn.getAttribute('aria-label') || '',
+                                role: btn.getAttribute('role') || '',
+                            });
+                        }
+                    }
+                    return result;
+                }
+            """)
+            logger.info("debug.visible_buttons", buttons=buttons)
+        except Exception as e:
+            logger.warning("debug.dump_failed", error=str(e))
+
+    # ── Connect button finding: the critical path ─────────────────────────
+
     async def _find_connect_button(self, profile_url: str):
         """
         Find the Connect button on a profile page.
+
         Handles both layouts:
           - Connect as primary action button
           - Connect inside More dropdown (when Follow is primary)
-        """
-        # Strategy 1: Direct Connect button
-        connect_btn = await self._find_element(
-            selectors.CONNECT_BUTTON_PRIMARY, timeout_ms=3000
-        )
-        if connect_btn:
-            logger.info("action.connect_found_primary", url=profile_url)
-            return connect_btn
 
-        # Strategy 2: More dropdown → Connect
-        logger.info("action.trying_more_dropdown", url=profile_url)
-        more_btn = await self._find_element(
-            selectors.CONNECT_BUTTON_MORE_DROPDOWN, timeout_ms=5000
+        Uses multiple strategies in order of reliability:
+          1. Playwright get_by_role API
+          2. CSS selectors
+          3. JavaScript DOM evaluation (nuclear fallback)
+        """
+        # ── Strategy 1: Direct Connect button ──
+        # Try Playwright's built-in role-based API first
+        connect_by_role = await self._try_locator(
+            self.page.get_by_role("button", name="Connect", exact=True),
+            timeout_ms=2000,
         )
+        if connect_by_role:
+            logger.info("action.connect_found", method="get_by_role", url=profile_url)
+            return connect_by_role
+
+        # Try CSS selectors
+        connect_by_css = await self._find_element(
+            selectors.CONNECT_BUTTON_PRIMARY, timeout_ms=2000,
+        )
+        if connect_by_css:
+            logger.info("action.connect_found", method="css", url=profile_url)
+            return connect_by_css
+
+        # ── Strategy 2: More dropdown → Connect ──
+        logger.info("action.trying_more_dropdown", url=profile_url)
+
+        more_btn = None
+
+        # 2a. get_by_role for More button
+        more_btn = await self._try_locator(
+            self.page.get_by_role("button", name="More", exact=True),
+            timeout_ms=2000,
+        )
+        if more_btn:
+            logger.info("action.more_found", method="get_by_role_exact")
+
+        # 2b. get_by_role with "More actions" accessible name
+        if not more_btn:
+            more_btn = await self._try_locator(
+                self.page.get_by_role("button", name="More actions", exact=True),
+                timeout_ms=2000,
+            )
+            if more_btn:
+                logger.info("action.more_found", method="get_by_role_more_actions")
+
+        # 2c. CSS selectors
+        if not more_btn:
+            more_btn = await self._find_element(
+                selectors.CONNECT_BUTTON_MORE_DROPDOWN, timeout_ms=3000,
+            )
+            if more_btn:
+                logger.info("action.more_found", method="css")
+
+        # 2d. JavaScript fallback
+        if not more_btn:
+            more_btn = await self._find_button_by_js("More")
+            if more_btn:
+                logger.info("action.more_found", method="javascript")
+
         if not more_btn:
             logger.warning("action.more_button_not_found", url=profile_url)
+            await self._dump_buttons_debug()
             await self._debug_screenshot("more_btn_missing")
             return None
 
+        # Click More to open dropdown
         await more_btn.click()
         await self.delay.micro_delay(0.5, 1.5)
 
-        connect_btn = await self._find_element(
-            selectors.CONNECT_IN_DROPDOWN, timeout_ms=5000
-        )
-        if not connect_btn:
-            logger.warning("action.connect_not_in_dropdown", url=profile_url)
-            await self._debug_screenshot("connect_in_dropdown_missing")
-            return None
+        # Find Connect in the dropdown
+        connect_btn = None
 
-        logger.info("action.connect_found_in_dropdown", url=profile_url)
-        return connect_btn
+        # Role-based
+        connect_btn = await self._try_locator(
+            self.page.get_by_role("menuitem", name="Connect"),
+            timeout_ms=2000,
+        )
+        if connect_btn:
+            logger.info("action.connect_in_dropdown_found", method="get_by_role")
+            return connect_btn
+
+        # get_by_text for "Connect" inside visible dropdown
+        connect_btn = await self._try_locator(
+            self.page.get_by_text("Connect", exact=True),
+            timeout_ms=2000,
+        )
+        if connect_btn:
+            logger.info("action.connect_in_dropdown_found", method="get_by_text")
+            return connect_btn
+
+        # CSS selectors
+        connect_btn = await self._find_element(
+            selectors.CONNECT_IN_DROPDOWN, timeout_ms=3000,
+        )
+        if connect_btn:
+            logger.info("action.connect_in_dropdown_found", method="css")
+            return connect_btn
+
+        # JavaScript fallback for dropdown item
+        connect_btn = await self._find_dropdown_item_by_js("Connect")
+        if connect_btn:
+            logger.info("action.connect_in_dropdown_found", method="javascript")
+            return connect_btn
+
+        logger.warning("action.connect_not_in_dropdown", url=profile_url)
+        await self._debug_screenshot("connect_in_dropdown_missing")
+        return None
+
+    # ── Main actions ──────────────────────────────────────────────────────
 
     async def send_connection_request(
         self, profile_url: str, message: Optional[str] = None, filters=None
@@ -114,7 +293,6 @@ class LinkedInActions:
         """
         Navigate to a profile and send a connection request.
         Optionally includes a personalized note.
-        If filters are provided, checks profile quality before proceeding.
         """
         # 1. Navigate to profile
         nav = await self.navigator.go_to_profile(profile_url)
@@ -137,14 +315,19 @@ class LinkedInActions:
         if already_connected:
             return ActionResult(ActionStatus.SKIPPED, reason="already_connected")
 
-        # 3. Check if request is pending
+        # 3. Check if request is pending (try both CSS and role-based)
         pending = await self._find_element(
             selectors.PENDING_CONNECTION_INDICATORS, timeout_ms=2000
         )
+        if not pending:
+            pending = await self._try_locator(
+                self.page.get_by_role("button", name=re.compile(r"Pending", re.IGNORECASE)),
+                timeout_ms=1000,
+            )
         if pending:
             return ActionResult(ActionStatus.SKIPPED, reason="pending_request")
 
-        # 4. Find Connect button (primary or via More dropdown)
+        # 4. Find Connect button (multi-strategy)
         connect_btn = await self._find_connect_button(profile_url)
         if not connect_btn:
             return ActionResult(
@@ -159,7 +342,6 @@ class LinkedInActions:
 
         # 6. Handle the "Add a note to your invitation?" modal
         if message:
-            # Click "Add a note" to open the note field
             add_note_btn = await self._find_element(selectors.ADD_NOTE_BUTTON, timeout_ms=3000)
             if add_note_btn:
                 await add_note_btn.click()
@@ -174,13 +356,10 @@ class LinkedInActions:
                 else:
                     logger.warning("action.note_field_not_found", url=profile_url)
 
-            # After adding note, click "Send invitation" / "Send"
             send_btn = await self._find_element(selectors.SEND_INVITATION_BUTTON, timeout_ms=3000)
         else:
-            # No message — click "Send without a note" directly
             send_btn = await self._find_element(selectors.SEND_WITHOUT_NOTE, timeout_ms=3000)
             if not send_btn:
-                # Fallback: some modals just have a "Send" button
                 send_btn = await self._find_element(selectors.SEND_INVITATION_BUTTON, timeout_ms=2000)
 
         # 7. Click Send
@@ -219,7 +398,6 @@ class LinkedInActions:
         if not nav.session_valid:
             return ActionResult(ActionStatus.SESSION_EXPIRED)
 
-        # Find and click Message button
         msg_btn = await self._find_element(selectors.MESSAGE_BUTTON, timeout_ms=5000)
         if not msg_btn:
             return ActionResult(ActionStatus.ERROR, reason="message_button_not_found")
@@ -227,7 +405,6 @@ class LinkedInActions:
         await msg_btn.click()
         await self.delay.micro_delay(1.0, 2.0)
 
-        # Type message
         msg_input = await self._find_element(selectors.MESSAGE_INPUT, timeout_ms=5000)
         if not msg_input:
             return ActionResult(ActionStatus.ERROR, reason="message_input_not_found")
@@ -237,7 +414,6 @@ class LinkedInActions:
         await self.delay.type_text(msg_input, message)
         await self.delay.micro_delay(0.5, 1.0)
 
-        # Send
         send_btn = await self._find_element(selectors.MESSAGE_SEND_BUTTON, timeout_ms=3000)
         if not send_btn:
             return ActionResult(ActionStatus.ERROR, reason="message_send_button_not_found")

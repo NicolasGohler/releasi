@@ -658,5 +658,135 @@ def run():
     _run(_run_scheduler())
 
 
+@app.command("debug-profile")
+def debug_profile(
+    account_name: str = typer.Option(..., "--account", "-a", help="Account name"),
+    url: str = typer.Option(..., "--url", "-u", help="LinkedIn profile URL to debug"),
+):
+    """Debug selector matching on a LinkedIn profile (for troubleshooting)."""
+    async def _debug():
+        repo, session = await _get_repo()
+        account = await repo.get_account_by_name(account_name)
+        if not account:
+            console.print(f"[red]Account '{account_name}' not found.[/red]")
+            raise typer.Exit(1)
+
+        from linauto.linkedin.browser import LinkedInBrowser
+        browser = LinkedInBrowser()
+        try:
+            await browser.launch(
+                account_id=account.id,
+                li_at_cookie=account.li_at_cookie,
+                user_agent=account.user_agent,
+                proxy_url=account.proxy_url,
+                timezone=account.timezone,
+            )
+            valid = await browser.validate_session()
+            if not valid:
+                console.print("[red]Session expired.[/red]")
+                return
+
+            page = await browser.new_page()
+            from linauto.linkedin.navigator import LinkedInNavigator
+            nav = LinkedInNavigator(page)
+            result = await nav.go_to_profile(url)
+            if not result.success:
+                console.print(f"[red]Navigation failed: {result.error}[/red]")
+                return
+
+            console.print(f"[green]Page loaded: {page.url}[/green]")
+            console.print()
+
+            # Dump all visible buttons via JavaScript
+            buttons = await page.evaluate("""
+                () => {
+                    const result = [];
+                    const buttons = document.querySelectorAll('button');
+                    for (const btn of buttons) {
+                        const style = window.getComputedStyle(btn);
+                        const visible = style.display !== 'none' && style.visibility !== 'hidden';
+                        if (!visible) continue;
+                        const text = btn.innerText.trim();
+                        if (!text) continue;
+                        result.push({
+                            text: text.substring(0, 60),
+                            classes: btn.className.substring(0, 80),
+                            ariaLabel: btn.getAttribute('aria-label') || '',
+                            ariaExpanded: btn.getAttribute('aria-expanded') || '',
+                            tagName: btn.tagName,
+                        });
+                    }
+                    return result;
+                }
+            """)
+
+            console.print("[bold]All visible buttons on page:[/bold]")
+            for i, btn in enumerate(buttons):
+                console.print(f"  [{i}] text={btn['text']!r}  classes={btn['classes']!r}  aria-label={btn['ariaLabel']!r}")
+
+            console.print()
+
+            # Test specific selectors
+            import re as re_mod
+            tests = [
+                ("get_by_role('button', name='Connect', exact)", page.get_by_role("button", name="Connect", exact=True)),
+                ("get_by_role('button', name='More', exact)", page.get_by_role("button", name="More", exact=True)),
+                ("get_by_role('button', name='More actions', exact)", page.get_by_role("button", name="More actions", exact=True)),
+                ("get_by_role('button', name='Pending')", page.get_by_role("button", name=re_mod.compile(r"Pending", re_mod.IGNORECASE))),
+                ("get_by_role('button', name='Follow')", page.get_by_role("button", name="Follow")),
+                ("get_by_role('button', name='Message')", page.get_by_role("button", name="Message")),
+                ("CSS: button:text-is('More')", page.locator('button:text-is("More")')),
+                ("CSS: button:has-text('More')", page.locator('button:has-text("More")')),
+                ("CSS: button:has-text('Connect')", page.locator('button:has-text("Connect")')),
+                ("CSS: button:has-text('Pending')", page.locator('button:has-text("Pending")')),
+            ]
+
+            console.print("[bold]Selector test results:[/bold]")
+            for name, locator in tests:
+                try:
+                    count = await locator.count()
+                    if count > 0:
+                        text = await locator.first.inner_text()
+                        console.print(f"  [green]MATCH[/green] {name} → count={count}, text={text.strip()!r}")
+                    else:
+                        console.print(f"  [red]MISS [/red] {name} → count=0")
+                except Exception as e:
+                    console.print(f"  [red]ERROR[/red] {name} → {e}")
+
+            console.print()
+
+            # Test JavaScript fallback
+            js_more = await page.evaluate("""
+                () => {
+                    const buttons = document.querySelectorAll('button');
+                    for (let i = 0; i < buttons.length; i++) {
+                        const btn = buttons[i];
+                        const style = window.getComputedStyle(btn);
+                        if (style.display === 'none' || style.visibility === 'hidden') continue;
+                        if (btn.offsetParent === null && style.position !== 'fixed') continue;
+                        if (btn.innerText.trim() === 'More') return {index: i, found: true};
+                    }
+                    return {index: -1, found: false};
+                }
+            """)
+            if js_more['found']:
+                console.print(f"  [green]JS FIND[/green] 'More' button at index {js_more['index']}")
+            else:
+                console.print(f"  [red]JS MISS[/red] No button with innerText 'More'")
+
+            # Save screenshot
+            path = Path("data/debug_screenshots/debug_profile.png")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            await page.screenshot(path=str(path), full_page=False)
+            console.print(f"\n[dim]Screenshot saved: {path}[/dim]")
+
+            await page.close()
+        finally:
+            await browser.close()
+        await _cleanup(session)
+
+    _run(_debug())
+
+
 if __name__ == "__main__":
     app()
