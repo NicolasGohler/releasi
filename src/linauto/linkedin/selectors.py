@@ -16,10 +16,14 @@ CONNECT_BUTTON_PRIMARY = [
 CONNECT_BUTTON_MORE_DROPDOWN = [
     'button[aria-label="More actions"]',
     'button.artdeco-dropdown__trigger:has-text("More")',
+    'div.pvs-profile-actions button:has-text("More")',
+    'button.pvs-profile-actions__action:has-text("More")',
 ]
 
 CONNECT_IN_DROPDOWN = [
     '[role="menuitem"]:has-text("Connect")',
+    'div.artdeco-dropdown__content [aria-label*="connect" i]',
+    'div.artdeco-dropdown__content span:has-text("Connect")',
     'li-icon[type="connect"] ~ span:has-text("Connect")',
 ]
 

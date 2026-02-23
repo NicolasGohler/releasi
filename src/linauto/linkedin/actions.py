@@ -93,8 +93,9 @@ class LinkedInActions:
         # 4. Find Connect button (primary location)
         connect_btn = await self._find_element(selectors.CONNECT_BUTTON_PRIMARY, timeout_ms=3000)
 
-        # 5. If not found, try More dropdown
+        # 5. If not found, try More dropdown (profile may show Follow as primary)
         if not connect_btn:
+            logger.info("action.connect_primary_not_found, trying More dropdown", url=profile_url)
             more_btn = await self._find_element(
                 selectors.CONNECT_BUTTON_MORE_DROPDOWN, timeout_ms=3000
             )
@@ -104,6 +105,10 @@ class LinkedInActions:
                 connect_btn = await self._find_element(
                     selectors.CONNECT_IN_DROPDOWN, timeout_ms=3000
                 )
+                if not connect_btn:
+                    logger.warning("action.connect_not_in_dropdown", url=profile_url)
+            else:
+                logger.warning("action.more_button_not_found", url=profile_url)
 
         if not connect_btn:
             return ActionResult(
