@@ -176,27 +176,19 @@ class LinkedInActions:
           - Connect inside More dropdown (when Follow is primary)
 
         Uses multiple strategies in order of reliability:
-          1. Playwright get_by_role API
-          2. CSS selectors
-          3. JavaScript DOM evaluation (nuclear fallback)
+          1. Scoped CSS selectors (profile actions area only)
+          2. More dropdown → Connect (with get_by_role, CSS, JS fallbacks)
         """
-        # ── Strategy 1: Direct Connect button ──
-        # The profile Connect button has aria-label="Invite X to connect",
-        # so we match on partial aria-label, NOT name="Connect" which misses.
-        connect_by_role = await self._try_locator(
-            self.page.get_by_role("button", name=re.compile(r"Invite.*connect", re.IGNORECASE)),
-            timeout_ms=2000,
-        )
-        if connect_by_role:
-            logger.info("action.connect_found", method="get_by_role_invite", url=profile_url)
-            return connect_by_role
-
-        # CSS fallback for direct Connect
+        # ── Strategy 1: Direct Connect button (profile actions area only) ──
+        # IMPORTANT: Do NOT use get_by_role("button", name="Invite.*connect")
+        # here — sidebar "People you may know" Connect buttons share the same
+        # aria-label pattern and would match instead of the profile's button.
+        # Only use class-scoped CSS selectors that target the profile actions area.
         connect_by_css = await self._find_element(
             selectors.CONNECT_BUTTON_PRIMARY, timeout_ms=2000,
         )
         if connect_by_css:
-            logger.info("action.connect_found", method="css", url=profile_url)
+            logger.info("action.connect_found", method="css_scoped", url=profile_url)
             return connect_by_css
 
         # ── Strategy 2: More dropdown → Connect ──
@@ -357,11 +349,22 @@ class LinkedInActions:
                 else:
                     logger.warning("action.note_field_not_found", url=profile_url)
 
-            send_btn = await self._find_element(selectors.SEND_INVITATION_BUTTON, timeout_ms=3000)
+            send_btn = await self._find_element(selectors.SEND_INVITATION_BUTTON, timeout_ms=5000)
+            if not send_btn:
+                send_btn = await self._try_locator(
+                    self.page.get_by_role("button", name=re.compile(r"Send", re.IGNORECASE)),
+                    timeout_ms=2000,
+                )
         else:
             send_btn = await self._find_element(selectors.SEND_WITHOUT_NOTE, timeout_ms=3000)
             if not send_btn:
-                send_btn = await self._find_element(selectors.SEND_INVITATION_BUTTON, timeout_ms=2000)
+                send_btn = await self._find_element(selectors.SEND_INVITATION_BUTTON, timeout_ms=3000)
+            if not send_btn:
+                # Role-based fallback: look for Send button in the modal dialog
+                send_btn = await self._try_locator(
+                    self.page.locator('[role="dialog"]').get_by_role("button", name=re.compile(r"Send", re.IGNORECASE)),
+                    timeout_ms=2000,
+                )
 
         # 7. Click Send
         if send_btn:

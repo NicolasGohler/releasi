@@ -14,11 +14,11 @@ button labels stay stable.
 # Primary Connect button — only matches when Connect is a top-level action button.
 # Ordered: text-exact → scoped class → aria-label.
 CONNECT_BUTTON_PRIMARY = [
-    # Profile Connect button has aria-label="Invite X to connect"
-    # Sidebar Connect buttons have aria-label="Invite X to connect" too,
-    # but pv-s-profile-actions class scopes to profile area
+    # Only match Connect when it's a top-level profile action button.
+    # Do NOT use aria-label="Invite X to connect" here — sidebar "People
+    # you may know" Connect buttons share the same aria-label pattern.
     'button.pv-s-profile-actions--connect',
-    'button[aria-label*="Invite"][aria-label*="connect"]',
+    '.pv-top-card .pvs-profile-actions button:has-text("Connect")',
 ]
 
 # "More" button on profile — the dropdown trigger next to Follow/Message.
