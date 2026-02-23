@@ -74,57 +74,55 @@ class LinkedInActions:
     async def _find_button_by_js(self, text: str) -> Optional[Locator]:
         """
         Nuclear fallback: find a button by visible text using JavaScript.
-        Returns a Playwright Locator bound to the found element.
+        Adds a temporary data attribute to the found element so we can
+        locate it reliably with a Playwright locator.
         """
-        # Use JavaScript to find the element, then return its index so we can
-        # create a reliable locator for it
-        index = await self.page.evaluate("""
+        found = await self.page.evaluate("""
             (text) => {
                 const buttons = document.querySelectorAll('button');
-                for (let i = 0; i < buttons.length; i++) {
-                    const btn = buttons[i];
-                    // Check visibility
+                for (const btn of buttons) {
                     const style = window.getComputedStyle(btn);
                     if (style.display === 'none' || style.visibility === 'hidden') continue;
                     if (btn.offsetParent === null && style.position !== 'fixed') continue;
-                    // Check text
                     const btnText = btn.innerText.trim();
-                    if (btnText === text) return i;
+                    if (btnText === text) {
+                        btn.setAttribute('data-linauto-found', 'true');
+                        return true;
+                    }
                 }
-                return -1;
+                return false;
             }
         """, text)
 
-        if index >= 0:
-            locator = self.page.locator(f"button >> nth={index}")
-            logger.info("element.found_by_js", text=text, index=index)
+        if found:
+            locator = self.page.locator('button[data-linauto-found="true"]').first
+            logger.info("element.found_by_js", text=text)
             return locator
         return None
 
     async def _find_dropdown_item_by_js(self, text: str) -> Optional[Locator]:
         """Find a dropdown menu item by visible text using JavaScript."""
-        index = await self.page.evaluate("""
+        found = await self.page.evaluate("""
             (text) => {
-                // Look for any visible element containing the exact text
-                // in dropdown menus, list items, or elements with role attributes
                 const candidates = document.querySelectorAll(
                     '[role="menuitem"], [role="button"], .artdeco-dropdown__item, li'
                 );
-                for (let i = 0; i < candidates.length; i++) {
-                    const el = candidates[i];
+                for (const el of candidates) {
                     const style = window.getComputedStyle(el);
                     if (style.display === 'none' || style.visibility === 'hidden') continue;
                     const elText = el.innerText.trim();
-                    if (elText === text) return i;
+                    if (elText === text) {
+                        el.setAttribute('data-linauto-found', 'dropdown-item');
+                        return true;
+                    }
                 }
-                return -1;
+                return false;
             }
         """, text)
 
-        if index >= 0:
-            selector = f':is([role="menuitem"], [role="button"], .artdeco-dropdown__item, li) >> nth={index}'
-            locator = self.page.locator(selector)
-            logger.info("element.dropdown_item_found_by_js", text=text, index=index)
+        if found:
+            locator = self.page.locator('[data-linauto-found="dropdown-item"]').first
+            logger.info("element.dropdown_item_found_by_js", text=text)
             return locator
         return None
 
@@ -183,16 +181,17 @@ class LinkedInActions:
           3. JavaScript DOM evaluation (nuclear fallback)
         """
         # ── Strategy 1: Direct Connect button ──
-        # Try Playwright's built-in role-based API first
+        # The profile Connect button has aria-label="Invite X to connect",
+        # so we match on partial aria-label, NOT name="Connect" which misses.
         connect_by_role = await self._try_locator(
-            self.page.get_by_role("button", name="Connect", exact=True),
+            self.page.get_by_role("button", name=re.compile(r"Invite.*connect", re.IGNORECASE)),
             timeout_ms=2000,
         )
         if connect_by_role:
-            logger.info("action.connect_found", method="get_by_role", url=profile_url)
+            logger.info("action.connect_found", method="get_by_role_invite", url=profile_url)
             return connect_by_role
 
-        # Try CSS selectors
+        # CSS fallback for direct Connect
         connect_by_css = await self._find_element(
             selectors.CONNECT_BUTTON_PRIMARY, timeout_ms=2000,
         )
@@ -205,22 +204,22 @@ class LinkedInActions:
 
         more_btn = None
 
-        # 2a. get_by_role for More button
+        # 2a. The More button has aria-label="More actions" (confirmed by diagnostic)
         more_btn = await self._try_locator(
-            self.page.get_by_role("button", name="More", exact=True),
-            timeout_ms=2000,
+            self.page.get_by_role("button", name="More actions", exact=True),
+            timeout_ms=3000,
         )
         if more_btn:
-            logger.info("action.more_found", method="get_by_role_exact")
+            logger.info("action.more_found", method="get_by_role_more_actions")
 
-        # 2b. get_by_role with "More actions" accessible name
+        # 2b. Fallback: try just "More"
         if not more_btn:
             more_btn = await self._try_locator(
-                self.page.get_by_role("button", name="More actions", exact=True),
+                self.page.get_by_role("button", name="More", exact=True),
                 timeout_ms=2000,
             )
             if more_btn:
-                logger.info("action.more_found", method="get_by_role_more_actions")
+                logger.info("action.more_found", method="get_by_role_exact")
 
         # 2c. CSS selectors
         if not more_btn:
@@ -249,22 +248,24 @@ class LinkedInActions:
         # Find Connect in the dropdown
         connect_btn = None
 
-        # Role-based
-        connect_btn = await self._try_locator(
-            self.page.get_by_role("menuitem", name="Connect"),
-            timeout_ms=2000,
-        )
-        if connect_btn:
-            logger.info("action.connect_in_dropdown_found", method="get_by_role")
-            return connect_btn
+        # Role-based: try menuitem and listitem roles
+        for role in ["menuitem", "listitem"]:
+            connect_btn = await self._try_locator(
+                self.page.get_by_role(role, name=re.compile(r"Connect", re.IGNORECASE)),
+                timeout_ms=2000,
+            )
+            if connect_btn:
+                logger.info("action.connect_in_dropdown_found", method=f"get_by_role_{role}")
+                return connect_btn
 
-        # get_by_text for "Connect" inside visible dropdown
+        # get_by_text for "Connect" — after clicking More, the dropdown Connect
+        # is visible and the sidebar ones exist too, but dropdown is rendered last
         connect_btn = await self._try_locator(
-            self.page.get_by_text("Connect", exact=True),
+            self.page.locator('.artdeco-dropdown__content').get_by_text("Connect", exact=True),
             timeout_ms=2000,
         )
         if connect_btn:
-            logger.info("action.connect_in_dropdown_found", method="get_by_text")
+            logger.info("action.connect_in_dropdown_found", method="dropdown_get_by_text")
             return connect_btn
 
         # CSS selectors

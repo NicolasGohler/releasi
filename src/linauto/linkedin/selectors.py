@@ -14,23 +14,22 @@ button labels stay stable.
 # Primary Connect button — only matches when Connect is a top-level action button.
 # Ordered: text-exact → scoped class → aria-label.
 CONNECT_BUTTON_PRIMARY = [
-    # Scoped to profile actions area to avoid matching sidebar "Connect" buttons
-    '.pv-top-card button:text-is("Connect")',
-    '.pvs-profile-actions button:text-is("Connect")',
+    # Profile Connect button has aria-label="Invite X to connect"
+    # Sidebar Connect buttons have aria-label="Invite X to connect" too,
+    # but pv-s-profile-actions class scopes to profile area
     'button.pv-s-profile-actions--connect',
-    'main section button[aria-label*="Invite"][aria-label*="connect"]',
+    'button[aria-label*="Invite"][aria-label*="connect"]',
 ]
 
 # "More" button on profile — the dropdown trigger next to Follow/Message.
 # This is the most critical selector — on Follow-primary profiles, Connect
 # is hidden behind this dropdown.
 CONNECT_BUTTON_MORE_DROPDOWN = [
-    # Exact text match — safe because "Show more"/"Load more" won't match
-    'button:text-is("More")',
-    # aria-label fallback
+    # aria-label is the most reliable (confirmed via diagnostic)
     'button[aria-label="More actions"]',
-    # Class-based fallbacks
+    # Class-based
     '.artdeco-dropdown__trigger:text-is("More")',
+    'button:text-is("More")',
 ]
 
 # Connect option inside the More dropdown menu
