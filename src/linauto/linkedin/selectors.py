@@ -47,7 +47,9 @@ SEND_INVITATION_BUTTON = [
 ]
 
 SEND_WITHOUT_NOTE = [
+    'button[aria-label="Send without a note"]',
     'button:has-text("Send without a note")',
+    'button.artdeco-button--muted:has-text("Send")',
 ]
 
 # ── Limit detection ───────────────────────────────────────────────────────

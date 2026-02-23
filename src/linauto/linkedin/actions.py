@@ -121,8 +121,9 @@ class LinkedInActions:
         await connect_btn.click()
         await self.delay.micro_delay(0.5, 1.5)
 
-        # 7. Add personalized note if message provided
+        # 7. Handle the "Add a note to your invitation?" modal
         if message:
+            # Click "Add a note" to open the note field
             add_note_btn = await self._find_element(selectors.ADD_NOTE_BUTTON, timeout_ms=3000)
             if add_note_btn:
                 await add_note_btn.click()
@@ -132,18 +133,21 @@ class LinkedInActions:
                 if note_field:
                     await note_field.click()
                     await self.delay.micro_delay(0.2, 0.5)
-                    # Type message with human-like delays
                     await self.delay.type_text(note_field, message)
                     await self.delay.micro_delay(0.5, 1.0)
                 else:
                     logger.warning("action.note_field_not_found", url=profile_url)
 
-        # 8. Click Send
-        send_btn = await self._find_element(selectors.SEND_INVITATION_BUTTON, timeout_ms=3000)
-        if not send_btn:
-            # Try "Send without a note" as fallback
-            send_btn = await self._find_element(selectors.SEND_WITHOUT_NOTE, timeout_ms=2000)
+            # After adding note, click "Send invitation" / "Send"
+            send_btn = await self._find_element(selectors.SEND_INVITATION_BUTTON, timeout_ms=3000)
+        else:
+            # No message — click "Send without a note" directly
+            send_btn = await self._find_element(selectors.SEND_WITHOUT_NOTE, timeout_ms=3000)
+            if not send_btn:
+                # Fallback: some modals just have a "Send" button
+                send_btn = await self._find_element(selectors.SEND_INVITATION_BUTTON, timeout_ms=2000)
 
+        # 8. Click Send
         if send_btn:
             await send_btn.click()
             await self.delay.micro_delay(1.0, 2.0)
