@@ -378,16 +378,27 @@ class LinkedInActions:
                 details={"url": profile_url},
             )
 
-        # 8. Check for limit/safety signals
+        # 8. Check for limit/safety signals AFTER send was clicked.
+        # IMPORTANT: At this point the connection request has already been sent.
+        # If we detect a CAPTCHA here, still return SUCCESS so the lead is
+        # correctly marked as sent. Only rate limits and session expiry should
+        # override, since those may indicate the request didn't go through.
         detection = await self.detector.check_after_action(self.page)
         if detection.requires_cooldown:
+            # Rate limit may mean the request was blocked — report as limit reached
             return ActionResult(
                 ActionStatus.LIMIT_REACHED,
                 reason=detection.detected.value,
                 details={"detection": detection.details},
             )
         if detection.detected == DetectionType.CAPTCHA:
-            return ActionResult(ActionStatus.CAPTCHA, reason="captcha_detected")
+            # CAPTCHA after send click — request likely went through already.
+            # Log warning but treat as success.
+            logger.warning(
+                "action.captcha_after_send",
+                url=profile_url,
+                note="Request likely sent before CAPTCHA appeared",
+            )
         if detection.detected == DetectionType.SESSION_EXPIRED:
             return ActionResult(ActionStatus.SESSION_EXPIRED)
 
