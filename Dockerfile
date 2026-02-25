@@ -2,24 +2,26 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy application
-COPY . .
+# 1. Install Playwright browser + system deps (rarely changes — cached)
+RUN pip install --no-cache-dir playwright playwright-stealth \
+    && playwright install --with-deps chromium
 
-# Install Python dependencies
+# 2. Install Python dependencies only (re-runs only when pyproject.toml changes)
+COPY pyproject.toml .
+COPY src/linauto/__init__.py src/linauto/__init__.py
 RUN pip install --no-cache-dir .
 
-# Install Playwright Chromium browser + system dependencies
-RUN playwright install --with-deps chromium
+# 3. Copy application source (changes frequently — fast layer)
+COPY . .
 
-# Create data directories
+# 4. Create data directories
 RUN mkdir -p data/browser_data data/logs
 
-# Run as non-root user — copy Playwright browsers to appuser's home
+# 5. Run as non-root user — copy Playwright browsers to appuser's home
 RUN useradd -m appuser && chown -R appuser:appuser /app \
     && mkdir -p /home/appuser/.cache \
     && cp -r /root/.cache/ms-playwright /home/appuser/.cache/ms-playwright \
     && chown -R appuser:appuser /home/appuser/.cache
 USER appuser
 
-# Default command: run the scheduler
 CMD ["python", "-m", "linauto", "run"]
