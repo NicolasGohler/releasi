@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     typing_delay_max_ms: int = 150
 
     # Warm-up schedule: list of [min_per_day, max_per_day] per week
-    warmup_schedule: list[list[int]] = Field(default=[[8, 12], [10, 14], [14, 18]])
+    warmup_schedule: list[list[int]] = Field(default=[[15, 20], [20, 25], [25, 30]])
     # Legacy warmup_ramp kept for backward compat
     warmup_ramp: list[dict] = Field(default=[
         {"daily": 5, "weekly": 20},
