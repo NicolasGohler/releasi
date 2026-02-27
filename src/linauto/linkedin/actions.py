@@ -366,8 +366,16 @@ class LinkedInActions:
                     timeout_ms=2000,
                 )
 
-        # 7. Click Send
+        # 7. Click Send (check if button is enabled first)
         if send_btn:
+            if await send_btn.is_disabled():
+                logger.info("action.send_button_disabled", url=profile_url)
+                await self._debug_screenshot("send_btn_disabled")
+                return ActionResult(
+                    ActionStatus.SKIPPED,
+                    reason="send_button_disabled",
+                    details={"url": profile_url},
+                )
             await send_btn.click()
             await self.delay.micro_delay(1.0, 2.0)
         else:

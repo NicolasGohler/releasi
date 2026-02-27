@@ -139,6 +139,15 @@ class CampaignExecutor:
 
         except Exception as e:
             logger.error("executor.single_lead_failed", error=str(e))
+            try:
+                await self.repo.update_lead(
+                    lead,
+                    status=LeadStatus.ERROR,
+                    retry_count=lead.retry_count + 1,
+                    error_message=str(e)[:500],
+                )
+            except Exception:
+                pass  # Best-effort — don't mask the original error
             result["fatal"] = True
         finally:
             await browser.close()

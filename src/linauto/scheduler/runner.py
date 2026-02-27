@@ -132,18 +132,27 @@ async def dispatch():
 
             campaigns = await repo.get_active_campaigns(account.id)
             for campaign in campaigns:
-                due_leads = await repo.get_scheduled_leads(campaign.id, before=now)
+                due_leads = list(await repo.get_scheduled_leads(campaign.id, before=now))
                 if not due_leads:
                     continue
 
-                # Limit to remaining daily target
+                # Calculate target for this dispatch cycle
+                target = len(due_leads)
                 if remaining is not None:
-                    due_leads = due_leads[:remaining]
+                    target = min(target, remaining)
 
                 from linauto.campaign.executor import CampaignExecutor
                 executor = CampaignExecutor(repo)
 
-                for lead in due_leads:
+                successful_sends = 0
+                attempts = 0
+                max_attempts = target * 3  # Safety cap: don't try more than 3x target
+                lead_queue = list(due_leads[:target])
+                stop_account = False
+
+                while lead_queue and successful_sends < target and attempts < max_attempts:
+                    attempts += 1
+                    lead = lead_queue.pop(0)
                     result = await executor.execute_single_lead(account, campaign, lead)
 
                     if result.get("limit_reached"):
@@ -167,11 +176,37 @@ async def dispatch():
                             account=account.name,
                             resume=str(resume),
                         )
+                        stop_account = True
                         break
 
                     if result.get("fatal"):
                         # CAPTCHA or session expired — stop this account
+                        stop_account = True
                         break
+
+                    if result.get("success"):
+                        successful_sends += 1
+                    else:
+                        # Lead was skipped/errored — backfill from pending pool
+                        backfill = await repo.get_pending_leads(campaign.id, limit=1)
+                        if backfill:
+                            lead_queue.append(backfill[0])
+                            logger.info(
+                                "dispatch.backfill_lead",
+                                campaign=campaign.name,
+                                new_lead=backfill[0].linkedin_url,
+                            )
+
+                if successful_sends > 0:
+                    logger.info(
+                        "dispatch.campaign_done",
+                        campaign=campaign.name,
+                        successful=successful_sends,
+                        target=target,
+                    )
+
+                if stop_account:
+                    break
 
     except Exception as e:
         logger.error("dispatch.failed", error=str(e))
