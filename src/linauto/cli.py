@@ -92,9 +92,6 @@ def account_add(
     proxy: str = typer.Option(
         None, "--proxy", help="Proxy URL (e.g., 'http://user:pass@host:port')"
     ),
-    warmup: bool = typer.Option(
-        True, "--warmup/--no-warmup", help="Enable warmup ramp for new account"
-    ),
 ):
     """Add a new LinkedIn account with its session cookie."""
     async def _add():
@@ -104,21 +101,15 @@ def account_add(
             console.print(f"[red]Account '{name}' already exists.[/red]")
             raise typer.Exit(1)
 
-        from datetime import date
         kwargs = {"timezone": timezone}
         if proxy:
             kwargs["proxy_url"] = proxy
-        if warmup:
-            kwargs["warmup_enabled"] = True
-            kwargs["warmup_start_date"] = date.today()
 
         account = await repo.create_account(name=name, li_at_cookie=li_at, **kwargs)
         console.print(f"[green]Account '{name}' added (id: {account.id[:8]}...)[/green]")
         console.print(f"  Timezone: {timezone}")
         if proxy:
             console.print(f"  Proxy: configured")
-        if warmup:
-            console.print(f"  Warmup: enabled (starting today)")
         await _cleanup(session)
 
     _run(_add())

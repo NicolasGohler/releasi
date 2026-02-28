@@ -11,7 +11,6 @@ from typing import Optional, List
 import structlog
 
 from linauto.config import get_settings
-from linauto.scheduler.warmup import get_daily_target
 
 logger = structlog.get_logger()
 
@@ -40,7 +39,7 @@ def generate_daily_plan(
     account_id: str,
     day: date,
     pending_lead_ids: List[str],
-    warmup_start: Optional[date] = None,
+    daily_limit: int = 20,
     timezone_str: Optional[str] = None,
     is_weekend: Optional[bool] = None,
 ) -> List[ScheduledSlot]:
@@ -78,21 +77,18 @@ def generate_daily_plan(
     if is_weekend and not settings.weekend_enabled:
         return []
 
-    # Weekday: determine daily target
-    daily_target = None
-    if warmup_start:
-        daily_target = get_daily_target(account_id, day, warmup_start, settings.warmup_schedule)
-
     # If no pending leads, return noise-only plan
     if not pending_lead_ids:
         return _generate_noise_only_plan(rng, work_start, work_end, settings)
 
+    # Daily target = daily_limit with ±15% variation (e.g. 20 → 17-23)
+    variation = max(1, int(daily_limit * 0.15))
+    daily_target = rng.randint(daily_limit - variation, daily_limit + variation)
+    daily_target = max(1, daily_target)
+
     # Cap by available leads
     available = len(pending_lead_ids)
-    if daily_target is not None:
-        target = min(daily_target, available)
-    else:
-        target = available  # Post-warmup: send as many as we can
+    target = min(daily_target, available)
 
     if target == 0:
         return _generate_noise_only_plan(rng, work_start, work_end, settings)

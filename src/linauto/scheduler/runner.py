@@ -57,13 +57,12 @@ async def daily_planning_sweep():
                     continue
 
                 lead_ids = [l.id for l in pending]
-                warmup_start = account.warmup_start_date if account.warmup_enabled else None
 
                 plan = generate_daily_plan(
                     account_id=account.id,
                     day=date.today(),
                     pending_lead_ids=lead_ids,
-                    warmup_start=warmup_start,
+                    daily_limit=account.daily_limit,
                     timezone_str=account.timezone,
                 )
 
@@ -118,11 +117,11 @@ async def dispatch():
             if account.paused_until and not is_cooldown_expired(account.paused_until):
                 continue
 
-            # Check warmup limits
+            # Check daily limits
             sent_today_count = await repo.get_daily_requests_sent(account.id)
             can_send, remaining = await rate_limits.can_send_today(
                 account.id,
-                account.warmup_start_date if account.warmup_enabled else None,
+                account.daily_limit,
                 sent_today_count,
             )
 

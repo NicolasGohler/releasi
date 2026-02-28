@@ -5,9 +5,6 @@ export interface Account {
   daily_limit: number;
   weekly_limit: number;
   timezone: string | null;
-  warmup_enabled: boolean;
-  warmup_start_date: string | null;
-  warmup_week: number;
   paused_until: string | null;
   created_at: string;
   updated_at: string;

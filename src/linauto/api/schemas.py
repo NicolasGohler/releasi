@@ -16,9 +16,6 @@ class AccountOut(BaseModel):
     daily_limit: int
     weekly_limit: int
     timezone: Optional[str] = None
-    warmup_enabled: bool
-    warmup_start_date: Optional[date] = None
-    warmup_week: int
     paused_until: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
@@ -34,7 +31,6 @@ class AccountCreate(BaseModel):
     user_agent: Optional[str] = None
     timezone: Optional[str] = "Europe/Berlin"
     proxy_url: Optional[str] = None
-    warmup_enabled: bool = False
 
 
 class AccountUpdate(BaseModel):

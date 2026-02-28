@@ -83,10 +83,7 @@ export default function AccountDetailPage({
         <StatCard label="Sent (30d)" value={totalSent} />
         <StatCard label="Accepted" value={totalAccepted} sub={`${acceptRate}% rate`} />
         <StatCard label="Errors" value={totalErrors} />
-        <StatCard
-          label="Warmup"
-          value={account.warmup_enabled ? `Week ${account.warmup_week}` : "Off"}
-        />
+        <StatCard label="Daily Target" value={account.daily_limit} />
       </div>
 
       <Tabs defaultValue="stats">

@@ -58,15 +58,6 @@ class Settings(BaseSettings):
     typing_delay_min_ms: int = 50
     typing_delay_max_ms: int = 150
 
-    # Warm-up schedule: list of [min_per_day, max_per_day] per week
-    warmup_schedule: list[list[int]] = Field(default=[[15, 20], [20, 25], [25, 30]])
-    # Legacy warmup_ramp kept for backward compat
-    warmup_ramp: list[dict] = Field(default=[
-        {"daily": 5, "weekly": 20},
-        {"daily": 10, "weekly": 40},
-        {"daily": 15, "weekly": 60},
-    ])
-
     # Cooldown
     cooldown_resume_hour_min: int = 8
     cooldown_resume_hour_max: int = 11

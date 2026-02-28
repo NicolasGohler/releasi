@@ -48,12 +48,8 @@ export default function AccountsPage() {
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-sm">
                     <div>
-                      <p className="text-xs text-muted-foreground">Warmup</p>
-                      <p>
-                        {a.warmup_enabled
-                          ? `Week ${a.warmup_week}`
-                          : "Disabled"}
-                      </p>
+                      <p className="text-xs text-muted-foreground">Daily Target</p>
+                      <p>{a.daily_limit}/day</p>
                     </div>
                     <div>
                       <p className="text-xs text-muted-foreground">Timezone</p>

@@ -42,7 +42,6 @@ export const createAccount = (data: {
   name: string;
   li_at_cookie: string;
   timezone?: string;
-  warmup_enabled?: boolean;
 }) => apiFetch<Account>("/accounts", { method: "POST", body: JSON.stringify(data) });
 
 export const updateAccount = (

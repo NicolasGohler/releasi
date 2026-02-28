@@ -26,7 +26,7 @@ export default function NewAccountPage() {
     }
 
     createAccount.mutate(
-      { name, li_at_cookie: cookie, timezone, warmup_enabled: true },
+      { name, li_at_cookie: cookie, timezone },
       {
         onSuccess: (account) => {
           toast.success("Account created");

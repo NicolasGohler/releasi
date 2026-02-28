@@ -1,49 +1,45 @@
-"""Rate tracking — no artificial cap post-warmup, enforces warmup daily target."""
+"""Rate tracking — enforces daily_limit as a target with natural variation."""
 from __future__ import annotations
 
+import hashlib
+import random
 from datetime import date
-from typing import Optional, Tuple
+from typing import Tuple
 
 import structlog
-
-from linauto.scheduler.warmup import get_daily_target
 
 logger = structlog.get_logger()
 
 
+def _daily_target(account_id: str, daily_limit: int) -> int:
+    """Apply ±15% deterministic variation to daily_limit."""
+    key = f"{account_id}-{date.today().isoformat()}"
+    seed = int(hashlib.sha256(key.encode()).hexdigest()[:8], 16)
+    rng = random.Random(seed)
+    variation = max(1, int(daily_limit * 0.15))
+    return max(1, rng.randint(daily_limit - variation, daily_limit + variation))
+
+
 async def can_send_today(
     account_id: str,
-    warmup_start: Optional[date],
+    daily_limit: int,
     sent_today: int,
-    warmup_schedule: Optional[list] = None,
-) -> Tuple[bool, Optional[int]]:
+) -> Tuple[bool, int]:
     """
     Check if we can still send connection requests today.
 
     Returns:
         (can_send, remaining_today)
-        remaining_today is None if post-warmup (no cap).
     """
-    if warmup_start is None:
-        # Warmup not enabled — no cap
-        return True, None
-
-    daily_target = get_daily_target(
-        account_id, date.today(), warmup_start, warmup_schedule
-    )
-
-    if daily_target is None:
-        # Post-warmup: no artificial cap
-        return True, None
-
-    remaining = daily_target - sent_today
+    target = _daily_target(account_id, daily_limit)
+    remaining = target - sent_today
     can_send = remaining > 0
 
     if not can_send:
         logger.info(
             "limits.daily_target_reached",
             account_id=account_id,
-            target=daily_target,
+            target=target,
             sent=sent_today,
         )
 

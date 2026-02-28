@@ -93,9 +93,6 @@ class Account(Base):
     weekly_limit: Mapped[int] = mapped_column(Integer, default=80)
     timezone: Mapped[Optional[str]] = mapped_column(String(63), default="Europe/Berlin")
     proxy_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    warmup_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    warmup_start_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    warmup_week: Mapped[int] = mapped_column(Integer, default=0)
     paused_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
