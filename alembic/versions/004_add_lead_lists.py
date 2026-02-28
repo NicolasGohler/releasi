@@ -56,15 +56,11 @@ def upgrade() -> None:
     )
 
     # 3. Add lead_list_id column to leads (nullable — existing leads don't have one)
-    op.add_column(
-        "leads",
-        sa.Column(
-            "lead_list_id",
-            sa.String(36),
-            sa.ForeignKey("lead_lists.id"),
-            nullable=True,
-        ),
-    )
+    #    Use batch mode for SQLite compatibility (can't ALTER constraints directly)
+    with op.batch_alter_table("leads") as batch_op:
+        batch_op.add_column(
+            sa.Column("lead_list_id", sa.String(36), nullable=True),
+        )
     op.create_index("ix_leads_lead_list_id", "leads", ["lead_list_id"])
 
     # 4. SQLite doesn't support ALTER ENUM, but since we use VARCHAR-backed enums
@@ -74,7 +70,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_leads_lead_list_id", table_name="leads")
-    op.drop_column("leads", "lead_list_id")
+    with op.batch_alter_table("leads") as batch_op:
+        batch_op.drop_column("lead_list_id")
     op.drop_index("ix_campaign_lead_lists_lead_list_id", table_name="campaign_lead_lists")
     op.drop_index("ix_campaign_lead_lists_campaign_id", table_name="campaign_lead_lists")
     op.drop_table("campaign_lead_lists")
