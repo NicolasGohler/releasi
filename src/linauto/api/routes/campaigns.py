@@ -71,7 +71,7 @@ async def update_campaign(
     campaign = await repo.get_campaign(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    updates = body.model_dump(exclude_none=True)
+    updates = body.model_dump(exclude_unset=True)
     if updates:
         campaign = await repo.update_campaign(campaign, **updates)
     return await _enrich_campaign(repo, campaign)
