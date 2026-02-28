@@ -1,4 +1,4 @@
-"""Lead endpoints — paginated list and CSV upload."""
+"""Lead endpoints — paginated list, CSV upload, soft delete, restore, global library."""
 from __future__ import annotations
 
 import tempfile
@@ -66,7 +66,7 @@ async def import_csv(
 
     # Parse CSV using existing importer
     from linauto.campaign.importer import parse_csv
-    leads, result = parse_csv(tmp_path, campaign_id, existing_urls)
+    leads, result = parse_csv(tmp_path, campaign_id=campaign_id, existing_urls=existing_urls)
 
     if leads:
         count = await repo.bulk_create_leads(leads)
@@ -89,3 +89,47 @@ async def import_csv(
         no_url_skipped=result.no_url_skipped,
         errors=result.errors,
     )
+
+
+# ── Global Lead Library ───────────────────────────────────────────────
+
+@router.get("/leads", response_model=LeadPage)
+async def list_leads_global(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    lead_list_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    repo: Repository = Depends(get_repo),
+):
+    leads, total = await repo.list_leads_global(
+        page=page,
+        per_page=per_page,
+        lead_list_id=lead_list_id,
+        status_filter=status,
+        search=search,
+    )
+    return LeadPage(
+        items=[LeadOut.model_validate(l) for l in leads],
+        total=total,
+        page=page,
+        per_page=per_page,
+    )
+
+
+# ── Soft Delete / Restore ────────────────────────────────────────────
+
+@router.delete("/leads/{lead_id}", response_model=LeadOut)
+async def remove_lead(lead_id: str, repo: Repository = Depends(get_repo)):
+    lead = await repo.remove_lead(lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return LeadOut.model_validate(lead)
+
+
+@router.post("/leads/{lead_id}/restore", response_model=LeadOut)
+async def restore_lead(lead_id: str, repo: Repository = Depends(get_repo)):
+    lead = await repo.restore_lead(lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found or not removed")
+    return LeadOut.model_validate(lead)

@@ -52,6 +52,7 @@ class LeadStatus(str, enum.Enum):
     SKIPPED = "skipped"
     ERROR = "error"
     LIMIT_PAUSED = "limit_paused"
+    REMOVED = "removed"
 
 
 class ActionType(str, enum.Enum):
@@ -144,8 +145,11 @@ class Lead(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    campaign_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("campaigns.id"), index=True
+    campaign_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("campaigns.id"), nullable=True, index=True
+    )
+    lead_list_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("lead_lists.id"), nullable=True, index=True
     )
     linkedin_url: Mapped[str] = mapped_column(Text)
     first_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -173,7 +177,8 @@ class Lead(Base):
         DateTime, default=_utcnow, onupdate=_utcnow
     )
 
-    campaign: Mapped[Campaign] = relationship(back_populates="leads")
+    campaign: Mapped[Optional[Campaign]] = relationship(back_populates="leads")
+    lead_list: Mapped[Optional[LeadList]] = relationship(back_populates="leads")
 
 
 class ActionLog(Base):
@@ -216,3 +221,40 @@ class DailyStat(Base):
     followup_messages_sent: Mapped[int] = mapped_column(Integer, default=0)
     connections_accepted: Mapped[int] = mapped_column(Integer, default=0)
     errors: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class LeadList(Base):
+    __tablename__ = "lead_lists"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+    csv_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    total_leads: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+    leads: Mapped[List[Lead]] = relationship(back_populates="lead_list")
+    campaign_links: Mapped[List[CampaignLeadList]] = relationship(
+        back_populates="lead_list"
+    )
+
+
+class CampaignLeadList(Base):
+    __tablename__ = "campaign_lead_lists"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "lead_list_id", name="uq_campaign_lead_list"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    campaign_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("campaigns.id"), index=True
+    )
+    lead_list_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("lead_lists.id"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    campaign: Mapped[Campaign] = relationship()
+    lead_list: Mapped[LeadList] = relationship(back_populates="campaign_links")

@@ -145,7 +145,8 @@ def _build_column_mapping(headers: list) -> dict:
 
 def parse_csv(
     file_path: str,
-    campaign_id: str,
+    campaign_id: Optional[str] = None,
+    lead_list_id: Optional[str] = None,
     existing_urls: Optional[set] = None,
 ) -> tuple:
     """
@@ -153,12 +154,15 @@ def parse_csv(
 
     Args:
         file_path: Path to the CSV file
-        campaign_id: Campaign to assign leads to
-        existing_urls: Set of normalized URLs already in the campaign (for dedup)
+        campaign_id: Campaign to assign leads to (optional if lead_list_id provided)
+        lead_list_id: Lead list to assign leads to (optional if campaign_id provided)
+        existing_urls: Set of normalized URLs already in the target (for dedup)
 
     Returns:
         Tuple of (list[Lead], ImportResult)
     """
+    if not campaign_id and not lead_list_id:
+        raise ValueError("Either campaign_id or lead_list_id must be provided")
     existing_urls = existing_urls or set()
     result = ImportResult()
     leads = []
@@ -250,8 +254,7 @@ def parse_csv(
                 elif header != url_column:
                     extra_data[header] = value
 
-            lead = Lead(
-                campaign_id=campaign_id,
+            lead_kwargs = dict(
                 linkedin_url=linkedin_url,
                 first_name=first_name,
                 last_name=last_name,
@@ -259,6 +262,11 @@ def parse_csv(
                 title=title,
                 extra_data=extra_data if extra_data else None,
             )
+            if campaign_id:
+                lead_kwargs["campaign_id"] = campaign_id
+            if lead_list_id:
+                lead_kwargs["lead_list_id"] = lead_list_id
+            lead = Lead(**lead_kwargs)
             leads.append(lead)
             result.imported += 1
 

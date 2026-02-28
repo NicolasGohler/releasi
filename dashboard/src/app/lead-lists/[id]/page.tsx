@@ -1,0 +1,261 @@
+"use client";
+
+import { use, useState, useCallback } from "react";
+import {
+  useLeadList,
+  useLeadListLeads,
+  useImportCSVToList,
+  useCampaigns,
+  useAssignListToCampaign,
+  useUnassignListFromCampaign,
+} from "@/hooks/use-queries";
+import { PageHeader } from "@/components/layout/page-header";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "sonner";
+import { useDropzone } from "react-dropzone";
+
+export default function LeadListDetailPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = use(params);
+  const { data: list, isLoading } = useLeadList(id);
+  const [page, setPage] = useState(1);
+  const { data: leadsData } = useLeadListLeads(id, { page, per_page: 50 });
+  const importCSV = useImportCSVToList(id);
+  const { data: campaigns } = useCampaigns();
+  const assign = useAssignListToCampaign();
+  const unassign = useUnassignListFromCampaign();
+  const [selectedCampaign, setSelectedCampaign] = useState("");
+
+  const onDrop = useCallback(
+    (files: File[]) => {
+      const file = files[0];
+      if (!file) return;
+      importCSV.mutate(file, {
+        onSuccess: (data) =>
+          toast.success(
+            `Imported ${data.imported} leads (${data.duplicates_skipped} duplicates skipped)`
+          ),
+        onError: (err) => toast.error(`Import failed: ${err.message}`),
+      });
+    },
+    [importCSV]
+  );
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: { "text/csv": [".csv"] },
+    maxFiles: 1,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-40" />
+      </div>
+    );
+  }
+
+  if (!list) {
+    return <p className="text-muted-foreground">Lead list not found</p>;
+  }
+
+  const assignedIds = new Set(list.campaigns.map((c) => c.id));
+  const availableCampaigns =
+    campaigns?.filter((c) => !assignedIds.has(c.id)) ?? [];
+
+  const totalPages = leadsData ? Math.ceil(leadsData.total / leadsData.per_page) : 1;
+
+  return (
+    <div className="space-y-6">
+      <PageHeader title={list.name}>
+        <span className="text-sm text-muted-foreground">
+          {list.total_leads} leads
+        </span>
+      </PageHeader>
+
+      {/* CSV Upload */}
+      <div
+        {...getRootProps()}
+        className={`flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 transition-colors ${
+          isDragActive
+            ? "border-primary bg-primary/5"
+            : "border-border hover:border-muted-foreground/50"
+        }`}
+      >
+        <input {...getInputProps()} />
+        {importCSV.isPending ? (
+          <p className="text-sm text-muted-foreground">Uploading...</p>
+        ) : (
+          <div className="text-center">
+            <p className="text-sm font-medium">
+              Drop a CSV to add leads, or click to browse
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Auto-detects LinkedIn URLs and maps columns
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Campaigns using this list */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Assigned Campaigns</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {list.campaigns.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Not assigned to any campaigns
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {list.campaigns.map((c) => (
+                <div
+                  key={c.id}
+                  className="flex items-center justify-between rounded-md bg-muted px-3 py-2"
+                >
+                  <span className="text-sm">{c.name}</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      unassign.mutate(
+                        { listId: id, campaignId: c.id },
+                        {
+                          onSuccess: (data) =>
+                            toast.success(
+                              `Unassigned — ${data.leads_removed} leads removed`
+                            ),
+                          onError: (err) => toast.error(err.message),
+                        }
+                      )
+                    }
+                  >
+                    Unassign
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {availableCampaigns.length > 0 && (
+            <div className="flex gap-2 pt-2">
+              <select
+                className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
+                value={selectedCampaign}
+                onChange={(e) => setSelectedCampaign(e.target.value)}
+              >
+                <option value="">Select campaign...</option>
+                {availableCampaigns.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+              <Button
+                disabled={!selectedCampaign || assign.isPending}
+                onClick={() => {
+                  assign.mutate(
+                    { listId: id, campaignId: selectedCampaign },
+                    {
+                      onSuccess: (data) => {
+                        toast.success(`Assigned — ${data.leads_added} leads added`);
+                        setSelectedCampaign("");
+                      },
+                      onError: (err) => toast.error(err.message),
+                    }
+                  );
+                }}
+              >
+                Assign
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Leads table */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Leads ({leadsData?.total ?? 0})</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {!leadsData || leadsData.items.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No leads in this list</p>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="pb-2 font-medium">Name</th>
+                      <th className="pb-2 font-medium">Company</th>
+                      <th className="pb-2 font-medium">Title</th>
+                      <th className="pb-2 font-medium">LinkedIn</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {leadsData.items.map((lead) => (
+                      <tr key={lead.id} className="border-b last:border-0">
+                        <td className="py-2">
+                          {[lead.first_name, lead.last_name]
+                            .filter(Boolean)
+                            .join(" ") || "—"}
+                        </td>
+                        <td className="py-2">{lead.company ?? "—"}</td>
+                        <td className="py-2">{lead.title ?? "—"}</td>
+                        <td className="py-2">
+                          <a
+                            href={lead.linkedin_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-500 hover:underline truncate block max-w-[200px]"
+                          >
+                            {lead.linkedin_url.replace(
+                              "https://www.linkedin.com/in/",
+                              ""
+                            )}
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between mt-4">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={page <= 1}
+                    onClick={() => setPage(page - 1)}
+                  >
+                    Previous
+                  </Button>
+                  <span className="text-sm text-muted-foreground">
+                    Page {page} of {totalPages}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={page >= totalPages}
+                    onClick={() => setPage(page + 1)}
+                  >
+                    Next
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

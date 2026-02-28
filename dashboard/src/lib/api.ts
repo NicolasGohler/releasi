@@ -2,6 +2,8 @@ import type {
   Account,
   Campaign,
   Lead,
+  LeadList,
+  LeadListDetail,
   LeadPage,
   ActionLog,
   DailyStat,
@@ -114,6 +116,85 @@ export const importCSV = async (campaignId: string, file: File): Promise<ImportR
 
   return res.json();
 };
+
+// ── Lead Lists ───────────────────────────────────────────────────────────
+
+export const fetchLeadLists = () => apiFetch<LeadList[]>("/lead-lists");
+
+export const fetchLeadList = (id: string) =>
+  apiFetch<LeadListDetail>(`/lead-lists/${id}`);
+
+export const createLeadList = (data: { name: string }) =>
+  apiFetch<LeadList>("/lead-lists", { method: "POST", body: JSON.stringify(data) });
+
+export const deleteLeadList = (id: string) =>
+  apiFetch<{ ok: boolean }>(`/lead-lists/${id}`, { method: "DELETE" });
+
+export const importCSVToList = async (listId: string, file: File): Promise<ImportResponse> => {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const res = await fetch(`${API_URL}/api/v1/lead-lists/${listId}/import`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${API_KEY}` },
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `API error: ${res.status}`);
+  }
+
+  return res.json();
+};
+
+export const fetchLeadListLeads = (
+  listId: string,
+  params?: { page?: number; per_page?: number }
+) => {
+  const sp = new URLSearchParams();
+  if (params?.page) sp.set("page", String(params.page));
+  if (params?.per_page) sp.set("per_page", String(params.per_page));
+  const qs = sp.toString();
+  return apiFetch<LeadPage>(`/lead-lists/${listId}/leads${qs ? `?${qs}` : ""}`);
+};
+
+export const assignListToCampaign = (listId: string, campaignId: string) =>
+  apiFetch<{ leads_added: number }>(`/lead-lists/${listId}/assign`, {
+    method: "POST",
+    body: JSON.stringify({ campaign_id: campaignId }),
+  });
+
+export const unassignListFromCampaign = (listId: string, campaignId: string) =>
+  apiFetch<{ leads_removed: number }>(`/lead-lists/${listId}/unassign`, {
+    method: "POST",
+    body: JSON.stringify({ campaign_id: campaignId }),
+  });
+
+// ── Global Leads / Lead Management ──────────────────────────────────────
+
+export const fetchGlobalLeads = (params?: {
+  page?: number;
+  per_page?: number;
+  lead_list_id?: string;
+  status?: string;
+  search?: string;
+}) => {
+  const sp = new URLSearchParams();
+  if (params?.page) sp.set("page", String(params.page));
+  if (params?.per_page) sp.set("per_page", String(params.per_page));
+  if (params?.lead_list_id) sp.set("lead_list_id", params.lead_list_id);
+  if (params?.status) sp.set("status", params.status);
+  if (params?.search) sp.set("search", params.search);
+  const qs = sp.toString();
+  return apiFetch<LeadPage>(`/leads${qs ? `?${qs}` : ""}`);
+};
+
+export const deleteLead = (id: string) =>
+  apiFetch<Lead>(`/leads/${id}`, { method: "DELETE" });
+
+export const restoreLead = (id: string) =>
+  apiFetch<Lead>(`/leads/${id}/restore`, { method: "POST" });
 
 // ── Activity ──────────────────────────────────────────────────────────────
 

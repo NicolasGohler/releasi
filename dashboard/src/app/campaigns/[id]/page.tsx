@@ -2,12 +2,15 @@
 
 import { use, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   useCampaign,
   useActivateCampaign,
   usePauseCampaign,
   useResetLeads,
-  useAccountActivity,
+  useLeadLists,
+  useAssignListToCampaign,
+  useUnassignListFromCampaign,
 } from "@/hooks/use-queries";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
@@ -34,6 +37,10 @@ export default function CampaignDetailPage({
   const activate = useActivateCampaign();
   const pause = usePauseCampaign();
   const resetLeads = useResetLeads();
+  const { data: allLists } = useLeadLists();
+  const assign = useAssignListToCampaign();
+  const unassign = useUnassignListFromCampaign();
+  const [selectedList, setSelectedList] = useState("");
 
   // Fetch campaign-specific activity via account activity (filtered client-side)
   const { data: activity } = useQuery({
@@ -67,6 +74,16 @@ export default function CampaignDetailPage({
   const sent = counts["connection_requested"] ?? 0;
   const connected = counts["connected"] ?? 0;
   const errors = counts["error"] ?? 0;
+
+  // Determine which lists are already assigned to this campaign
+  const assignedListIds = new Set(
+    allLists
+      ?.filter((ll) => ll.campaign_count > 0)
+      ?.map((ll) => ll.id) ?? []
+  );
+  // We don't have per-campaign assignment info from the list endpoint,
+  // so we show all lists as assignable and let the API dedup
+  const availableLists = allLists ?? [];
 
   return (
     <div className="space-y-6">
@@ -119,6 +136,7 @@ export default function CampaignDetailPage({
       <Tabs defaultValue="leads">
         <TabsList>
           <TabsTrigger value="leads">Leads</TabsTrigger>
+          <TabsTrigger value="lists">Lead Lists</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
           <TabsTrigger value="activity">Activity</TabsTrigger>
         </TabsList>
@@ -126,6 +144,69 @@ export default function CampaignDetailPage({
         <TabsContent value="leads" className="space-y-4 mt-4">
           <CSVUpload campaignId={id} />
           <LeadsTable campaignId={id} />
+        </TabsContent>
+
+        <TabsContent value="lists" className="mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Assigned Lead Lists</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {availableLists.length > 0 && (
+                <div className="flex gap-2">
+                  <select
+                    className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
+                    value={selectedList}
+                    onChange={(e) => setSelectedList(e.target.value)}
+                  >
+                    <option value="">Select a lead list...</option>
+                    {availableLists.map((ll) => (
+                      <option key={ll.id} value={ll.id}>
+                        {ll.name} ({ll.total_leads} leads)
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    disabled={!selectedList || assign.isPending}
+                    onClick={() => {
+                      assign.mutate(
+                        { listId: selectedList, campaignId: id },
+                        {
+                          onSuccess: (data) => {
+                            toast.success(
+                              `Assigned — ${data.leads_added} leads added`
+                            );
+                            setSelectedList("");
+                          },
+                          onError: (err) => toast.error(err.message),
+                        }
+                      );
+                    }}
+                  >
+                    Assign
+                  </Button>
+                </div>
+              )}
+
+              {availableLists.length === 0 && (
+                <div className="text-center py-4">
+                  <p className="text-sm text-muted-foreground">
+                    No lead lists available.{" "}
+                    <Link
+                      href="/lead-lists"
+                      className="text-blue-500 hover:underline"
+                    >
+                      Create one
+                    </Link>
+                  </p>
+                </div>
+              )}
+
+              <p className="text-xs text-muted-foreground pt-2">
+                Assigning a list copies its leads into this campaign. Unassigning marks those leads as removed.
+              </p>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="settings" className="mt-4">

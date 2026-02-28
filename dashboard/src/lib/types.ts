@@ -31,9 +31,24 @@ export interface Campaign {
   updated_at: string;
 }
 
+export interface LeadList {
+  id: string;
+  name: string;
+  csv_filename: string | null;
+  total_leads: number;
+  campaign_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LeadListDetail extends LeadList {
+  campaigns: { id: string; name: string }[];
+}
+
 export interface Lead {
   id: string;
   campaign_id: string;
+  lead_list_id: string | null;
   linkedin_url: string;
   first_name: string | null;
   last_name: string | null;

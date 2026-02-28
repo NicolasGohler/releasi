@@ -89,6 +89,7 @@ class CampaignUpdate(BaseModel):
 class LeadOut(BaseModel):
     id: str
     campaign_id: str
+    lead_list_id: Optional[str] = None
     linkedin_url: str
     first_name: Optional[str] = None
     last_name: Optional[str] = None
@@ -121,6 +122,43 @@ class ImportResponse(BaseModel):
     duplicates_skipped: int
     no_url_skipped: int
     errors: List[str]
+
+
+# ── Lead Lists ────────────────────────────────────────────────────────
+
+class LeadListOut(BaseModel):
+    id: str
+    name: str
+    csv_filename: Optional[str] = None
+    total_leads: int
+    campaign_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class LeadListCreate(BaseModel):
+    name: str
+
+
+class LeadListDetail(LeadListOut):
+    campaigns: List[Dict[str, str]] = []  # [{id, name}]
+
+
+class CampaignLeadListOut(BaseModel):
+    id: str
+    campaign_id: str
+    lead_list_id: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AssignListRequest(BaseModel):
+    campaign_id: str
 
 
 # ── Action Log ────────────────────────────────────────────────────────────

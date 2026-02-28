@@ -122,6 +122,119 @@ export function useImportCSV(campaignId: string) {
   });
 }
 
+// ── Lead Lists ───────────────────────────────────────────────────────────
+
+export function useLeadLists() {
+  return useQuery({ queryKey: ["lead-lists"], queryFn: api.fetchLeadLists });
+}
+
+export function useLeadList(id: string) {
+  return useQuery({
+    queryKey: ["lead-lists", id],
+    queryFn: () => api.fetchLeadList(id),
+  });
+}
+
+export function useCreateLeadList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.createLeadList,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["lead-lists"] }),
+  });
+}
+
+export function useDeleteLeadList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.deleteLeadList,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["lead-lists"] }),
+  });
+}
+
+export function useImportCSVToList(listId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: File) => api.importCSVToList(listId, file),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["lead-lists", listId] });
+      qc.invalidateQueries({ queryKey: ["lead-lists"] });
+    },
+  });
+}
+
+export function useLeadListLeads(
+  listId: string,
+  params?: { page?: number; per_page?: number }
+) {
+  return useQuery({
+    queryKey: ["lead-list-leads", listId, params],
+    queryFn: () => api.fetchLeadListLeads(listId, params),
+  });
+}
+
+export function useAssignListToCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ listId, campaignId }: { listId: string; campaignId: string }) =>
+      api.assignListToCampaign(listId, campaignId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["lead-lists"] });
+      qc.invalidateQueries({ queryKey: ["campaigns"] });
+    },
+  });
+}
+
+export function useUnassignListFromCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ listId, campaignId }: { listId: string; campaignId: string }) =>
+      api.unassignListFromCampaign(listId, campaignId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["lead-lists"] });
+      qc.invalidateQueries({ queryKey: ["campaigns"] });
+    },
+  });
+}
+
+// ── Global Leads ─────────────────────────────────────────────────────────
+
+export function useGlobalLeads(params?: {
+  page?: number;
+  per_page?: number;
+  lead_list_id?: string;
+  status?: string;
+  search?: string;
+}) {
+  return useQuery({
+    queryKey: ["global-leads", params],
+    queryFn: () => api.fetchGlobalLeads(params),
+  });
+}
+
+export function useDeleteLead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.deleteLead,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["global-leads"] });
+      qc.invalidateQueries({ queryKey: ["leads"] });
+      qc.invalidateQueries({ queryKey: ["campaigns"] });
+    },
+  });
+}
+
+export function useRestoreLead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.restoreLead,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["global-leads"] });
+      qc.invalidateQueries({ queryKey: ["leads"] });
+      qc.invalidateQueries({ queryKey: ["campaigns"] });
+    },
+  });
+}
+
 // ── Activity ──────────────────────────────────────────────────────────────
 
 export function useGlobalActivity() {

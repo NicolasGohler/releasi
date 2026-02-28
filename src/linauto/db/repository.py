@@ -13,6 +13,7 @@ from linauto.db.models import (
     Lead, LeadStatus,
     ActionLog, ActionType, ActionLogStatus,
     DailyStat,
+    LeadList, CampaignLeadList,
 )
 
 
@@ -406,3 +407,252 @@ class Repository:
         )
         await self.session.commit()
         return result.rowcount
+
+    # ── Lead Lists ────────────────────────────────────────────────────────
+
+    async def create_lead_list(self, name: str, csv_filename: str | None = None) -> LeadList:
+        lead_list = LeadList(name=name, csv_filename=csv_filename)
+        self.session.add(lead_list)
+        await self.session.commit()
+        await self.session.refresh(lead_list)
+        return lead_list
+
+    async def get_lead_list(self, lead_list_id: str) -> LeadList | None:
+        return await self.session.get(LeadList, lead_list_id)
+
+    async def get_lead_list_by_name(self, name: str) -> LeadList | None:
+        result = await self.session.execute(
+            select(LeadList).where(LeadList.name == name)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_lead_lists(self) -> Sequence[LeadList]:
+        result = await self.session.execute(
+            select(LeadList).order_by(LeadList.created_at.desc())
+        )
+        return result.scalars().all()
+
+    async def update_lead_list(self, lead_list: LeadList, **kwargs) -> LeadList:
+        for key, value in kwargs.items():
+            setattr(lead_list, key, value)
+        await self.session.commit()
+        await self.session.refresh(lead_list)
+        return lead_list
+
+    async def delete_lead_list(self, lead_list_id: str) -> bool:
+        """Delete a lead list and its campaign links. Leaves leads intact (nulls FK)."""
+        lead_list = await self.get_lead_list(lead_list_id)
+        if not lead_list:
+            return False
+        # Remove campaign links
+        await self.session.execute(
+            select(CampaignLeadList).where(
+                CampaignLeadList.lead_list_id == lead_list_id
+            )
+        )
+        from sqlalchemy import delete as sa_delete
+        await self.session.execute(
+            sa_delete(CampaignLeadList).where(
+                CampaignLeadList.lead_list_id == lead_list_id
+            )
+        )
+        # Null out lead_list_id on leads
+        await self.session.execute(
+            update(Lead)
+            .where(Lead.lead_list_id == lead_list_id)
+            .values(lead_list_id=None)
+        )
+        await self.session.delete(lead_list)
+        await self.session.commit()
+        return True
+
+    async def get_list_leads(
+        self, lead_list_id: str, page: int = 1, per_page: int = 50
+    ) -> tuple:
+        """Return (leads, total_count) for a lead list."""
+        stmt = select(Lead).where(Lead.lead_list_id == lead_list_id)
+        count_stmt = select(func.count()).select_from(Lead).where(
+            Lead.lead_list_id == lead_list_id
+        )
+        total = (await self.session.execute(count_stmt)).scalar_one()
+        stmt = stmt.order_by(Lead.created_at).offset((page - 1) * per_page).limit(per_page)
+        result = await self.session.execute(stmt)
+        return result.scalars().all(), total
+
+    async def get_list_lead_urls(self, lead_list_id: str) -> set:
+        """Get all linkedin_urls in a lead list (for dedup)."""
+        result = await self.session.execute(
+            select(Lead.linkedin_url).where(Lead.lead_list_id == lead_list_id)
+        )
+        return {r[0] for r in result.all()}
+
+    # ── Campaign ↔ Lead List Assignment ───────────────────────────────────
+
+    async def assign_list_to_campaign(
+        self, lead_list_id: str, campaign_id: str
+    ) -> int:
+        """
+        Assign a lead list to a campaign: copies leads from the list into the
+        campaign (deduplicating by linkedin_url). Returns number of leads added.
+        """
+        # Check if already assigned
+        existing = await self.session.execute(
+            select(CampaignLeadList).where(
+                CampaignLeadList.campaign_id == campaign_id,
+                CampaignLeadList.lead_list_id == lead_list_id,
+            )
+        )
+        if not existing.scalar_one_or_none():
+            link = CampaignLeadList(
+                campaign_id=campaign_id, lead_list_id=lead_list_id
+            )
+            self.session.add(link)
+
+        # Get existing URLs in campaign for dedup
+        existing_urls_result = await self.session.execute(
+            select(Lead.linkedin_url).where(Lead.campaign_id == campaign_id)
+        )
+        existing_urls = {r[0] for r in existing_urls_result.all()}
+
+        # Get leads from the list
+        list_leads_result = await self.session.execute(
+            select(Lead).where(Lead.lead_list_id == lead_list_id)
+        )
+        list_leads = list_leads_result.scalars().all()
+
+        new_leads = []
+        for source_lead in list_leads:
+            if source_lead.linkedin_url in existing_urls:
+                continue
+            existing_urls.add(source_lead.linkedin_url)
+            new_lead = Lead(
+                campaign_id=campaign_id,
+                lead_list_id=lead_list_id,
+                linkedin_url=source_lead.linkedin_url,
+                first_name=source_lead.first_name,
+                last_name=source_lead.last_name,
+                company=source_lead.company,
+                title=source_lead.title,
+                extra_data=source_lead.extra_data,
+            )
+            new_leads.append(new_lead)
+
+        if new_leads:
+            self.session.add_all(new_leads)
+
+        await self.session.commit()
+        return len(new_leads)
+
+    async def unassign_list_from_campaign(
+        self, lead_list_id: str, campaign_id: str
+    ) -> int:
+        """
+        Unassign a lead list from a campaign: marks leads from that list as REMOVED.
+        Returns number of leads removed.
+        """
+        from sqlalchemy import delete as sa_delete
+
+        # Remove the junction link
+        await self.session.execute(
+            sa_delete(CampaignLeadList).where(
+                CampaignLeadList.campaign_id == campaign_id,
+                CampaignLeadList.lead_list_id == lead_list_id,
+            )
+        )
+
+        # Mark leads from this list in this campaign as REMOVED
+        result = await self.session.execute(
+            update(Lead)
+            .where(
+                Lead.campaign_id == campaign_id,
+                Lead.lead_list_id == lead_list_id,
+                Lead.status != LeadStatus.REMOVED,
+            )
+            .values(status=LeadStatus.REMOVED)
+        )
+        await self.session.commit()
+        return result.rowcount
+
+    async def get_campaign_lists(self, campaign_id: str) -> Sequence[CampaignLeadList]:
+        """Get all lead list links for a campaign."""
+        result = await self.session.execute(
+            select(CampaignLeadList).where(
+                CampaignLeadList.campaign_id == campaign_id
+            )
+        )
+        return result.scalars().all()
+
+    async def get_list_campaigns(self, lead_list_id: str) -> Sequence[CampaignLeadList]:
+        """Get all campaign links for a lead list."""
+        result = await self.session.execute(
+            select(CampaignLeadList).where(
+                CampaignLeadList.lead_list_id == lead_list_id
+            )
+        )
+        return result.scalars().all()
+
+    # ── Lead Soft Delete / Restore ────────────────────────────────────────
+
+    async def remove_lead(self, lead_id: str) -> Lead | None:
+        """Soft delete a lead by setting status to REMOVED."""
+        lead = await self.session.get(Lead, lead_id)
+        if not lead or lead.status == LeadStatus.REMOVED:
+            return lead
+        lead.status = LeadStatus.REMOVED
+        await self.session.commit()
+        await self.session.refresh(lead)
+        return lead
+
+    async def restore_lead(self, lead_id: str) -> Lead | None:
+        """Restore a removed lead back to PENDING."""
+        lead = await self.session.get(Lead, lead_id)
+        if not lead or lead.status != LeadStatus.REMOVED:
+            return lead
+        lead.status = LeadStatus.PENDING
+        lead.error_message = None
+        lead.retry_count = 0
+        lead.connection_requested_at = None
+        lead.connection_accepted_at = None
+        lead.followup_sent_at = None
+        lead.scheduled_at = None
+        await self.session.commit()
+        await self.session.refresh(lead)
+        return lead
+
+    # ── Global Leads (Lead Library) ───────────────────────────────────────
+
+    async def list_leads_global(
+        self,
+        page: int = 1,
+        per_page: int = 50,
+        lead_list_id: str | None = None,
+        status_filter: str | None = None,
+        search: str | None = None,
+    ) -> tuple:
+        """Return (leads, total_count) across all lists/campaigns."""
+        stmt = select(Lead)
+        count_stmt = select(func.count()).select_from(Lead)
+
+        if lead_list_id:
+            stmt = stmt.where(Lead.lead_list_id == lead_list_id)
+            count_stmt = count_stmt.where(Lead.lead_list_id == lead_list_id)
+
+        if status_filter:
+            stmt = stmt.where(Lead.status == status_filter)
+            count_stmt = count_stmt.where(Lead.status == status_filter)
+
+        if search:
+            pattern = f"%{search}%"
+            search_filter = or_(
+                Lead.first_name.ilike(pattern),
+                Lead.last_name.ilike(pattern),
+                Lead.company.ilike(pattern),
+                Lead.linkedin_url.ilike(pattern),
+            )
+            stmt = stmt.where(search_filter)
+            count_stmt = count_stmt.where(search_filter)
+
+        total = (await self.session.execute(count_stmt)).scalar_one()
+        stmt = stmt.order_by(Lead.created_at.desc()).offset((page - 1) * per_page).limit(per_page)
+        result = await self.session.execute(stmt)
+        return result.scalars().all(), total

@@ -28,12 +28,13 @@ def create_app() -> FastAPI:
     )
 
     # Mount routes
-    from linauto.api.routes import health, accounts, campaigns, leads, stats
+    from linauto.api.routes import health, accounts, campaigns, leads, lead_lists, stats
 
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(accounts.router, prefix="/api/v1")
     app.include_router(campaigns.router, prefix="/api/v1")
     app.include_router(leads.router, prefix="/api/v1")
+    app.include_router(lead_lists.router, prefix="/api/v1")
     app.include_router(stats.router, prefix="/api/v1")
 
     return app

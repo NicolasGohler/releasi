@@ -14,35 +14,50 @@ VALID_TRANSITIONS = {
         LeadStatus.SCHEDULED,
         LeadStatus.SKIPPED,
         LeadStatus.ERROR,
+        LeadStatus.REMOVED,
     ],
     LeadStatus.SCHEDULED: [
         LeadStatus.CONNECTION_REQUESTED,
         LeadStatus.SKIPPED,
         LeadStatus.ERROR,
         LeadStatus.LIMIT_PAUSED,
+        LeadStatus.REMOVED,
     ],
     LeadStatus.CONNECTION_REQUESTED: [
         LeadStatus.CONNECTED,
         LeadStatus.ERROR,
+        LeadStatus.REMOVED,
     ],
     LeadStatus.CONNECTED: [
         LeadStatus.FOLLOWUP_SCHEDULED,
         LeadStatus.COMPLETED,  # If no followup template
+        LeadStatus.REMOVED,
     ],
     LeadStatus.FOLLOWUP_SCHEDULED: [
         LeadStatus.FOLLOWUP_SENT,
         LeadStatus.ERROR,
+        LeadStatus.REMOVED,
     ],
     LeadStatus.FOLLOWUP_SENT: [
         LeadStatus.COMPLETED,
+        LeadStatus.REMOVED,
     ],
-    LeadStatus.SKIPPED: [],  # Terminal state
-    LeadStatus.COMPLETED: [],  # Terminal state
+    LeadStatus.SKIPPED: [
+        LeadStatus.REMOVED,
+    ],
+    LeadStatus.COMPLETED: [
+        LeadStatus.REMOVED,
+    ],
     LeadStatus.ERROR: [
         LeadStatus.PENDING,  # Retry resets to pending
+        LeadStatus.REMOVED,
     ],
     LeadStatus.LIMIT_PAUSED: [
         LeadStatus.SCHEDULED,  # Resume after cooldown
+        LeadStatus.REMOVED,
+    ],
+    LeadStatus.REMOVED: [
+        LeadStatus.PENDING,  # Restore
     ],
 }
 

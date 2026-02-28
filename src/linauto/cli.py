@@ -306,7 +306,7 @@ def campaign_import(
 
         # Parse CSV
         from linauto.campaign.importer import parse_csv
-        leads, report = parse_csv(csv_path, campaign.id, existing_urls)
+        leads, report = parse_csv(csv_path, campaign_id=campaign.id, existing_urls=existing_urls)
 
         if report.errors:
             for err in report.errors:
