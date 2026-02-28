@@ -101,6 +101,12 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_file: str = "data/logs/linauto.log"
 
+    # API
+    api_enabled: bool = False
+    api_key: str = ""
+    api_port: int = 8000
+    cors_origins: list[str] = Field(default=[])
+
     model_config = {"env_prefix": "LINAUTO_"}
 
 

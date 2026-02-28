@@ -334,9 +334,37 @@ async def check_acceptances():
         await session.close()
 
 
+async def _start_api_server():
+    """Start embedded FastAPI server if API is enabled."""
+    settings = get_settings()
+    if not settings.api_enabled:
+        return
+
+    try:
+        import uvicorn
+        from linauto.api.app import create_app
+    except ImportError:
+        logger.warning("api.missing_deps", msg="Install with pip install '.[api]' to enable the API")
+        return
+
+    app = create_app()
+    config = uvicorn.Config(
+        app,
+        host="0.0.0.0",
+        port=settings.api_port,
+        log_level="info",
+    )
+    server = uvicorn.Server(config)
+    logger.info("api.starting", port=settings.api_port)
+    asyncio.create_task(server.serve())
+
+
 async def start_scheduler():
     """Start the APScheduler daemon. Blocks until interrupted."""
     await init_db()
+
+    # Start API server if enabled
+    await _start_api_server()
 
     scheduler = AsyncIOScheduler()
 

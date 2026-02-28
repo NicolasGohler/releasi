@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Sequence
 
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from linauto.db.models import (
@@ -316,6 +316,73 @@ class Repository:
         )
         await self.session.commit()
         return result.rowcount
+
+    async def list_leads_paginated(
+        self,
+        campaign_id: str,
+        page: int = 1,
+        per_page: int = 50,
+        status_filter: str | None = None,
+        search: str | None = None,
+    ) -> tuple:
+        """Return (leads, total_count) with pagination, optional status filter and search."""
+        stmt = select(Lead).where(Lead.campaign_id == campaign_id)
+        count_stmt = select(func.count()).select_from(Lead).where(Lead.campaign_id == campaign_id)
+
+        if status_filter:
+            stmt = stmt.where(Lead.status == status_filter)
+            count_stmt = count_stmt.where(Lead.status == status_filter)
+
+        if search:
+            pattern = f"%{search}%"
+            search_filter = or_(
+                Lead.first_name.ilike(pattern),
+                Lead.last_name.ilike(pattern),
+                Lead.company.ilike(pattern),
+                Lead.linkedin_url.ilike(pattern),
+            )
+            stmt = stmt.where(search_filter)
+            count_stmt = count_stmt.where(search_filter)
+
+        total = (await self.session.execute(count_stmt)).scalar_one()
+
+        stmt = stmt.order_by(Lead.created_at).offset((page - 1) * per_page).limit(per_page)
+        result = await self.session.execute(stmt)
+        return result.scalars().all(), total
+
+    async def list_action_log(
+        self,
+        account_id: str | None = None,
+        campaign_id: str | None = None,
+        limit: int = 50,
+    ) -> Sequence[ActionLog]:
+        """List action log entries, newest first."""
+        stmt = select(ActionLog).order_by(ActionLog.created_at.desc())
+        if account_id:
+            stmt = stmt.where(ActionLog.account_id == account_id)
+        if campaign_id:
+            stmt = stmt.where(ActionLog.campaign_id == campaign_id)
+        stmt = stmt.limit(limit)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def get_daily_stats_range(
+        self,
+        account_id: str,
+        start_date: date,
+        end_date: date,
+    ) -> Sequence[DailyStat]:
+        """Get daily stats for an account within a date range."""
+        result = await self.session.execute(
+            select(DailyStat)
+            .where(
+                DailyStat.account_id == account_id,
+                DailyStat.date >= start_date,
+                DailyStat.date <= end_date,
+            )
+            .order_by(DailyStat.date)
+        )
+        return result.scalars().all()
 
     async def bulk_update_lead_status_for_account(
         self,
