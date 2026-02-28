@@ -22,6 +22,10 @@ export interface Campaign {
   connection_message_template: string | null;
   followup_message_template: string | null;
   followup_delay_hours: number;
+  followup_enabled: boolean;
+  followup_message_1: string | null;
+  followup_message_2: string | null;
+  followup_message_3: string | null;
   filter_no_photo: boolean;
   filter_min_connections: number | null;
   csv_filename: string | null;

@@ -30,7 +30,9 @@ VALID_TRANSITIONS = {
     ],
     LeadStatus.CONNECTED: [
         LeadStatus.FOLLOWUP_SCHEDULED,
+        LeadStatus.FOLLOWUP_SENT,  # Immediate follow-up on acceptance
         LeadStatus.COMPLETED,  # If no followup template
+        LeadStatus.ERROR,  # Follow-up attempt failed
         LeadStatus.REMOVED,
     ],
     LeadStatus.FOLLOWUP_SCHEDULED: [

@@ -37,6 +37,13 @@ class AccountCreate(BaseModel):
     warmup_enabled: bool = False
 
 
+class AccountUpdate(BaseModel):
+    name: Optional[str] = None
+    timezone: Optional[str] = None
+    daily_limit: Optional[int] = None
+    weekly_limit: Optional[int] = None
+
+
 class CookieUpdate(BaseModel):
     li_at_cookie: str
     li_a_cookie: Optional[str] = None
@@ -53,6 +60,10 @@ class CampaignOut(BaseModel):
     connection_message_template: Optional[str] = None
     followup_message_template: Optional[str] = None
     followup_delay_hours: int
+    followup_enabled: bool = False
+    followup_message_1: Optional[str] = None
+    followup_message_2: Optional[str] = None
+    followup_message_3: Optional[str] = None
     filter_no_photo: bool
     filter_min_connections: Optional[int] = None
     csv_filename: Optional[str] = None
@@ -71,6 +82,10 @@ class CampaignCreate(BaseModel):
     connection_message_template: Optional[str] = None
     followup_message_template: Optional[str] = None
     followup_delay_hours: int = 24
+    followup_enabled: bool = False
+    followup_message_1: Optional[str] = None
+    followup_message_2: Optional[str] = None
+    followup_message_3: Optional[str] = None
     filter_no_photo: bool = False
     filter_min_connections: Optional[int] = None
 
@@ -80,6 +95,10 @@ class CampaignUpdate(BaseModel):
     connection_message_template: Optional[str] = None
     followup_message_template: Optional[str] = None
     followup_delay_hours: Optional[int] = None
+    followup_enabled: Optional[bool] = None
+    followup_message_1: Optional[str] = None
+    followup_message_2: Optional[str] = None
+    followup_message_3: Optional[str] = None
     filter_no_photo: Optional[bool] = None
     filter_min_connections: Optional[int] = None
 

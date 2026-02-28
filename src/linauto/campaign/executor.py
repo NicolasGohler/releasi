@@ -1,8 +1,10 @@
 """Campaign execution orchestrator — ties browser actions, state machine, and logging together."""
 from __future__ import annotations
 
+import asyncio
+import random
 from datetime import datetime
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
 import structlog
 
@@ -148,6 +150,114 @@ class CampaignExecutor:
                 )
             except Exception:
                 pass  # Best-effort — don't mask the original error
+            result["fatal"] = True
+        finally:
+            await browser.close()
+
+        return result
+
+    async def execute_followup_sequence(
+        self,
+        account: Account,
+        campaign: Campaign,
+        lead: Lead,
+    ) -> dict:
+        """
+        Send 1-3 follow-up messages immediately after connection acceptance.
+
+        Messages are sent with 30-60s delays between each.
+        Returns result dict with messages_sent count and success flag.
+        """
+        result = {"success": False, "messages_sent": 0, "fatal": False}
+
+        # Collect configured messages
+        messages: List[str] = []
+        for attr in ("followup_message_1", "followup_message_2", "followup_message_3"):
+            msg = getattr(campaign, attr, None)
+            if msg:
+                messages.append(msg)
+
+        if not messages:
+            logger.warning("followup.no_messages_configured", campaign=campaign.name)
+            return result
+
+        browser = LinkedInBrowser()
+        try:
+            await browser.launch(
+                account_id=account.id,
+                li_at_cookie=account.li_at_cookie,
+                user_agent=account.user_agent,
+                proxy_url=account.proxy_url,
+                timezone=account.timezone,
+            )
+
+            valid = await browser.validate_session()
+            if not valid:
+                logger.error("followup.session_invalid", account=account.name)
+                result["fatal"] = True
+                return result
+
+            page = await browser.new_page()
+            actions = LinkedInActions(page)
+
+            for i, msg_template in enumerate(messages):
+                msg = render_template(msg_template, lead)
+
+                action_result = await actions.send_message(lead.linkedin_url, msg)
+
+                if action_result.status == ActionStatus.SUCCESS:
+                    result["messages_sent"] += 1
+                    await self.repo.log_action(
+                        account_id=account.id,
+                        campaign_id=campaign.id,
+                        lead_id=lead.id,
+                        action_type=ActionType.FOLLOWUP_MESSAGE,
+                        status=ActionLogStatus.SUCCESS,
+                        details={"message_index": i + 1, "total": len(messages)},
+                    )
+                    await self.repo.increment_daily_stat(account.id, "followup_messages_sent")
+                    logger.info(
+                        "followup.message_sent",
+                        url=lead.linkedin_url,
+                        index=i + 1,
+                        total=len(messages),
+                    )
+
+                    # Wait 30-60s between messages (skip after last)
+                    if i < len(messages) - 1:
+                        delay = random.uniform(30, 60)
+                        logger.info("followup.waiting", seconds=round(delay))
+                        await asyncio.sleep(delay)
+                else:
+                    # Stop on first failure
+                    logger.error(
+                        "followup.message_failed",
+                        url=lead.linkedin_url,
+                        index=i + 1,
+                        reason=action_result.reason,
+                    )
+                    await self.repo.log_action(
+                        account_id=account.id,
+                        campaign_id=campaign.id,
+                        lead_id=lead.id,
+                        action_type=ActionType.FOLLOWUP_MESSAGE,
+                        status=ActionLogStatus.FAILED,
+                        details={
+                            "message_index": i + 1,
+                            "reason": action_result.reason,
+                        },
+                    )
+                    if action_result.status in (ActionStatus.SESSION_EXPIRED, ActionStatus.CAPTCHA):
+                        result["fatal"] = True
+                    break
+
+            if result["messages_sent"] > 0:
+                result["success"] = True
+
+            await page.close()
+
+        except Exception as e:
+            logger.error("followup.sequence_failed", error=str(e))
             result["fatal"] = True
         finally:
             await browser.close()

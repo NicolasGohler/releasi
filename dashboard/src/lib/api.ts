@@ -45,8 +45,24 @@ export const createAccount = (data: {
   warmup_enabled?: boolean;
 }) => apiFetch<Account>("/accounts", { method: "POST", body: JSON.stringify(data) });
 
+export const updateAccount = (
+  id: string,
+  data: { name?: string; timezone?: string; daily_limit?: number; weekly_limit?: number }
+) =>
+  apiFetch<Account>(`/accounts/${id}`, { method: "PUT", body: JSON.stringify(data) });
+
 export const updateCookie = (id: string, data: { li_at_cookie: string }) =>
   apiFetch<Account>(`/accounts/${id}/cookie`, { method: "PUT", body: JSON.stringify(data) });
+
+export const startLoginSession = (id: string) =>
+  apiFetch<{ novnc_url: string; account_id: string }>(`/accounts/${id}/login-session`, {
+    method: "POST",
+  });
+
+export const finishLoginSession = (id: string) =>
+  apiFetch<{ success: boolean; message: string }>(`/accounts/${id}/login-session/finish`, {
+    method: "POST",
+  });
 
 export const fetchAccountActivity = (id: string, limit = 50) =>
   apiFetch<ActionLog[]>(`/accounts/${id}/activity?limit=${limit}`);

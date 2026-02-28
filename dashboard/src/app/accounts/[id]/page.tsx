@@ -5,6 +5,7 @@ import {
   useAccount,
   useAccountStats,
   useAccountActivity,
+  useUpdateAccount,
   useUpdateCookie,
 } from "@/hooks/use-queries";
 import { PageHeader } from "@/components/layout/page-header";
@@ -18,6 +19,7 @@ import { DailyChart } from "@/components/stats/daily-chart";
 import { ActivityTimeline } from "@/components/activity-timeline";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
+import { startLoginSession, finishLoginSession } from "@/lib/api";
 
 export default function AccountDetailPage({
   params,
@@ -28,8 +30,25 @@ export default function AccountDetailPage({
   const { data: account, isLoading } = useAccount(id);
   const { data: stats } = useAccountStats(id);
   const { data: activity } = useAccountActivity(id);
+  const updateAccount = useUpdateAccount(id);
   const updateCookie = useUpdateCookie(id);
   const [newCookie, setNewCookie] = useState("");
+  const [editName, setEditName] = useState("");
+  const [editTimezone, setEditTimezone] = useState("");
+  const [editDailyLimit, setEditDailyLimit] = useState("");
+  const [editWeeklyLimit, setEditWeeklyLimit] = useState("");
+  const [settingsInitialized, setSettingsInitialized] = useState(false);
+  const [loginSessionActive, setLoginSessionActive] = useState(false);
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  // Initialize edit fields from account data once loaded
+  if (account && !settingsInitialized) {
+    setEditName(account.name);
+    setEditTimezone(account.timezone ?? "");
+    setEditDailyLimit(String(account.daily_limit));
+    setEditWeeklyLimit(String(account.weekly_limit));
+    setSettingsInitialized(true);
+  }
 
   if (isLoading) {
     return (
@@ -129,25 +148,133 @@ export default function AccountDetailPage({
 
           <Card className="mt-4">
             <CardHeader>
-              <CardTitle>Account Info</CardTitle>
+              <CardTitle>Account Settings</CardTitle>
             </CardHeader>
-            <CardContent className="grid grid-cols-2 gap-4 text-sm">
+            <CardContent className="space-y-4 max-w-lg">
               <div>
-                <p className="text-xs text-muted-foreground">Timezone</p>
-                <p>{account.timezone}</p>
+                <label className="text-xs text-muted-foreground">Name</label>
+                <Input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Daily Limit</p>
-                <p>{account.daily_limit}</p>
+                <label className="text-xs text-muted-foreground">Timezone</label>
+                <Input
+                  value={editTimezone}
+                  onChange={(e) => setEditTimezone(e.target.value)}
+                  placeholder="e.g. Europe/Berlin"
+                />
               </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Weekly Limit</p>
-                <p>{account.weekly_limit}</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs text-muted-foreground">Daily Limit</label>
+                  <Input
+                    type="number"
+                    value={editDailyLimit}
+                    onChange={(e) => setEditDailyLimit(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Weekly Limit</label>
+                  <Input
+                    type="number"
+                    value={editWeeklyLimit}
+                    onChange={(e) => setEditWeeklyLimit(e.target.value)}
+                  />
+                </div>
               </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Created</p>
-                <p>{new Date(account.created_at).toLocaleDateString()}</p>
+              <div className="flex items-center gap-3">
+                <Button
+                  onClick={() => {
+                    const data: Record<string, unknown> = {};
+                    if (editName !== account.name) data.name = editName;
+                    if (editTimezone !== (account.timezone ?? "")) data.timezone = editTimezone;
+                    if (Number(editDailyLimit) !== account.daily_limit) data.daily_limit = Number(editDailyLimit);
+                    if (Number(editWeeklyLimit) !== account.weekly_limit) data.weekly_limit = Number(editWeeklyLimit);
+                    if (Object.keys(data).length === 0) {
+                      toast.info("No changes to save");
+                      return;
+                    }
+                    updateAccount.mutate(data as Parameters<typeof updateAccount.mutate>[0], {
+                      onSuccess: () => toast.success("Account settings saved"),
+                      onError: (err) => toast.error(err.message),
+                    });
+                  }}
+                  disabled={updateAccount.isPending}
+                >
+                  Save Settings
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Created {new Date(account.created_at).toLocaleDateString()}
+                </span>
               </div>
+            </CardContent>
+          </Card>
+
+          <Card className="mt-4">
+            <CardHeader>
+              <CardTitle>Manual Login (noVNC)</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Open a browser session to manually log into LinkedIn. Useful when cookies expire.
+                Only one login session can be active at a time across all accounts.
+              </p>
+              {!loginSessionActive ? (
+                <Button
+                  onClick={async () => {
+                    setLoginLoading(true);
+                    try {
+                      const res = await startLoginSession(id);
+                      setLoginSessionActive(true);
+                      // Open noVNC in a new tab — uses the server's port 6080
+                      const serverHost = window.location.hostname;
+                      window.open(
+                        `http://${serverHost}:6080${res.novnc_url}`,
+                        "_blank"
+                      );
+                      toast.success("Login browser opened — complete login in the new tab");
+                    } catch (err: unknown) {
+                      toast.error(err instanceof Error ? err.message : "Failed to start session");
+                    } finally {
+                      setLoginLoading(false);
+                    }
+                  }}
+                  disabled={loginLoading}
+                >
+                  {loginLoading ? "Starting..." : "Open Login Browser"}
+                </Button>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-green-600">
+                    Login session active — complete the login in the noVNC tab
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={async () => {
+                        setLoginLoading(true);
+                        try {
+                          const res = await finishLoginSession(id);
+                          if (res.success) {
+                            toast.success(res.message);
+                          } else {
+                            toast.error(res.message);
+                          }
+                        } catch (err: unknown) {
+                          toast.error(err instanceof Error ? err.message : "Failed to finish session");
+                        } finally {
+                          setLoginSessionActive(false);
+                          setLoginLoading(false);
+                        }
+                      }}
+                      disabled={loginLoading}
+                    >
+                      {loginLoading ? "Extracting..." : "Finish & Save Cookies"}
+                    </Button>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

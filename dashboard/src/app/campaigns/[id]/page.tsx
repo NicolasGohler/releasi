@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   useCampaign,
+  useUpdateCampaign,
   useActivateCampaign,
   usePauseCampaign,
   useResetLeads,
@@ -21,6 +22,7 @@ import { StatCard } from "@/components/stats/stat-card";
 import { LeadsTable } from "@/components/leads/leads-table";
 import { CSVUpload } from "@/components/leads/csv-upload";
 import { ActivityTimeline } from "@/components/activity-timeline";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
@@ -37,10 +39,19 @@ export default function CampaignDetailPage({
   const activate = useActivateCampaign();
   const pause = usePauseCampaign();
   const resetLeads = useResetLeads();
+  const updateCampaign = useUpdateCampaign(id);
   const { data: allLists } = useLeadLists();
   const assign = useAssignListToCampaign();
   const unassign = useUnassignListFromCampaign();
   const [selectedList, setSelectedList] = useState("");
+  const [editConnMsg, setEditConnMsg] = useState("");
+  const [editFilterNoPhoto, setEditFilterNoPhoto] = useState(false);
+  const [editMinConnections, setEditMinConnections] = useState("");
+  const [editFollowupEnabled, setEditFollowupEnabled] = useState(false);
+  const [editFollowupMsg1, setEditFollowupMsg1] = useState("");
+  const [editFollowupMsg2, setEditFollowupMsg2] = useState("");
+  const [editFollowupMsg3, setEditFollowupMsg3] = useState("");
+  const [settingsInit, setSettingsInit] = useState(false);
 
   // Fetch campaign-specific activity via account activity (filtered client-side)
   const { data: activity } = useQuery({
@@ -66,6 +77,18 @@ export default function CampaignDetailPage({
 
   if (!campaign) {
     return <p className="text-muted-foreground">Campaign not found</p>;
+  }
+
+  // Initialize edit fields once
+  if (!settingsInit) {
+    setEditConnMsg(campaign.connection_message_template ?? "");
+    setEditFilterNoPhoto(campaign.filter_no_photo);
+    setEditMinConnections(campaign.filter_min_connections != null ? String(campaign.filter_min_connections) : "");
+    setEditFollowupEnabled(campaign.followup_enabled);
+    setEditFollowupMsg1(campaign.followup_message_1 ?? "");
+    setEditFollowupMsg2(campaign.followup_message_2 ?? "");
+    setEditFollowupMsg3(campaign.followup_message_3 ?? "");
+    setSettingsInit(true);
   }
 
   const counts = campaign.status_counts ?? {};
@@ -209,41 +232,135 @@ export default function CampaignDetailPage({
           </Card>
         </TabsContent>
 
-        <TabsContent value="settings" className="mt-4">
+        <TabsContent value="settings" className="mt-4 space-y-4">
           <Card>
             <CardHeader>
               <CardTitle>Campaign Settings</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-4 max-w-2xl">
               <div>
-                <p className="text-xs text-muted-foreground">Account</p>
+                <p className="text-xs text-muted-foreground mb-1">Account</p>
                 <p className="text-sm">{campaign.account_name ?? campaign.account_id}</p>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Connection Message</p>
-                <pre className="text-sm bg-muted p-3 rounded-md whitespace-pre-wrap mt-1">
-                  {campaign.connection_message_template || "(no template)"}
-                </pre>
+                <label className="text-xs text-muted-foreground">Connection Message Template</label>
+                <textarea
+                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm min-h-[100px] resize-y"
+                  value={editConnMsg}
+                  onChange={(e) => setEditConnMsg(e.target.value)}
+                  placeholder="Hi {{first_name}}, I'd like to connect..."
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Use {"{{first_name}}"}, {"{{last_name}}"}, {"{{company}}"}, {"{{title}}"} as variables
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="filterNoPhoto"
+                    checked={editFilterNoPhoto}
+                    onChange={(e) => setEditFilterNoPhoto(e.target.checked)}
+                    className="rounded border-border"
+                  />
+                  <label htmlFor="filterNoPhoto" className="text-sm">
+                    Skip profiles without photo
+                  </label>
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Min Connections</label>
+                  <Input
+                    type="number"
+                    value={editMinConnections}
+                    onChange={(e) => setEditMinConnections(e.target.value)}
+                    placeholder="No minimum"
+                  />
+                </div>
+              </div>
+              <Button
+                onClick={() => {
+                  const data: Record<string, unknown> = {};
+                  if (editConnMsg !== (campaign.connection_message_template ?? ""))
+                    data.connection_message_template = editConnMsg || null;
+                  if (editFilterNoPhoto !== campaign.filter_no_photo)
+                    data.filter_no_photo = editFilterNoPhoto;
+                  const minConn = editMinConnections ? Number(editMinConnections) : null;
+                  if (minConn !== campaign.filter_min_connections)
+                    data.filter_min_connections = minConn;
+                  if (editFollowupEnabled !== campaign.followup_enabled)
+                    data.followup_enabled = editFollowupEnabled;
+                  if (editFollowupMsg1 !== (campaign.followup_message_1 ?? ""))
+                    data.followup_message_1 = editFollowupMsg1 || null;
+                  if (editFollowupMsg2 !== (campaign.followup_message_2 ?? ""))
+                    data.followup_message_2 = editFollowupMsg2 || null;
+                  if (editFollowupMsg3 !== (campaign.followup_message_3 ?? ""))
+                    data.followup_message_3 = editFollowupMsg3 || null;
+                  if (Object.keys(data).length === 0) {
+                    toast.info("No changes to save");
+                    return;
+                  }
+                  updateCampaign.mutate(data, {
+                    onSuccess: () => toast.success("Campaign settings saved"),
+                    onError: (err) => toast.error(err.message),
+                  });
+                }}
+                disabled={updateCampaign.isPending}
+              >
+                Save Settings
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Follow-up Messages</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 max-w-2xl">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="followupEnabled"
+                  checked={editFollowupEnabled}
+                  onChange={(e) => setEditFollowupEnabled(e.target.checked)}
+                  className="rounded border-border"
+                />
+                <label htmlFor="followupEnabled" className="text-sm">
+                  Send follow-up messages when connection is accepted
+                </label>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                When enabled, 1-3 messages are sent immediately upon connection acceptance (30-60s between each).
+                Use {"{{first_name}}"}, {"{{last_name}}"}, {"{{company}}"}, {"{{title}}"} as variables.
+              </p>
+              <div>
+                <label className="text-xs text-muted-foreground">Message 1</label>
+                <textarea
+                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm min-h-[80px] resize-y disabled:opacity-50"
+                  value={editFollowupMsg1}
+                  onChange={(e) => setEditFollowupMsg1(e.target.value)}
+                  placeholder="Hi {{first_name}}, thanks for connecting!"
+                  disabled={!editFollowupEnabled}
+                />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Follow-up Message</p>
-                <pre className="text-sm bg-muted p-3 rounded-md whitespace-pre-wrap mt-1">
-                  {campaign.followup_message_template || "(no template)"}
-                </pre>
+                <label className="text-xs text-muted-foreground">Message 2 (optional)</label>
+                <textarea
+                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm min-h-[80px] resize-y disabled:opacity-50"
+                  value={editFollowupMsg2}
+                  onChange={(e) => setEditFollowupMsg2(e.target.value)}
+                  placeholder="Second message..."
+                  disabled={!editFollowupEnabled || !editFollowupMsg1}
+                />
               </div>
-              <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <p className="text-xs text-muted-foreground">Follow-up Delay</p>
-                  <p className="text-sm">{campaign.followup_delay_hours}h</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Filter: No Photo</p>
-                  <p className="text-sm">{campaign.filter_no_photo ? "Yes" : "No"}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Min Connections</p>
-                  <p className="text-sm">{campaign.filter_min_connections ?? "—"}</p>
-                </div>
+              <div>
+                <label className="text-xs text-muted-foreground">Message 3 (optional)</label>
+                <textarea
+                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm min-h-[80px] resize-y disabled:opacity-50"
+                  value={editFollowupMsg3}
+                  onChange={(e) => setEditFollowupMsg3(e.target.value)}
+                  placeholder="Third message..."
+                  disabled={!editFollowupEnabled || !editFollowupMsg2}
+                />
               </div>
             </CardContent>
           </Card>

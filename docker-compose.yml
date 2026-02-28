@@ -8,14 +8,14 @@ services:
     volumes:
       - ./data:/app/data
       - ./config/settings.yaml:/app/config/settings.yaml:ro
+    ports:
+      - "8000:8000"
+      - "6080:6080"
     environment:
       - LINAUTO_LOG_LEVEL=INFO
       - TZ=Europe/Berlin
-    # Uncomment for future API access:
-    # ports:
-    #   - "8000:8000"
     deploy:
       resources:
         limits:
-          memory: 2G
-          cpus: "1.0"
+          memory: 3G
+          cpus: "1.5"

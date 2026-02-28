@@ -299,6 +299,7 @@ async def check_acceptances():
                     page = await browser.new_page()
                     actions = LinkedInActions(page)
 
+                    newly_connected = []
                     for lead in to_check:
                         status = await actions.check_connection_status(lead.linkedin_url)
                         if status == "connected":
@@ -318,6 +319,7 @@ async def check_acceptances():
                             await repo.increment_daily_stat(
                                 account.id, "connections_accepted"
                             )
+                            newly_connected.append(lead)
                             logger.info("acceptance.connected", url=lead.linkedin_url)
 
                         # Small delay between checks
@@ -327,6 +329,43 @@ async def check_acceptances():
                     await page.close()
                 finally:
                     await browser.close()
+
+                # Send immediate follow-up messages for newly connected leads
+                if newly_connected and campaign.followup_enabled:
+                    has_messages = any(
+                        getattr(campaign, f"followup_message_{i}", None)
+                        for i in (1, 2, 3)
+                    )
+                    if has_messages:
+                        from linauto.campaign.executor import CampaignExecutor
+                        executor = CampaignExecutor(repo)
+                        for lead in newly_connected:
+                            logger.info(
+                                "followup.starting_sequence",
+                                url=lead.linkedin_url,
+                                campaign=campaign.name,
+                            )
+                            fu_result = await executor.execute_followup_sequence(
+                                account, campaign, lead
+                            )
+                            if fu_result["success"]:
+                                await repo.update_lead(
+                                    lead,
+                                    status=LeadStatus.FOLLOWUP_SENT,
+                                    followup_sent_at=datetime.utcnow(),
+                                )
+                                logger.info(
+                                    "followup.sequence_done",
+                                    url=lead.linkedin_url,
+                                    messages_sent=fu_result["messages_sent"],
+                                )
+                            else:
+                                logger.warning(
+                                    "followup.sequence_failed",
+                                    url=lead.linkedin_url,
+                                )
+                            if fu_result.get("fatal"):
+                                break
 
     except Exception as e:
         logger.error("acceptance.check_failed", error=str(e))

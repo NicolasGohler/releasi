@@ -2,7 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 1. Install Playwright browser + system deps (rarely changes — cached)
+# 1. Install Playwright browser + system deps + noVNC dependencies (rarely changes — cached)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        xvfb x11vnc novnc websockify \
+    && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir playwright playwright-stealth \
     && playwright install --with-deps chromium
 
