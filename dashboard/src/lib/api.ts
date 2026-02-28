@@ -8,7 +8,8 @@ import type {
   ImportResponse,
 } from "./types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// API calls go to same origin — Vercel rewrites /api/v1/* to the backend
+const API_URL = "";
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "";
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
