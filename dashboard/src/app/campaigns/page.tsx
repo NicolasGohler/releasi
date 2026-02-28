@@ -18,13 +18,22 @@ export default function CampaignsPage() {
   const pause = usePauseCampaign();
 
   function getProgress(counts: Record<string, number> | null | undefined) {
-    if (!counts) return { total: 0, done: 0, pct: 0 };
+    if (!counts) return { total: 0, sent: 0, accepted: 0, other: 0, sentPct: 0, acceptedPct: 0, otherPct: 0 };
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
-    const done =
-      (counts["connected"] ?? 0) +
-      (counts["completed"] ?? 0) +
-      (counts["followup_sent"] ?? 0);
-    return { total, done, pct: total > 0 ? Math.round((done / total) * 100) : 0 };
+    if (total === 0) return { total: 0, sent: 0, accepted: 0, other: 0, sentPct: 0, acceptedPct: 0, otherPct: 0 };
+    const accepted = (counts["connected"] ?? 0) + (counts["completed"] ?? 0) + (counts["followup_sent"] ?? 0);
+    const sent = counts["connection_requested"] ?? 0;
+    const pending = (counts["pending"] ?? 0) + (counts["scheduled"] ?? 0);
+    const other = total - pending - sent - accepted;
+    return {
+      total,
+      sent,
+      accepted,
+      other,
+      sentPct: Math.round((sent / total) * 100),
+      acceptedPct: Math.round((accepted / total) * 100),
+      otherPct: Math.round((other / total) * 100),
+    };
   }
 
   return (
@@ -67,7 +76,7 @@ export default function CampaignsPage() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {campaigns?.map((c) => {
-            const { total, done, pct } = getProgress(c.status_counts);
+            const progress = getProgress(c.status_counts);
             return (
               <Link key={c.id} href={`/campaigns/${c.id}`}>
                 <Card className="hover:border-muted-foreground/30 transition-colors cursor-pointer">
@@ -81,14 +90,19 @@ export default function CampaignsPage() {
                     </p>
                     <div className="space-y-1">
                       <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>{done} / {total} completed</span>
-                        <span>{pct}%</span>
+                        <span>{progress.accepted + progress.sent + progress.other} / {progress.total} processed</span>
+                        <span>{progress.acceptedPct + progress.sentPct + progress.otherPct}%</span>
                       </div>
-                      <div className="h-1.5 w-full rounded-full bg-muted">
-                        <div
-                          className="h-1.5 rounded-full bg-emerald-500 transition-all"
-                          style={{ width: `${pct}%` }}
-                        />
+                      <div className="flex h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                        {progress.acceptedPct > 0 && (
+                          <div className="h-full bg-emerald-500 transition-all" style={{ width: `${progress.acceptedPct}%` }} />
+                        )}
+                        {progress.sentPct > 0 && (
+                          <div className="h-full bg-blue-500 transition-all" style={{ width: `${progress.sentPct}%` }} />
+                        )}
+                        {progress.otherPct > 0 && (
+                          <div className="h-full bg-zinc-500 transition-all" style={{ width: `${progress.otherPct}%` }} />
+                        )}
                       </div>
                     </div>
                     <div className="flex gap-2 pt-1">
