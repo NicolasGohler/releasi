@@ -379,6 +379,15 @@ class LinkedInActions:
             await send_btn.click()
             await self.delay.micro_delay(1.0, 2.0)
         else:
+            # Check if the weekly invitation limit popup appeared instead
+            if await self.detector.is_weekly_limit_reached(self.page):
+                logger.warning("action.weekly_limit_instead_of_send", url=profile_url)
+                await self._debug_screenshot("send_btn_missing")
+                return ActionResult(
+                    ActionStatus.LIMIT_REACHED,
+                    reason="weekly_invitation_limit",
+                    details={"url": profile_url},
+                )
             await self._debug_screenshot("send_btn_missing")
             return ActionResult(
                 ActionStatus.ERROR,
