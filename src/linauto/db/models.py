@@ -124,6 +124,7 @@ class Campaign(Base):
     followup_message_1: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     followup_message_2: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     followup_message_3: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    weekend_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     filter_no_photo: Mapped[bool] = mapped_column(Boolean, default=False)
     filter_min_connections: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     csv_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

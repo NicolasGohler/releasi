@@ -64,6 +64,7 @@ async def daily_planning_sweep():
                     pending_lead_ids=lead_ids,
                     daily_limit=account.daily_limit,
                     timezone_str=account.timezone,
+                    campaign_weekend_enabled=campaign.weekend_enabled,
                 )
 
                 # Assign scheduled_at to leads for connection_request slots

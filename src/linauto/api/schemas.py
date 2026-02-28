@@ -60,6 +60,7 @@ class CampaignOut(BaseModel):
     followup_message_1: Optional[str] = None
     followup_message_2: Optional[str] = None
     followup_message_3: Optional[str] = None
+    weekend_enabled: bool = False
     filter_no_photo: bool
     filter_min_connections: Optional[int] = None
     csv_filename: Optional[str] = None
@@ -82,6 +83,7 @@ class CampaignCreate(BaseModel):
     followup_message_1: Optional[str] = None
     followup_message_2: Optional[str] = None
     followup_message_3: Optional[str] = None
+    weekend_enabled: bool = False
     filter_no_photo: bool = False
     filter_min_connections: Optional[int] = None
 
@@ -95,6 +97,7 @@ class CampaignUpdate(BaseModel):
     followup_message_1: Optional[str] = None
     followup_message_2: Optional[str] = None
     followup_message_3: Optional[str] = None
+    weekend_enabled: Optional[bool] = None
     filter_no_photo: Optional[bool] = None
     filter_min_connections: Optional[int] = None
 

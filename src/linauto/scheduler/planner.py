@@ -42,12 +42,14 @@ def generate_daily_plan(
     daily_limit: int = 20,
     timezone_str: Optional[str] = None,
     is_weekend: Optional[bool] = None,
+    campaign_weekend_enabled: bool = False,
 ) -> List[ScheduledSlot]:
     """
     Generate a daily plan with clustered timing.
 
-    For weekdays: sessions of connection requests with noise between them.
-    For weekends: noise only (profile views + likes, no connection requests).
+    For weekdays (or weekends with campaign_weekend_enabled): sessions of
+    connection requests with noise between them.
+    For weekends without the flag: noise only or nothing.
 
     Returns a list of ScheduledSlot sorted by time.
     """
@@ -71,10 +73,10 @@ def generate_daily_plan(
     if (work_end - work_start).total_seconds() < 4 * 3600:
         work_end = work_start + timedelta(hours=4)
 
-    if is_weekend and settings.weekend_enabled:
-        return _generate_weekend_plan(rng, day, work_start, work_end, settings)
-
-    if is_weekend and not settings.weekend_enabled:
+    # Weekend handling: if campaign allows weekends, treat as weekday
+    if is_weekend and not campaign_weekend_enabled:
+        if settings.weekend_enabled:
+            return _generate_weekend_plan(rng, day, work_start, work_end, settings)
         return []
 
     # If no pending leads, return noise-only plan

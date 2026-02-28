@@ -51,6 +51,7 @@ export default function CampaignDetailPage({
   const [editFollowupMsg1, setEditFollowupMsg1] = useState("");
   const [editFollowupMsg2, setEditFollowupMsg2] = useState("");
   const [editFollowupMsg3, setEditFollowupMsg3] = useState("");
+  const [editWeekendEnabled, setEditWeekendEnabled] = useState(false);
   const [settingsInit, setSettingsInit] = useState(false);
 
   // Fetch campaign-specific activity via account activity (filtered client-side)
@@ -88,6 +89,7 @@ export default function CampaignDetailPage({
     setEditFollowupMsg1(campaign.followup_message_1 ?? "");
     setEditFollowupMsg2(campaign.followup_message_2 ?? "");
     setEditFollowupMsg3(campaign.followup_message_3 ?? "");
+    setEditWeekendEnabled(campaign.weekend_enabled);
     setSettingsInit(true);
   }
 
@@ -277,6 +279,18 @@ export default function CampaignDetailPage({
                   />
                 </div>
               </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="weekendEnabled"
+                  checked={editWeekendEnabled}
+                  onChange={(e) => setEditWeekendEnabled(e.target.checked)}
+                  className="rounded border-border"
+                />
+                <label htmlFor="weekendEnabled" className="text-sm">
+                  Run campaign on weekends
+                </label>
+              </div>
               <Button
                 onClick={() => {
                   const data: Record<string, unknown> = {};
@@ -295,6 +309,8 @@ export default function CampaignDetailPage({
                     data.followup_message_2 = editFollowupMsg2 || null;
                   if (editFollowupMsg3 !== (campaign.followup_message_3 ?? ""))
                     data.followup_message_3 = editFollowupMsg3 || null;
+                  if (editWeekendEnabled !== campaign.weekend_enabled)
+                    data.weekend_enabled = editWeekendEnabled;
                   if (Object.keys(data).length === 0) {
                     toast.info("No changes to save");
                     return;

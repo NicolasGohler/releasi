@@ -23,6 +23,7 @@ export interface Campaign {
   followup_message_1: string | null;
   followup_message_2: string | null;
   followup_message_3: string | null;
+  weekend_enabled: boolean;
   filter_no_photo: boolean;
   filter_min_connections: number | null;
   csv_filename: string | null;
