@@ -44,6 +44,7 @@ export default function CampaignDetailPage({
   const assign = useAssignListToCampaign();
   const unassign = useUnassignListFromCampaign();
   const [selectedList, setSelectedList] = useState("");
+  const [editName, setEditName] = useState("");
   const [editConnMsg, setEditConnMsg] = useState("");
   const [editFilterNoPhoto, setEditFilterNoPhoto] = useState(false);
   const [editMinConnections, setEditMinConnections] = useState("");
@@ -82,6 +83,7 @@ export default function CampaignDetailPage({
 
   // Initialize edit fields once
   if (!settingsInit) {
+    setEditName(campaign.name);
     setEditConnMsg(campaign.connection_message_template ?? "");
     setEditFilterNoPhoto(campaign.filter_no_photo);
     setEditMinConnections(campaign.filter_min_connections != null ? String(campaign.filter_min_connections) : "");
@@ -241,6 +243,13 @@ export default function CampaignDetailPage({
             </CardHeader>
             <CardContent className="space-y-4 max-w-2xl">
               <div>
+                <label className="text-xs text-muted-foreground">Campaign Name</label>
+                <Input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                />
+              </div>
+              <div>
                 <p className="text-xs text-muted-foreground mb-1">Account</p>
                 <p className="text-sm">{campaign.account_name ?? campaign.account_id}</p>
               </div>
@@ -294,6 +303,8 @@ export default function CampaignDetailPage({
               <Button
                 onClick={() => {
                   const data: Record<string, unknown> = {};
+                  if (editName !== campaign.name)
+                    data.name = editName;
                   if (editConnMsg !== (campaign.connection_message_template ?? ""))
                     data.connection_message_template = editConnMsg || null;
                   if (editFilterNoPhoto !== campaign.filter_no_photo)

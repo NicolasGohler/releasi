@@ -157,11 +157,15 @@ export default function AccountDetailPage({
               </div>
               <div>
                 <label className="text-xs text-muted-foreground">Timezone</label>
-                <Input
+                <select
+                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                   value={editTimezone}
                   onChange={(e) => setEditTimezone(e.target.value)}
-                  placeholder="e.g. Europe/Berlin"
-                />
+                >
+                  <option value="America/New_York">US — EST (New York)</option>
+                  <option value="Europe/Berlin">Europe — CET (Berlin)</option>
+                  <option value="Asia/Singapore">Asia — SGT (Singapore)</option>
+                </select>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>

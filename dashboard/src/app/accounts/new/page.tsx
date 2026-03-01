@@ -73,12 +73,16 @@ export default function NewAccountPage() {
 
             <div className="space-y-2">
               <Label htmlFor="timezone">Timezone</Label>
-              <Input
+              <select
                 id="timezone"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                 value={timezone}
                 onChange={(e) => setTimezone(e.target.value)}
-                placeholder="Europe/Berlin"
-              />
+              >
+                <option value="America/New_York">US — EST (New York)</option>
+                <option value="Europe/Berlin">Europe — CET (Berlin)</option>
+                <option value="Asia/Singapore">Asia — SGT (Singapore)</option>
+              </select>
             </div>
 
             <Button type="submit" disabled={createAccount.isPending}>
