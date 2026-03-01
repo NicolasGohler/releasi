@@ -234,7 +234,15 @@ class LinkedInActions:
             return None
 
         # Click More to open dropdown
-        await more_btn.click()
+        # Scroll into center of viewport first to avoid sticky nav bar interception
+        await more_btn.scroll_into_view_if_needed()
+        await self.delay.micro_delay(0.2, 0.5)
+        try:
+            await more_btn.click(timeout=5000)
+        except PlaywrightTimeout:
+            # Sticky nav bar may intercept pointer events — use JS click as fallback
+            logger.info("action.more_click_intercepted_using_js", url=profile_url)
+            await more_btn.evaluate("el => el.click()")
         await self.delay.micro_delay(0.5, 1.5)
 
         # Find Connect in the dropdown
