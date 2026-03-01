@@ -190,11 +190,16 @@ async def dispatch():
                         # Lead was skipped/errored — backfill from pending pool
                         backfill = await repo.get_pending_leads(campaign.id, limit=1)
                         if backfill:
-                            lead_queue.append(backfill[0])
+                            bl = backfill[0]
+                            # Transition to SCHEDULED so executor can mark CONNECTION_REQUESTED
+                            bl.status = LeadStatus.SCHEDULED
+                            bl.scheduled_at = datetime.utcnow()
+                            await repo.session.commit()
+                            lead_queue.append(bl)
                             logger.info(
                                 "dispatch.backfill_lead",
                                 campaign=campaign.name,
-                                new_lead=backfill[0].linkedin_url,
+                                new_lead=bl.linkedin_url,
                             )
 
                 if successful_sends > 0:
