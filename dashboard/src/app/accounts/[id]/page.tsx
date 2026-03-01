@@ -134,6 +134,76 @@ export default function AccountDetailPage({
         <TabsContent value="settings" className="mt-4 space-y-4">
           <Card>
             <CardHeader>
+              <CardTitle>Account Settings</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 max-w-lg">
+              <div>
+                <label className="text-xs text-muted-foreground">Name</label>
+                <Input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground">Timezone</label>
+                <select
+                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  value={editTimezone}
+                  onChange={(e) => setEditTimezone(e.target.value)}
+                >
+                  <option value="America/New_York">US — EST (New York)</option>
+                  <option value="Europe/Berlin">Europe — CET (Berlin)</option>
+                  <option value="Asia/Singapore">Asia — SGT (Singapore)</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs text-muted-foreground">Daily Limit</label>
+                  <Input
+                    type="number"
+                    value={editDailyLimit}
+                    onChange={(e) => setEditDailyLimit(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Weekly Limit</label>
+                  <Input
+                    type="number"
+                    value={editWeeklyLimit}
+                    onChange={(e) => setEditWeeklyLimit(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <Button
+                  onClick={() => {
+                    const data: Record<string, unknown> = {};
+                    if (editName !== account.name) data.name = editName;
+                    if (editTimezone !== (account.timezone ?? "")) data.timezone = editTimezone;
+                    if (Number(editDailyLimit) !== account.daily_limit) data.daily_limit = Number(editDailyLimit);
+                    if (Number(editWeeklyLimit) !== account.weekly_limit) data.weekly_limit = Number(editWeeklyLimit);
+                    if (Object.keys(data).length === 0) {
+                      toast.info("No changes to save");
+                      return;
+                    }
+                    updateAccount.mutate(data as Parameters<typeof updateAccount.mutate>[0], {
+                      onSuccess: () => toast.success("Account settings saved"),
+                      onError: (err) => toast.error(err.message),
+                    });
+                  }}
+                  disabled={updateAccount.isPending}
+                >
+                  Save Settings
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Created {new Date(account.created_at).toLocaleDateString()}
+                </span>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle>LinkedIn Authentication</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4 max-w-lg">
@@ -249,76 +319,6 @@ export default function AccountDetailPage({
                   </div>
                 </div>
               )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Account Settings</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4 max-w-lg">
-              <div>
-                <label className="text-xs text-muted-foreground">Name</label>
-                <Input
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                />
-              </div>
-              <div>
-                <label className="text-xs text-muted-foreground">Timezone</label>
-                <select
-                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-                  value={editTimezone}
-                  onChange={(e) => setEditTimezone(e.target.value)}
-                >
-                  <option value="America/New_York">US — EST (New York)</option>
-                  <option value="Europe/Berlin">Europe — CET (Berlin)</option>
-                  <option value="Asia/Singapore">Asia — SGT (Singapore)</option>
-                </select>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs text-muted-foreground">Daily Limit</label>
-                  <Input
-                    type="number"
-                    value={editDailyLimit}
-                    onChange={(e) => setEditDailyLimit(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-muted-foreground">Weekly Limit</label>
-                  <Input
-                    type="number"
-                    value={editWeeklyLimit}
-                    onChange={(e) => setEditWeeklyLimit(e.target.value)}
-                  />
-                </div>
-              </div>
-              <div className="flex items-center gap-3">
-                <Button
-                  onClick={() => {
-                    const data: Record<string, unknown> = {};
-                    if (editName !== account.name) data.name = editName;
-                    if (editTimezone !== (account.timezone ?? "")) data.timezone = editTimezone;
-                    if (Number(editDailyLimit) !== account.daily_limit) data.daily_limit = Number(editDailyLimit);
-                    if (Number(editWeeklyLimit) !== account.weekly_limit) data.weekly_limit = Number(editWeeklyLimit);
-                    if (Object.keys(data).length === 0) {
-                      toast.info("No changes to save");
-                      return;
-                    }
-                    updateAccount.mutate(data as Parameters<typeof updateAccount.mutate>[0], {
-                      onSuccess: () => toast.success("Account settings saved"),
-                      onError: (err) => toast.error(err.message),
-                    });
-                  }}
-                  disabled={updateAccount.isPending}
-                >
-                  Save Settings
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                  Created {new Date(account.created_at).toLocaleDateString()}
-                </span>
-              </div>
             </CardContent>
           </Card>
         </TabsContent>

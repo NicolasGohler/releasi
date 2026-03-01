@@ -2,13 +2,17 @@
 
 Launches a headed Chromium browser accessible via noVNC web client,
 allowing the user to manually log into LinkedIn when cookies expire.
+
+Uses a temporary profile directory to avoid locking the automation
+browser's profile. Cookies are extracted after login and saved to DB.
 """
 from __future__ import annotations
 
 import asyncio
+import shutil
 import subprocess
-import signal
 import os
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +36,7 @@ class LoginSessionManager:
         self._context: Optional[BrowserContext] = None
         self._account_id: Optional[str] = None
         self._processes: list[subprocess.Popen] = []
+        self._temp_dir: Optional[str] = None
 
     @classmethod
     def get_instance(cls) -> LoginSessionManager:
@@ -78,7 +83,6 @@ class LoginSessionManager:
 
     def _start_websockify(self):
         """Start websockify to bridge noVNC web client to VNC."""
-        # noVNC static files location (installed via apt)
         novnc_dir = "/usr/share/novnc"
         proc = subprocess.Popen(
             [
@@ -97,8 +101,10 @@ class LoginSessionManager:
         """
         Start a noVNC login session for the given account.
 
-        Returns the noVNC URL for the user to access.
-        Raises RuntimeError if a session is already active.
+        Uses a temporary profile directory so it doesn't conflict with the
+        automation browser that may be using the account's main profile.
+
+        Returns the noVNC URL path for the user to access.
         """
         if self.is_active:
             raise RuntimeError(
@@ -108,22 +114,23 @@ class LoginSessionManager:
 
         self._account_id = account_id
 
+        # Create a temporary profile directory for the login browser
+        self._temp_dir = tempfile.mkdtemp(prefix=f"linauto_login_{account_id}_")
+        logger.info("login_session.temp_dir_created", path=self._temp_dir)
+
         # Start display stack
         os.environ["DISPLAY"] = DISPLAY
         self._start_xvfb()
-        await asyncio.sleep(1)  # Wait for Xvfb to be ready
+        await asyncio.sleep(1)
         self._start_vnc()
         await asyncio.sleep(0.5)
         self._start_websockify()
         await asyncio.sleep(0.5)
 
-        # Launch headed Chromium on the Xvfb display
-        user_data_dir = Path("data/browser_data") / account_id
-        user_data_dir.mkdir(parents=True, exist_ok=True)
-
+        # Launch headed Chromium with the temporary profile
         self._playwright = await async_playwright().start()
         self._context = await self._playwright.chromium.launch_persistent_context(
-            user_data_dir=str(user_data_dir),
+            user_data_dir=self._temp_dir,
             headless=False,
             viewport={"width": 1200, "height": 750},
             args=[
@@ -140,7 +147,6 @@ class LoginSessionManager:
 
         logger.info("login_session.started", account_id=account_id)
 
-        # Return noVNC URL (the API server knows the host)
         return f"/vnc.html?autoconnect=true&resize=scale"
 
     async def finish_session(self) -> dict:
@@ -155,7 +161,6 @@ class LoginSessionManager:
         result = {"li_at": None, "li_a": None, "account_id": self._account_id}
 
         try:
-            # Extract cookies from the browser context
             cookies = await self._context.cookies(["https://www.linkedin.com"])
             for cookie in cookies:
                 if cookie["name"] == "li_at":
@@ -171,13 +176,12 @@ class LoginSessionManager:
         except Exception as e:
             logger.error("login_session.cookie_extraction_failed", error=str(e))
 
-        # Clean up everything
         await self._cleanup()
 
         return result
 
     async def _cleanup(self):
-        """Stop all processes and close browser."""
+        """Stop all processes, close browser, and remove temp directory."""
         if self._context:
             try:
                 await self._context.close()
@@ -192,7 +196,7 @@ class LoginSessionManager:
                 pass
             self._playwright = None
 
-        # Kill all spawned processes
+        # Kill all spawned processes (Xvfb, x11vnc, websockify)
         for proc in self._processes:
             try:
                 proc.terminate()
@@ -203,6 +207,15 @@ class LoginSessionManager:
                 except Exception:
                     pass
         self._processes.clear()
+
+        # Remove temporary profile directory
+        if self._temp_dir:
+            try:
+                shutil.rmtree(self._temp_dir, ignore_errors=True)
+                logger.info("login_session.temp_dir_removed", path=self._temp_dir)
+            except Exception:
+                pass
+            self._temp_dir = None
 
         self._account_id = None
         logger.info("login_session.cleaned_up")
