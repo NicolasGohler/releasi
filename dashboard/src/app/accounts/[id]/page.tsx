@@ -258,9 +258,11 @@ export default function AccountDetailPage({
                     try {
                       const res = await startLoginSession(id);
                       setLoginSessionActive(true);
-                      const serverHost = window.location.hostname;
+                      const novncBase =
+                        process.env.NEXT_PUBLIC_NOVNC_URL ||
+                        `http://${window.location.hostname}:6080`;
                       window.open(
-                        `http://${serverHost}:6080${res.novnc_url}`,
+                        `${novncBase}${res.novnc_url}`,
                         "_blank"
                       );
                       toast.success("Login browser opened — complete login in the new tab");
