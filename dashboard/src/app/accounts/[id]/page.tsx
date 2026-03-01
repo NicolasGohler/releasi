@@ -242,8 +242,8 @@ export default function AccountDetailPage({
             </CardHeader>
             <CardContent className="space-y-3">
               <p className="text-sm text-muted-foreground">
-                Open a browser session to manually log into LinkedIn. Useful when cookies expire.
-                Only one login session can be active at a time across all accounts.
+                Open a browser to manually log into LinkedIn as <span className="font-medium">{account.name}</span>.
+                Log in, then click &quot;Finish &amp; Save Cookies&quot; to store the session.
               </p>
               {!loginSessionActive ? (
                 <Button
