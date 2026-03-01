@@ -46,10 +46,9 @@ _TIMEZONE_LOCALE_MAP = {
 
 
 def _timezone_to_locale(timezone_str: Optional[str]) -> str:
-    """Map a timezone to a reasonable browser locale."""
-    if not timezone_str:
-        return "en-US"
-    return _TIMEZONE_LOCALE_MAP.get(timezone_str, "en-US")
+    """Always use en-US. LinkedIn UI language is controlled by account settings,
+    not browser locale, so non-English locales just break our selectors."""
+    return "en-US"
 
 
 class LinkedInBrowser:
