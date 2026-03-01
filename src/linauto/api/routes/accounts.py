@@ -94,12 +94,9 @@ async def start_login_session(
     from linauto.linkedin.login_session import LoginSessionManager
     manager = LoginSessionManager.get_instance()
 
+    # Auto-cleanup any stale session before starting a new one
     if manager.is_active:
-        raise HTTPException(
-            status_code=409,
-            detail=f"A login session is already active for account {manager.active_account_id}. "
-                   "Finish it before starting a new one.",
-        )
+        await manager._cleanup()
 
     try:
         novnc_path = await manager.start_session(account_id)
@@ -121,8 +118,8 @@ async def finish_login_session(
     from linauto.linkedin.login_session import LoginSessionManager
     manager = LoginSessionManager.get_instance()
 
-    if not manager.is_active or manager.active_account_id != account_id:
-        raise HTTPException(status_code=400, detail="No active login session for this account")
+    if not manager.is_active:
+        raise HTTPException(status_code=400, detail="No active login session")
 
     try:
         result = await manager.finish_session()
@@ -139,6 +136,25 @@ async def finish_login_session(
     await repo.update_account(account, **update_kwargs)
 
     return {"success": True, "message": "Cookies extracted and saved successfully"}
+
+
+@router.post("/accounts/{account_id}/login-session/cancel")
+async def cancel_login_session(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    from linauto.linkedin.login_session import LoginSessionManager
+    manager = LoginSessionManager.get_instance()
+
+    if not manager.is_active:
+        return {"success": True, "message": "No active session"}
+
+    await manager._cleanup()
+    return {"success": True, "message": "Login session cancelled"}
 
 
 @router.get("/accounts/{account_id}/activity", response_model=List[ActionLogOut])

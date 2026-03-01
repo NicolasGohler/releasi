@@ -63,6 +63,11 @@ export const finishLoginSession = (id: string) =>
     method: "POST",
   });
 
+export const cancelLoginSession = (id: string) =>
+  apiFetch<{ success: boolean; message: string }>(`/accounts/${id}/login-session/cancel`, {
+    method: "POST",
+  });
+
 export const fetchAccountActivity = (id: string, limit = 50) =>
   apiFetch<ActionLog[]>(`/accounts/${id}/activity?limit=${limit}`);
 

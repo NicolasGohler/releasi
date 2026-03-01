@@ -19,7 +19,7 @@ import { DailyChart } from "@/components/stats/daily-chart";
 import { ActivityTimeline } from "@/components/activity-timeline";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { startLoginSession, finishLoginSession } from "@/lib/api";
+import { startLoginSession, finishLoginSession, cancelLoginSession } from "@/lib/api";
 
 export default function AccountDetailPage({
   params,
@@ -131,42 +131,128 @@ export default function AccountDetailPage({
           <ActivityTimeline logs={activity ?? []} />
         </TabsContent>
 
-        <TabsContent value="settings" className="mt-4">
+        <TabsContent value="settings" className="mt-4 space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>Update Cookie</CardTitle>
+              <CardTitle>LinkedIn Authentication</CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="flex gap-2 max-w-lg">
-                <Input
-                  value={newCookie}
-                  onChange={(e) => setNewCookie(e.target.value)}
-                  placeholder="Paste new li_at cookie value"
-                  type="password"
-                />
-                <Button
-                  onClick={() => {
-                    if (!newCookie) return;
-                    updateCookie.mutate(
-                      { li_at_cookie: newCookie },
-                      {
-                        onSuccess: () => {
-                          toast.success("Cookie updated");
-                          setNewCookie("");
-                        },
-                        onError: (err) => toast.error(err.message),
-                      }
-                    );
-                  }}
-                  disabled={updateCookie.isPending}
-                >
-                  Update
-                </Button>
+            <CardContent className="space-y-4 max-w-lg">
+              <p className="text-sm text-muted-foreground">
+                Authenticate with LinkedIn by pasting a cookie or logging in via browser.
+              </p>
+
+              <div className="space-y-2">
+                <label className="text-xs text-muted-foreground">Paste li_at Cookie</label>
+                <div className="flex gap-2">
+                  <Input
+                    value={newCookie}
+                    onChange={(e) => setNewCookie(e.target.value)}
+                    placeholder="Paste li_at cookie value"
+                    type="password"
+                  />
+                  <Button
+                    onClick={() => {
+                      if (!newCookie) return;
+                      updateCookie.mutate(
+                        { li_at_cookie: newCookie },
+                        {
+                          onSuccess: () => {
+                            toast.success("Cookie updated");
+                            setNewCookie("");
+                          },
+                          onError: (err) => toast.error(err.message),
+                        }
+                      );
+                    }}
+                    disabled={updateCookie.isPending}
+                  >
+                    Save
+                  </Button>
+                </div>
               </div>
+
+              <div className="relative">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t border-border" />
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-card px-2 text-muted-foreground">or</span>
+                </div>
+              </div>
+
+              {!loginSessionActive ? (
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    setLoginLoading(true);
+                    try {
+                      const res = await startLoginSession(id);
+                      setLoginSessionActive(true);
+                      const serverHost = window.location.hostname;
+                      window.open(
+                        `http://${serverHost}:6080${res.novnc_url}`,
+                        "_blank"
+                      );
+                      toast.success("Login browser opened — complete login in the new tab");
+                    } catch (err: unknown) {
+                      toast.error(err instanceof Error ? err.message : "Failed to start session");
+                    } finally {
+                      setLoginLoading(false);
+                    }
+                  }}
+                  disabled={loginLoading}
+                >
+                  {loginLoading ? "Starting..." : "Open Login Browser"}
+                </Button>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-green-600">
+                    Login session active — complete the login in the browser tab
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={async () => {
+                        setLoginLoading(true);
+                        try {
+                          const res = await finishLoginSession(id);
+                          if (res.success) {
+                            toast.success(res.message);
+                          } else {
+                            toast.error(res.message);
+                          }
+                        } catch (err: unknown) {
+                          toast.error(err instanceof Error ? err.message : "Failed to finish session");
+                        } finally {
+                          setLoginSessionActive(false);
+                          setLoginLoading(false);
+                        }
+                      }}
+                      disabled={loginLoading}
+                    >
+                      {loginLoading ? "Extracting..." : "Finish & Save Cookies"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={async () => {
+                        try {
+                          await cancelLoginSession(id);
+                          toast.info("Login session cancelled");
+                        } catch {
+                          // ignore
+                        } finally {
+                          setLoginSessionActive(false);
+                        }
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
 
-          <Card className="mt-4">
+          <Card>
             <CardHeader>
               <CardTitle>Account Settings</CardTitle>
             </CardHeader>
@@ -233,72 +319,6 @@ export default function AccountDetailPage({
                   Created {new Date(account.created_at).toLocaleDateString()}
                 </span>
               </div>
-            </CardContent>
-          </Card>
-
-          <Card className="mt-4">
-            <CardHeader>
-              <CardTitle>Manual Login (noVNC)</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <p className="text-sm text-muted-foreground">
-                Open a browser to manually log into LinkedIn as <span className="font-medium">{account.name}</span>.
-                Log in, then click &quot;Finish &amp; Save Cookies&quot; to store the session.
-              </p>
-              {!loginSessionActive ? (
-                <Button
-                  onClick={async () => {
-                    setLoginLoading(true);
-                    try {
-                      const res = await startLoginSession(id);
-                      setLoginSessionActive(true);
-                      // Open noVNC in a new tab — uses the server's port 6080
-                      const serverHost = window.location.hostname;
-                      window.open(
-                        `http://${serverHost}:6080${res.novnc_url}`,
-                        "_blank"
-                      );
-                      toast.success("Login browser opened — complete login in the new tab");
-                    } catch (err: unknown) {
-                      toast.error(err instanceof Error ? err.message : "Failed to start session");
-                    } finally {
-                      setLoginLoading(false);
-                    }
-                  }}
-                  disabled={loginLoading}
-                >
-                  {loginLoading ? "Starting..." : "Open Login Browser"}
-                </Button>
-              ) : (
-                <div className="space-y-2">
-                  <p className="text-sm font-medium text-green-600">
-                    Login session active — complete the login in the noVNC tab
-                  </p>
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={async () => {
-                        setLoginLoading(true);
-                        try {
-                          const res = await finishLoginSession(id);
-                          if (res.success) {
-                            toast.success(res.message);
-                          } else {
-                            toast.error(res.message);
-                          }
-                        } catch (err: unknown) {
-                          toast.error(err instanceof Error ? err.message : "Failed to finish session");
-                        } finally {
-                          setLoginSessionActive(false);
-                          setLoginLoading(false);
-                        }
-                      }}
-                      disabled={loginLoading}
-                    >
-                      {loginLoading ? "Extracting..." : "Finish & Save Cookies"}
-                    </Button>
-                  </div>
-                </div>
-              )}
             </CardContent>
           </Card>
         </TabsContent>
