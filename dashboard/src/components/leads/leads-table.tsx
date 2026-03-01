@@ -12,6 +12,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useLeads } from "@/hooks/use-queries";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -120,7 +126,22 @@ export function LeadsTable({ campaignId }: LeadsTableProps) {
                   {lead.title || "—"}
                 </TableCell>
                 <TableCell>
-                  <StatusBadge status={lead.status} />
+                  {lead.error_message ? (
+                    <TooltipProvider delayDuration={200}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="cursor-help">
+                            <StatusBadge status={lead.status} />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-xs">
+                          <p className="text-xs">{lead.error_message}</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  ) : (
+                    <StatusBadge status={lead.status} />
+                  )}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
                   {lead.connection_requested_at
