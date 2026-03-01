@@ -38,13 +38,15 @@ async def create_account(body: AccountCreate, repo: Repository = Depends(get_rep
         raise HTTPException(status_code=409, detail="Account name already exists")
     account = await repo.create_account(
         name=body.name,
-        li_at_cookie=body.li_at_cookie,
+        li_at_cookie=body.li_at_cookie or "",
         li_a_cookie=body.li_a_cookie,
         user_agent=body.user_agent,
         timezone=body.timezone,
         proxy_url=body.proxy_url,
-        warmup_enabled=body.warmup_enabled,
     )
+    # If no cookie provided, mark as needing login
+    if not body.li_at_cookie:
+        await repo.update_account(account, status="cookie_expired")
     return AccountOut.model_validate(account)
 
 

@@ -79,6 +79,29 @@ export default function AccountDetailPage({
         <StatusBadge status={account.status} />
       </PageHeader>
 
+      {account.status === "cookie_expired" && (
+        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3">
+          <p className="text-sm text-red-400">
+            Login required — use the <span className="font-medium">Manual Login</span> button in the Settings tab to authenticate with LinkedIn.
+          </p>
+        </div>
+      )}
+
+      {account.paused_until && new Date(account.paused_until) > new Date() && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+          <p className="text-sm text-amber-400">
+            Account paused due to weekly limit — resumes{" "}
+            {new Date(account.paused_until).toLocaleString(undefined, {
+              weekday: "short",
+              month: "short",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </p>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <StatCard label="Sent (30d)" value={totalSent} />
         <StatCard label="Accepted" value={totalAccepted} sub={`${acceptRate}% rate`} />
@@ -86,7 +109,7 @@ export default function AccountDetailPage({
         <StatCard label="Daily Target" value={account.daily_limit} />
       </div>
 
-      <Tabs defaultValue="stats">
+      <Tabs defaultValue={account.status === "cookie_expired" ? "settings" : "stats"}>
         <TabsList>
           <TabsTrigger value="stats">Stats</TabsTrigger>
           <TabsTrigger value="activity">Activity</TabsTrigger>

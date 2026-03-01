@@ -40,7 +40,7 @@ export const fetchAccount = (id: string) => apiFetch<Account>(`/accounts/${id}`)
 
 export const createAccount = (data: {
   name: string;
-  li_at_cookie: string;
+  li_at_cookie?: string;
   timezone?: string;
 }) => apiFetch<Account>("/accounts", { method: "POST", body: JSON.stringify(data) });
 

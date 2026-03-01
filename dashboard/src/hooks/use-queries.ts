@@ -9,8 +9,12 @@ export function useAccounts() {
   return useQuery({ queryKey: ["accounts"], queryFn: api.fetchAccounts });
 }
 
-export function useAccount(id: string) {
-  return useQuery({ queryKey: ["accounts", id], queryFn: () => api.fetchAccount(id) });
+export function useAccount(id: string, opts?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: ["accounts", id],
+    queryFn: () => api.fetchAccount(id),
+    enabled: opts?.enabled ?? true,
+  });
 }
 
 export function useAccountActivity(id: string) {

@@ -26,7 +26,7 @@ class AccountOut(BaseModel):
 
 class AccountCreate(BaseModel):
     name: str
-    li_at_cookie: str
+    li_at_cookie: Optional[str] = None
     li_a_cookie: Optional[str] = None
     user_agent: Optional[str] = None
     timezone: Optional[str] = "Europe/Berlin"

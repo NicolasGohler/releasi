@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   useCampaign,
+  useAccount,
   useUpdateCampaign,
   useActivateCampaign,
   usePauseCampaign,
@@ -36,6 +37,9 @@ export default function CampaignDetailPage({
   const { id } = use(params);
   const router = useRouter();
   const { data: campaign, isLoading } = useCampaign(id);
+  const { data: account } = useAccount(campaign?.account_id ?? "", {
+    enabled: !!campaign?.account_id,
+  });
   const activate = useActivateCampaign();
   const pause = usePauseCampaign();
   const resetLeads = useResetLeads();
@@ -159,6 +163,21 @@ export default function CampaignDetailPage({
           sub={totalLeads > 0 ? `${Math.round((connected / totalLeads) * 100)}% rate` : undefined}
         />
       </div>
+
+      {account?.paused_until && new Date(account.paused_until) > new Date() && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+          <p className="text-sm text-amber-400">
+            Account <span className="font-medium">{account.name}</span> is paused due to weekly limit — resumes{" "}
+            {new Date(account.paused_until).toLocaleString(undefined, {
+              weekday: "short",
+              month: "short",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </p>
+        </div>
+      )}
 
       <Tabs defaultValue="leads">
         <TabsList>
