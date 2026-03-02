@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { Target, List, Users, UserCircle, type LucideIcon } from "lucide-react";
 
-const navItems = [
-  { href: "/campaigns", label: "Campaigns", icon: "C" },
-  { href: "/lead-lists", label: "Lead Lists", icon: "L" },
-  { href: "/leads", label: "Leads", icon: "P" },
-  { href: "/accounts", label: "Accounts", icon: "A" },
+const navItems: { href: string; label: string; icon: LucideIcon }[] = [
+  { href: "/campaigns", label: "Campaigns", icon: Target },
+  { href: "/lead-lists", label: "Lead Lists", icon: List },
+  { href: "/leads", label: "Leads", icon: Users },
+  { href: "/accounts", label: "Accounts", icon: UserCircle },
 ];
 
 export function Sidebar() {
@@ -24,6 +25,7 @@ export function Sidebar() {
       <nav className="flex flex-col gap-1 p-3">
         {navItems.map((item) => {
           const active = pathname.startsWith(item.href);
+          const Icon = item.icon;
           return (
             <Link
               key={item.href}
@@ -35,9 +37,7 @@ export function Sidebar() {
                   : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
               )}
             >
-              <span className="flex h-6 w-6 items-center justify-center rounded bg-muted text-xs font-bold">
-                {item.icon}
-              </span>
+              <Icon className="h-4 w-4" />
               {item.label}
             </Link>
           );

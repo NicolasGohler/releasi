@@ -107,6 +107,14 @@ export function usePauseCampaign() {
   });
 }
 
+export function useCampaignStats(id: string, days = 30) {
+  return useQuery({
+    queryKey: ["campaign-stats", id, days],
+    queryFn: () => api.fetchCampaignStats(id, days),
+    enabled: !!id,
+  });
+}
+
 export function useResetLeads() {
   const qc = useQueryClient();
   return useMutation({

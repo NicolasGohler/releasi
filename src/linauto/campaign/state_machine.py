@@ -25,6 +25,7 @@ VALID_TRANSITIONS = {
     ],
     LeadStatus.CONNECTION_REQUESTED: [
         LeadStatus.CONNECTED,
+        LeadStatus.WITHDRAWN,
         LeadStatus.ERROR,
         LeadStatus.REMOVED,
     ],
@@ -52,6 +53,10 @@ VALID_TRANSITIONS = {
     ],
     LeadStatus.ERROR: [
         LeadStatus.PENDING,  # Retry resets to pending
+        LeadStatus.REMOVED,
+    ],
+    LeadStatus.WITHDRAWN: [
+        LeadStatus.PENDING,  # Retry: re-send later
         LeadStatus.REMOVED,
     ],
     LeadStatus.LIMIT_PAUSED: [

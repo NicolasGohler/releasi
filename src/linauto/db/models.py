@@ -52,6 +52,7 @@ class LeadStatus(str, enum.Enum):
     SKIPPED = "skipped"
     ERROR = "error"
     LIMIT_PAUSED = "limit_paused"
+    WITHDRAWN = "withdrawn"
     REMOVED = "removed"
 
 
@@ -67,6 +68,7 @@ class ActionType(str, enum.Enum):
     POST_LIKE = "post_like"
     PROFILE_VIEW = "profile_view"
     DAILY_PLAN_GENERATED = "daily_plan_generated"
+    INVITATION_WITHDRAWN = "invitation_withdrawn"
     ERROR = "error"
 
 
@@ -94,6 +96,8 @@ class Account(Base):
     timezone: Mapped[Optional[str]] = mapped_column(String(63), default="Europe/Berlin")
     proxy_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     paused_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    withdraw_threshold: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    avatar_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, onupdate=_utcnow

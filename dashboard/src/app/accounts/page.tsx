@@ -2,11 +2,45 @@
 
 import Link from "next/link";
 import { useAccounts } from "@/hooks/use-queries";
+import { getAvatarUrl } from "@/lib/api";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
+
+function AccountAvatar({ accountId, name }: { accountId: string; name: string }) {
+  const initials = name
+    .split(/\s+/)
+    .map((w) => w[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+
+  return (
+    <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-full bg-muted">
+      <img
+        src={getAvatarUrl(accountId)}
+        alt=""
+        className="h-full w-full object-cover"
+        onError={(e) => {
+          (e.currentTarget as HTMLImageElement).style.display = "none";
+          (e.currentTarget.nextElementSibling as HTMLElement).style.display = "flex";
+        }}
+      />
+      <span
+        className="absolute inset-0 hidden items-center justify-center text-xs font-bold text-muted-foreground"
+        style={{ display: "none" }}
+        ref={(el) => {
+          // Show initials by default until image loads
+          if (el) el.style.display = "flex";
+        }}
+      >
+        {initials}
+      </span>
+    </div>
+  );
+}
 
 export default function AccountsPage() {
   const { data: accounts, isLoading } = useAccounts();
@@ -43,7 +77,10 @@ export default function AccountsPage() {
               <Card className="hover:border-muted-foreground/30 transition-colors cursor-pointer">
                 <CardContent className="p-5 space-y-3">
                   <div className="flex items-center justify-between">
-                    <h3 className="font-medium">{a.name}</h3>
+                    <div className="flex items-center gap-3">
+                      <AccountAvatar accountId={a.id} name={a.name} />
+                      <h3 className="font-medium">{a.name}</h3>
+                    </div>
                     <StatusBadge status={a.status} />
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-sm">

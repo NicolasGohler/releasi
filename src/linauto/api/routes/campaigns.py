@@ -1,13 +1,14 @@
 """Campaign endpoints."""
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from linauto.api.auth import require_api_key
 from linauto.api.deps import get_repo
-from linauto.api.schemas import CampaignOut, CampaignCreate, CampaignUpdate
+from linauto.api.schemas import CampaignOut, CampaignCreate, CampaignUpdate, CampaignStatsResponse
 from linauto.db.models import CampaignStatus
 from linauto.db.repository import Repository
 
@@ -102,3 +103,18 @@ async def reset_leads(campaign_id: str, repo: Repository = Depends(get_repo)):
         raise HTTPException(status_code=404, detail="Campaign not found")
     count = await repo.reset_campaign_leads(campaign_id)
     return {"reset_count": count}
+
+
+@router.get("/campaigns/{campaign_id}/stats", response_model=CampaignStatsResponse)
+async def campaign_stats(
+    campaign_id: str,
+    days: int = Query(30, le=90),
+    repo: Repository = Depends(get_repo),
+):
+    campaign = await repo.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    start = date.today() - timedelta(days=days)
+    daily = await repo.get_campaign_daily_stats(campaign_id, start, date.today())
+    summary = await repo.get_campaign_acceptance_stats(campaign_id)
+    return {"daily": daily, "summary": summary}

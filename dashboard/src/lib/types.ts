@@ -6,8 +6,20 @@ export interface Account {
   weekly_limit: number;
   timezone: string | null;
   paused_until: string | null;
+  withdraw_threshold: number | null;
+  avatar_path: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface CampaignStats {
+  daily: { date: string; sent: number; accepted: number; errors: number }[];
+  summary: {
+    total_sent: number;
+    total_accepted: number;
+    acceptance_rate: number;
+    avg_time_to_accept_hours: number | null;
+  };
 }
 
 export interface Campaign {

@@ -489,3 +489,100 @@ class LinkedInActions:
             return "not_connected"
 
         return "unknown"
+
+    async def get_pending_invitation_count(self) -> int:
+        """Navigate to invitation manager and get the pending invitation count."""
+        nav = await self.navigator.go_to_invitation_manager()
+        if not nav.success or not nav.session_valid:
+            return -1
+
+        # Try to parse count from page header (e.g. "123 Sent")
+        count_el = await self._find_element(selectors.INVITATION_PENDING_COUNT, timeout_ms=5000)
+        if count_el:
+            text = await count_el.text_content()
+            import re
+            match = re.search(r'(\d[\d,]*)', text or "")
+            if match:
+                return int(match.group(1).replace(",", ""))
+
+        # Fallback: count visible cards
+        for sel in selectors.INVITATION_CARDS:
+            count = await self.page.locator(sel).count()
+            if count > 0:
+                return count
+
+        return 0
+
+    async def withdraw_oldest_invitations(self, count: int) -> list:
+        """
+        Withdraw the oldest N invitations from the sent invitations page.
+        Returns list of profile URLs that were withdrawn.
+        """
+        nav = await self.navigator.go_to_invitation_manager()
+        if not nav.success or not nav.session_valid:
+            return []
+
+        withdrawn_urls = []
+
+        # Scroll to load more older invitations
+        for _ in range(5):
+            load_more = await self._find_element(selectors.INVITATION_LOAD_MORE, timeout_ms=2000)
+            if load_more:
+                await load_more.click()
+                await self.delay.micro_delay(1.0, 2.0)
+            else:
+                break
+
+        # Find all invitation cards
+        cards = None
+        card_count = 0
+        for sel in selectors.INVITATION_CARDS:
+            loc = self.page.locator(sel)
+            c = await loc.count()
+            if c > 0:
+                cards = loc
+                card_count = c
+                break
+
+        if not cards or card_count == 0:
+            return []
+
+        # Process from the last card (oldest) upward
+        for i in range(card_count - 1, max(card_count - 1 - count, -1), -1):
+            if len(withdrawn_urls) >= count:
+                break
+
+            card = cards.nth(i)
+
+            # Extract profile URL
+            href = None
+            for link_sel in selectors.INVITATION_CARD_PROFILE_LINK:
+                link = card.locator(link_sel).first
+                if await link.count() > 0:
+                    href = await link.get_attribute("href")
+                    break
+
+            # Click Withdraw button
+            withdraw_btn = None
+            for btn_sel in selectors.INVITATION_WITHDRAW_BUTTON:
+                btn = card.locator(btn_sel).first
+                if await btn.count() > 0:
+                    withdraw_btn = btn
+                    break
+
+            if not withdraw_btn:
+                continue
+
+            await withdraw_btn.click()
+            await self.delay.micro_delay(0.5, 1.0)
+
+            # Confirm in modal
+            confirm = await self._find_element(selectors.INVITATION_WITHDRAW_CONFIRM, timeout_ms=3000)
+            if confirm:
+                await confirm.click()
+                await self.delay.micro_delay(1.0, 2.0)
+                if href:
+                    withdrawn_urls.append(href)
+                logger.info("action.invitation_withdrawn", url=href)
+
+        return withdrawn_urls

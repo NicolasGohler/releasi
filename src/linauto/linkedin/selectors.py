@@ -133,6 +133,53 @@ MESSAGE_SEND_BUTTON = [
 
 INVITATION_MANAGER_URL = "https://www.linkedin.com/mynetwork/invitation-manager/sent/"
 
+# Invitation cards on the sent invitations page
+INVITATION_CARDS = [
+    "li.invitation-card",
+    ".mn-invitation-list li",
+    "[data-view-name='invitation-card']",
+]
+
+# Profile link inside an invitation card
+INVITATION_CARD_PROFILE_LINK = [
+    ".invitation-card__link",
+    "a[href*='/in/']",
+]
+
+# "Withdraw" button on each invitation card
+INVITATION_WITHDRAW_BUTTON = [
+    "button:has-text('Withdraw')",
+    "button[aria-label*='Withdraw']",
+    ".invitation-card__action-btn",
+]
+
+# Confirm withdrawal in modal dialog
+INVITATION_WITHDRAW_CONFIRM = [
+    '[role="dialog"] button:has-text("Withdraw")',
+    'button[aria-label="Withdraw invitation"]',
+    '.artdeco-modal button:has-text("Withdraw")',
+]
+
+# Pending invitation count (header area)
+INVITATION_PENDING_COUNT = [
+    ".mn-invitation-manager__header h2",
+    "header h1",
+]
+
+# Load more invitations
+INVITATION_LOAD_MORE = [
+    'button:has-text("Show more results")',
+    'button:has-text("Load more")',
+]
+
+# ── Nav bar avatar (for profile picture scraping) ────────────────────────
+
+NAV_AVATAR = [
+    'img.global-nav__me-photo',
+    '.global-nav__me img[src*="profile"]',
+    'img[alt*="photo"][class*="global-nav"]',
+]
+
 # ── Feed & noise ─────────────────────────────────────────────────────────
 
 FEED_LIKE_BUTTON = [

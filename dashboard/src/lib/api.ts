@@ -1,6 +1,7 @@
 import type {
   Account,
   Campaign,
+  CampaignStats,
   Lead,
   LeadList,
   LeadListDetail,
@@ -103,6 +104,9 @@ export const pauseCampaign = (id: string) =>
 
 export const resetCampaignLeads = (id: string) =>
   apiFetch<{ reset_count: number }>(`/campaigns/${id}/reset-leads`, { method: "POST" });
+
+export const fetchCampaignStats = (id: string, days = 30) =>
+  apiFetch<CampaignStats>(`/campaigns/${id}/stats?days=${days}`);
 
 // ── Leads ─────────────────────────────────────────────────────────────────
 
@@ -220,3 +224,11 @@ export const restoreLead = (id: string) =>
 
 export const fetchGlobalActivity = (limit = 50) =>
   apiFetch<ActionLog[]>(`/activity?limit=${limit}`);
+
+// ── Avatars ──────────────────────────────────────────────────────────────
+
+export const getAvatarUrl = (accountId: string) =>
+  `${API_URL}/api/v1/accounts/${accountId}/avatar`;
+
+export const fetchAvatar = (accountId: string) =>
+  apiFetch<{ success: boolean }>(`/accounts/${accountId}/fetch-avatar`, { method: "POST" });

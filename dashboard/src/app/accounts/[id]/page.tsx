@@ -19,7 +19,7 @@ import { DailyChart } from "@/components/stats/daily-chart";
 import { ActivityTimeline } from "@/components/activity-timeline";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { startLoginSession, finishLoginSession, cancelLoginSession } from "@/lib/api";
+import { startLoginSession, finishLoginSession, cancelLoginSession, getAvatarUrl } from "@/lib/api";
 
 export default function AccountDetailPage({
   params,
@@ -39,6 +39,7 @@ export default function AccountDetailPage({
   const [editWeeklyLimit, setEditWeeklyLimit] = useState("");
   const [settingsInitialized, setSettingsInitialized] = useState(false);
   const [loginSessionActive, setLoginSessionActive] = useState(false);
+  const [editWithdrawThreshold, setEditWithdrawThreshold] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
 
   // Initialize edit fields from account data once loaded
@@ -47,6 +48,7 @@ export default function AccountDetailPage({
     setEditTimezone(account.timezone ?? "");
     setEditDailyLimit(String(account.daily_limit));
     setEditWeeklyLimit(String(account.weekly_limit));
+    setEditWithdrawThreshold(account.withdraw_threshold ? String(account.withdraw_threshold) : "");
     setSettingsInitialized(true);
   }
 
@@ -75,9 +77,21 @@ export default function AccountDetailPage({
 
   return (
     <div className="space-y-6">
-      <PageHeader title={account.name}>
-        <StatusBadge status={account.status} />
-      </PageHeader>
+      <div className="flex items-center gap-4">
+        <div className="h-12 w-12 shrink-0 overflow-hidden rounded-full bg-muted">
+          <img
+            src={getAvatarUrl(id)}
+            alt=""
+            className="h-full w-full object-cover"
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.display = "none";
+            }}
+          />
+        </div>
+        <PageHeader title={account.name}>
+          <StatusBadge status={account.status} />
+        </PageHeader>
+      </div>
 
       {account.status === "cookie_expired" && (
         <div className="rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3">
@@ -174,6 +188,18 @@ export default function AccountDetailPage({
                   />
                 </div>
               </div>
+              <div>
+                <label className="text-xs text-muted-foreground">Auto-Withdraw Threshold</label>
+                <Input
+                  type="number"
+                  value={editWithdrawThreshold}
+                  onChange={(e) => setEditWithdrawThreshold(e.target.value)}
+                  placeholder="e.g. 1500 — withdraws oldest invitations when exceeded"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Leave empty to disable. When pending invitations exceed this number, the oldest are automatically withdrawn.
+                </p>
+              </div>
               <div className="flex items-center gap-3">
                 <Button
                   onClick={() => {
@@ -182,6 +208,8 @@ export default function AccountDetailPage({
                     if (editTimezone !== (account.timezone ?? "")) data.timezone = editTimezone;
                     if (Number(editDailyLimit) !== account.daily_limit) data.daily_limit = Number(editDailyLimit);
                     if (Number(editWeeklyLimit) !== account.weekly_limit) data.weekly_limit = Number(editWeeklyLimit);
+                    const newThreshold = editWithdrawThreshold ? Number(editWithdrawThreshold) : null;
+                    if (newThreshold !== (account.withdraw_threshold ?? null)) data.withdraw_threshold = newThreshold;
                     if (Object.keys(data).length === 0) {
                       toast.info("No changes to save");
                       return;

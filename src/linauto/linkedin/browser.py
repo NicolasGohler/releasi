@@ -9,7 +9,7 @@ import structlog
 from playwright.async_api import async_playwright, BrowserContext, Playwright
 
 from linauto.config import get_settings
-from linauto.linkedin.selectors import FEED_URL, LOGIN_URL_PATTERNS
+from linauto.linkedin.selectors import FEED_URL, LOGIN_URL_PATTERNS, NAV_AVATAR
 
 logger = structlog.get_logger()
 
@@ -143,10 +143,14 @@ class LinkedInBrowser:
         return self._context
 
     async def validate_session(self) -> bool:
-        """Navigate to LinkedIn feed and check if we're logged in."""
+        """Navigate to LinkedIn feed and check if we're logged in.
+
+        Also scrapes the profile photo URL from the nav bar if available.
+        """
         if not self._context:
             return False
 
+        self._avatar_url: Optional[str] = None
         page = await self._context.new_page()
         try:
             await page.goto(FEED_URL, wait_until="domcontentloaded", timeout=30000)
@@ -157,6 +161,12 @@ class LinkedInBrowser:
                     logger.warning("session.expired", url=current_url)
                     return False
 
+            # Try to scrape profile photo from nav bar
+            try:
+                self._avatar_url = await self._scrape_nav_avatar(page)
+            except Exception:
+                pass
+
             logger.info("session.valid")
             return True
         except Exception as e:
@@ -164,6 +174,46 @@ class LinkedInBrowser:
             return False
         finally:
             await page.close()
+
+    async def _scrape_nav_avatar(self, page) -> Optional[str]:
+        """Extract profile photo URL from the LinkedIn nav bar."""
+        from playwright.async_api import TimeoutError as PlaywrightTimeout
+        for sel in NAV_AVATAR:
+            try:
+                img = page.locator(sel).first
+                await img.wait_for(state="visible", timeout=3000)
+                src = await img.get_attribute("src")
+                if src and ("profile" in src or "media" in src):
+                    return src
+            except (PlaywrightTimeout, Exception):
+                continue
+        return None
+
+    def get_avatar_url(self) -> Optional[str]:
+        """Return the avatar URL scraped during validate_session()."""
+        return getattr(self, '_avatar_url', None)
+
+    async def save_avatar(self, account_id: str) -> Optional[str]:
+        """Download the scraped avatar and save to data/avatars/{account_id}.jpg."""
+        url = self.get_avatar_url()
+        if not url:
+            return None
+
+        import httpx
+        avatar_dir = Path("data/avatars")
+        avatar_dir.mkdir(parents=True, exist_ok=True)
+        path = avatar_dir / f"{account_id}.jpg"
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, timeout=10)
+                if resp.status_code == 200:
+                    path.write_bytes(resp.content)
+                    logger.info("avatar.saved", account_id=account_id, path=str(path))
+                    return str(path)
+        except Exception as e:
+            logger.warning("avatar.download_failed", error=str(e))
+        return None
 
     async def new_page(self):
         """Get a new page from the browser context."""

@@ -4,7 +4,10 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import List, Optional
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from linauto.api.auth import require_api_key
 from linauto.api.deps import get_repo
@@ -155,6 +158,52 @@ async def cancel_login_session(
 
     await manager._cleanup()
     return {"success": True, "message": "Login session cancelled"}
+
+
+@router.get("/accounts/{account_id}/avatar")
+async def get_avatar(account_id: str, repo: Repository = Depends(get_repo)):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if not account.avatar_path:
+        raise HTTPException(status_code=404, detail="No avatar available")
+    path = Path(account.avatar_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Avatar file not found")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@router.post("/accounts/{account_id}/fetch-avatar")
+async def fetch_avatar_now(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """One-time fetch of avatar for an existing account."""
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    from linauto.linkedin.browser import LinkedInBrowser
+    browser = LinkedInBrowser()
+    try:
+        await browser.launch(
+            account_id=account.id,
+            li_at_cookie=account.li_at_cookie,
+            user_agent=account.user_agent,
+            proxy_url=account.proxy_url,
+            timezone=account.timezone,
+        )
+        valid = await browser.validate_session()
+        if not valid:
+            raise HTTPException(status_code=400, detail="Session invalid — cookie may be expired")
+
+        avatar_path = await browser.save_avatar(account.id)
+        if avatar_path:
+            await repo.update_account(account, avatar_path=avatar_path)
+            return {"success": True, "avatar_path": avatar_path}
+        return {"success": False, "message": "Could not find profile photo on page"}
+    finally:
+        await browser.close()
 
 
 @router.get("/accounts/{account_id}/activity", response_model=List[ActionLogOut])

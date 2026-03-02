@@ -408,6 +408,92 @@ class Repository:
         await self.session.commit()
         return result.rowcount
 
+    # ── Withdrawal helpers ──────────────────────────────────────────────
+
+    async def get_leads_by_url(self, account_id: str, linkedin_url: str) -> Sequence[Lead]:
+        """Find leads by LinkedIn URL across all campaigns for an account."""
+        # Normalize: strip trailing slash for matching
+        url_base = linkedin_url.rstrip("/")
+        result = await self.session.execute(
+            select(Lead)
+            .join(Campaign, Lead.campaign_id == Campaign.id)
+            .where(
+                Campaign.account_id == account_id,
+                Lead.linkedin_url.contains(url_base.split("/in/")[-1] if "/in/" in url_base else url_base),
+            )
+        )
+        return result.scalars().all()
+
+    # ── Campaign Stats ─────────────────────────────────────────────────
+
+    async def get_campaign_daily_stats(
+        self, campaign_id: str, start_date: date, end_date: date
+    ) -> list:
+        """Aggregate daily stats per campaign from ActionLog."""
+        from sqlalchemy import cast, Date as SADate, case
+        result = await self.session.execute(
+            select(
+                cast(ActionLog.created_at, SADate).label("date"),
+                func.sum(case(
+                    (ActionLog.action_type == ActionType.CONNECTION_REQUEST, 1),
+                    else_=0,
+                )).label("sent"),
+                func.sum(case(
+                    (
+                        (ActionLog.action_type == ActionType.CHECK_ACCEPTANCE)
+                        & (ActionLog.status == ActionLogStatus.SUCCESS),
+                        1
+                    ),
+                    else_=0,
+                )).label("accepted"),
+                func.sum(case(
+                    (ActionLog.action_type == ActionType.ERROR, 1),
+                    else_=0,
+                )).label("errors"),
+            )
+            .where(
+                ActionLog.campaign_id == campaign_id,
+                cast(ActionLog.created_at, SADate) >= start_date,
+                cast(ActionLog.created_at, SADate) <= end_date,
+            )
+            .group_by(cast(ActionLog.created_at, SADate))
+            .order_by(cast(ActionLog.created_at, SADate))
+        )
+        return [
+            {"date": str(row.date), "sent": row.sent, "accepted": row.accepted, "errors": row.errors}
+            for row in result.all()
+        ]
+
+    async def get_campaign_acceptance_stats(self, campaign_id: str) -> dict:
+        """Get acceptance rate and average time-to-accept for a campaign."""
+        result = await self.session.execute(
+            select(Lead)
+            .where(
+                Lead.campaign_id == campaign_id,
+                Lead.connection_requested_at.isnot(None),
+            )
+        )
+        all_leads = result.scalars().all()
+        total_sent = len(all_leads)
+        accepted = [l for l in all_leads if l.connection_accepted_at]
+        total_accepted = len(accepted)
+
+        avg_hours = None
+        if accepted:
+            deltas = [
+                (l.connection_accepted_at - l.connection_requested_at).total_seconds() / 3600
+                for l in accepted
+                if l.connection_accepted_at and l.connection_requested_at
+            ]
+            avg_hours = round(sum(deltas) / len(deltas), 1) if deltas else None
+
+        return {
+            "total_sent": total_sent,
+            "total_accepted": total_accepted,
+            "acceptance_rate": round(total_accepted / total_sent * 100, 1) if total_sent > 0 else 0,
+            "avg_time_to_accept_hours": avg_hours,
+        }
+
     # ── Lead Lists ────────────────────────────────────────────────────────
 
     async def create_lead_list(self, name: str, csv_filename: str | None = None) -> LeadList:

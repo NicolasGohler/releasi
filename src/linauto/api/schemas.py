@@ -17,6 +17,8 @@ class AccountOut(BaseModel):
     weekly_limit: int
     timezone: Optional[str] = None
     paused_until: Optional[datetime] = None
+    withdraw_threshold: Optional[int] = None
+    avatar_path: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -38,6 +40,7 @@ class AccountUpdate(BaseModel):
     timezone: Optional[str] = None
     daily_limit: Optional[int] = None
     weekly_limit: Optional[int] = None
+    withdraw_threshold: Optional[int] = None
 
 
 class CookieUpdate(BaseModel):
@@ -206,6 +209,27 @@ class DailyStatOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ── Campaign Stats ────────────────────────────────────────────────────────
+
+class CampaignStatsDaily(BaseModel):
+    date: str
+    sent: int
+    accepted: int
+    errors: int
+
+
+class CampaignStatsSummary(BaseModel):
+    total_sent: int
+    total_accepted: int
+    acceptance_rate: float
+    avg_time_to_accept_hours: Optional[float] = None
+
+
+class CampaignStatsResponse(BaseModel):
+    daily: List[CampaignStatsDaily]
+    summary: CampaignStatsSummary
 
 
 # ── Health ────────────────────────────────────────────────────────────────

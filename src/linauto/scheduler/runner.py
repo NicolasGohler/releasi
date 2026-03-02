@@ -354,6 +354,43 @@ async def check_acceptances():
                         from linauto.safety.delays import DelayGenerator
                         await DelayGenerator().micro_delay(2, 5)
 
+                    # Check if we need to withdraw stale invitations
+                    if account.withdraw_threshold:
+                        try:
+                            pending_count = await actions.get_pending_invitation_count()
+                            if pending_count > account.withdraw_threshold:
+                                excess = pending_count - account.withdraw_threshold
+                                to_withdraw = min(excess, 10)  # Max 10 per cycle
+                                logger.info(
+                                    "withdraw.starting",
+                                    account=account.name,
+                                    pending=pending_count,
+                                    threshold=account.withdraw_threshold,
+                                    withdrawing=to_withdraw,
+                                )
+                                withdrawn_urls = await actions.withdraw_oldest_invitations(to_withdraw)
+                                for url in withdrawn_urls:
+                                    matching = await repo.get_leads_by_url(account.id, url)
+                                    for ml in matching:
+                                        if ml.status == LeadStatus.CONNECTION_REQUESTED:
+                                            await repo.update_lead(ml, status=LeadStatus.WITHDRAWN)
+                                if withdrawn_urls:
+                                    await repo.log_action(
+                                        account_id=account.id,
+                                        action_type=ActionType.INVITATION_WITHDRAWN,
+                                        status=ActionLogStatus.SUCCESS,
+                                        details={"withdrawn": len(withdrawn_urls), "pending_before": pending_count},
+                                    )
+                            elif pending_count >= 0:
+                                logger.info(
+                                    "withdraw.under_threshold",
+                                    account=account.name,
+                                    pending=pending_count,
+                                    threshold=account.withdraw_threshold,
+                                )
+                        except Exception as e:
+                            logger.error("withdraw.failed", account=account.name, error=str(e))
+
                     await page.close()
                 finally:
                     await browser.close()
@@ -397,6 +434,58 @@ async def check_acceptances():
 
     except Exception as e:
         logger.error("acceptance.check_failed", error=str(e))
+    finally:
+        await session.close()
+
+
+async def check_cookie_health():
+    """
+    Proactive daily session validation for all active accounts.
+
+    Runs once daily at 05:00. Marks accounts as cookie_expired if invalid.
+    Also saves avatars for accounts that don't have one yet.
+    """
+    repo, session = await _get_repo()
+    try:
+        accounts = await repo.list_active_accounts()
+        for account in accounts:
+            if account.paused_until and not is_cooldown_expired(account.paused_until):
+                continue
+
+            from linauto.linkedin.browser import LinkedInBrowser
+            browser = LinkedInBrowser()
+            try:
+                await browser.launch(
+                    account_id=account.id,
+                    li_at_cookie=account.li_at_cookie,
+                    user_agent=account.user_agent,
+                    proxy_url=account.proxy_url,
+                    timezone=account.timezone,
+                )
+                valid = await browser.validate_session()
+                if not valid:
+                    logger.warning("cookie_health.expired", account=account.name)
+                    await repo.update_account(account, status="cookie_expired")
+                    await repo.log_action(
+                        account_id=account.id,
+                        action_type=ActionType.ERROR,
+                        status=ActionLogStatus.FAILED,
+                        details={"reason": "cookie_health_check_failed"},
+                    )
+                else:
+                    logger.info("cookie_health.valid", account=account.name)
+                    # Save avatar if not yet saved
+                    if not account.avatar_path:
+                        avatar_path = await browser.save_avatar(account.id)
+                        if avatar_path:
+                            await repo.update_account(account, avatar_path=avatar_path)
+            except Exception as e:
+                logger.error("cookie_health.error", account=account.name, error=str(e))
+            finally:
+                await browser.close()
+
+    except Exception as e:
+        logger.error("cookie_health.sweep_failed", error=str(e))
     finally:
         await session.close()
 
@@ -469,6 +558,15 @@ async def start_scheduler():
         CronTrigger(hour=0, minute=0),
         id="cooldown_checker",
         name="Cooldown Checker",
+        replace_existing=True,
+    )
+
+    # Cookie health check daily at 05:00
+    scheduler.add_job(
+        check_cookie_health,
+        CronTrigger(hour=5, minute=0),
+        id="cookie_health_checker",
+        name="Cookie Health Check",
         replace_existing=True,
     )
 
