@@ -253,42 +253,6 @@ class LinkedInBrowser:
             logger.warning("avatar.download_failed", error=str(e))
         return None
 
-    async def debug_nav_html(self) -> dict:
-        """Debug helper: return info about images on the current page nav."""
-        if not self._context:
-            return {"error": "no context"}
-        page = await self._context.new_page()
-        try:
-            await page.goto("https://www.linkedin.com/feed/", wait_until="load", timeout=30000)
-            await page.wait_for_timeout(5000)
-            # Save screenshot for debugging
-            await page.screenshot(path="data/debug_avatar.png")
-
-            info = await page.evaluate("""() => {
-                const results = {};
-                results.url = window.location.href;
-                results.title = document.title;
-                results.body_html_length = document.body?.innerHTML?.length || 0;
-                results.body_text = (document.body?.innerText || '').substring(0, 500);
-                // All images on page (first 20)
-                const allImgs = Array.from(document.querySelectorAll('img')).slice(0, 20).map(i => ({
-                    src: i.src?.substring(0, 200),
-                    alt: (i.alt || '').substring(0, 100),
-                    className: (i.className || '').substring(0, 100),
-                    parent: i.parentElement?.className?.substring(0, 100) || '',
-                }));
-                results.all_images = allImgs;
-                // Nav-like elements
-                const nav = document.querySelector('nav') || document.querySelector('header') || document.querySelector('[role="navigation"]');
-                results.nav_tag = nav ? nav.tagName + '.' + (nav.className || '').substring(0, 100) : null;
-                return results;
-            }""")
-            return info
-        except Exception as e:
-            return {"error": str(e)}
-        finally:
-            await page.close()
-
     async def new_page(self):
         """Get a new page from the browser context."""
         if not self._context:
