@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 import structlog
@@ -395,45 +395,126 @@ async def check_acceptances():
                 finally:
                     await browser.close()
 
-                # Send immediate follow-up messages for newly connected leads
+                # Schedule or send follow-up messages for newly connected leads
                 if newly_connected and campaign.followup_enabled:
                     has_messages = any(
                         getattr(campaign, f"followup_message_{i}", None)
                         for i in (1, 2, 3)
                     )
                     if has_messages:
-                        from linauto.campaign.executor import CampaignExecutor
-                        executor = CampaignExecutor(repo)
-                        for lead in newly_connected:
-                            logger.info(
-                                "followup.starting_sequence",
-                                url=lead.linkedin_url,
-                                campaign=campaign.name,
-                            )
-                            fu_result = await executor.execute_followup_sequence(
-                                account, campaign, lead
-                            )
-                            if fu_result["success"]:
+                        delay_hours = campaign.followup_delay_hours or 0
+                        if delay_hours > 0:
+                            # Schedule follow-ups for later
+                            followup_time = datetime.utcnow() + timedelta(hours=delay_hours)
+                            for lead in newly_connected:
                                 await repo.update_lead(
                                     lead,
-                                    status=LeadStatus.FOLLOWUP_SENT,
-                                    followup_sent_at=datetime.utcnow(),
+                                    status=LeadStatus.FOLLOWUP_SCHEDULED,
+                                    scheduled_at=followup_time,
                                 )
                                 logger.info(
-                                    "followup.sequence_done",
+                                    "followup.scheduled",
                                     url=lead.linkedin_url,
-                                    messages_sent=fu_result["messages_sent"],
+                                    campaign=campaign.name,
+                                    scheduled_at=followup_time.isoformat(),
+                                    delay_hours=delay_hours,
                                 )
-                            else:
-                                logger.warning(
-                                    "followup.sequence_failed",
+                        else:
+                            # Send immediately (delay=0)
+                            from linauto.campaign.executor import CampaignExecutor
+                            executor = CampaignExecutor(repo)
+                            for lead in newly_connected:
+                                logger.info(
+                                    "followup.starting_sequence",
                                     url=lead.linkedin_url,
+                                    campaign=campaign.name,
                                 )
-                            if fu_result.get("fatal"):
-                                break
+                                fu_result = await executor.execute_followup_sequence(
+                                    account, campaign, lead
+                                )
+                                if fu_result["success"]:
+                                    await repo.update_lead(
+                                        lead,
+                                        status=LeadStatus.FOLLOWUP_SENT,
+                                        followup_sent_at=datetime.utcnow(),
+                                    )
+                                    logger.info(
+                                        "followup.sequence_done",
+                                        url=lead.linkedin_url,
+                                        messages_sent=fu_result["messages_sent"],
+                                    )
+                                else:
+                                    logger.warning(
+                                        "followup.sequence_failed",
+                                        url=lead.linkedin_url,
+                                    )
+                                if fu_result.get("fatal"):
+                                    break
 
     except Exception as e:
         logger.error("acceptance.check_failed", error=str(e))
+    finally:
+        await session.close()
+
+
+async def dispatch_followups():
+    """
+    Send follow-up messages for leads where the delay has elapsed.
+
+    Runs every 30 minutes. Picks up FOLLOWUP_SCHEDULED leads where
+    scheduled_at <= now and sends the follow-up message sequence.
+    """
+    repo, session = await _get_repo()
+    try:
+        now = datetime.utcnow()
+        accounts = await repo.list_active_accounts()
+
+        for account in accounts:
+            if account.paused_until and not is_cooldown_expired(account.paused_until):
+                continue
+
+            campaigns = await repo.get_active_campaigns(account.id)
+            for campaign in campaigns:
+                if not campaign.followup_enabled:
+                    continue
+
+                due_leads = await repo.get_followup_due_leads(campaign.id, before=now)
+                if not due_leads:
+                    continue
+
+                from linauto.campaign.executor import CampaignExecutor
+                executor = CampaignExecutor(repo)
+
+                for lead in due_leads:
+                    logger.info(
+                        "followup.starting_sequence",
+                        url=lead.linkedin_url,
+                        campaign=campaign.name,
+                    )
+                    fu_result = await executor.execute_followup_sequence(
+                        account, campaign, lead
+                    )
+                    if fu_result["success"]:
+                        await repo.update_lead(
+                            lead,
+                            status=LeadStatus.FOLLOWUP_SENT,
+                            followup_sent_at=datetime.utcnow(),
+                        )
+                        logger.info(
+                            "followup.sequence_done",
+                            url=lead.linkedin_url,
+                            messages_sent=fu_result["messages_sent"],
+                        )
+                    else:
+                        logger.warning(
+                            "followup.sequence_failed",
+                            url=lead.linkedin_url,
+                        )
+                    if fu_result.get("fatal"):
+                        break
+
+    except Exception as e:
+        logger.error("followup_dispatch.failed", error=str(e))
     finally:
         await session.close()
 
@@ -558,6 +639,15 @@ async def start_scheduler():
         CronTrigger(hour=0, minute=0),
         id="cooldown_checker",
         name="Cooldown Checker",
+        replace_existing=True,
+    )
+
+    # Follow-up dispatcher every 30 minutes
+    scheduler.add_job(
+        dispatch_followups,
+        IntervalTrigger(minutes=30),
+        id="followup_dispatcher",
+        name="Follow-up Dispatcher",
         replace_existing=True,
     )
 

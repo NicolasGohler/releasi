@@ -114,6 +114,21 @@ class Repository:
         )
         return result.scalars().all()
 
+    async def get_followup_due_leads(
+        self, campaign_id: str, before: datetime
+    ) -> Sequence[Lead]:
+        """Get leads with follow-ups scheduled before the given time."""
+        result = await self.session.execute(
+            select(Lead)
+            .where(
+                Lead.campaign_id == campaign_id,
+                Lead.status == LeadStatus.FOLLOWUP_SCHEDULED,
+                Lead.scheduled_at <= before,
+            )
+            .order_by(Lead.scheduled_at)
+        )
+        return result.scalars().all()
+
     async def get_pending_leads(
         self, campaign_id: str, limit: int | None = None
     ) -> Sequence[Lead]:

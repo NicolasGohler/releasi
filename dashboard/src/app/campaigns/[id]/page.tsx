@@ -56,6 +56,7 @@ export default function CampaignDetailPage({
   const [editFilterNoPhoto, setEditFilterNoPhoto] = useState(false);
   const [editMinConnections, setEditMinConnections] = useState("");
   const [editFollowupEnabled, setEditFollowupEnabled] = useState(false);
+  const [editFollowupDelayHours, setEditFollowupDelayHours] = useState("");
   const [editFollowupMsg1, setEditFollowupMsg1] = useState("");
   const [editFollowupMsg2, setEditFollowupMsg2] = useState("");
   const [editFollowupMsg3, setEditFollowupMsg3] = useState("");
@@ -95,6 +96,7 @@ export default function CampaignDetailPage({
     setEditFilterNoPhoto(campaign.filter_no_photo);
     setEditMinConnections(campaign.filter_min_connections != null ? String(campaign.filter_min_connections) : "");
     setEditFollowupEnabled(campaign.followup_enabled);
+    setEditFollowupDelayHours(String(campaign.followup_delay_hours));
     setEditFollowupMsg1(campaign.followup_message_1 ?? "");
     setEditFollowupMsg2(campaign.followup_message_2 ?? "");
     setEditFollowupMsg3(campaign.followup_message_3 ?? "");
@@ -380,6 +382,9 @@ export default function CampaignDetailPage({
                     data.filter_min_connections = minConn;
                   if (editFollowupEnabled !== campaign.followup_enabled)
                     data.followup_enabled = editFollowupEnabled;
+                  const delayHours = editFollowupDelayHours ? Number(editFollowupDelayHours) : 0;
+                  if (delayHours !== campaign.followup_delay_hours)
+                    data.followup_delay_hours = delayHours;
                   if (editFollowupMsg1 !== (campaign.followup_message_1 ?? ""))
                     data.followup_message_1 = editFollowupMsg1 || null;
                   if (editFollowupMsg2 !== (campaign.followup_message_2 ?? ""))
@@ -422,9 +427,24 @@ export default function CampaignDetailPage({
                 </label>
               </div>
               <p className="text-xs text-muted-foreground">
-                When enabled, 1-3 messages are sent immediately upon connection acceptance (30-60s between each).
+                When enabled, 1-3 messages are sent after a connection is accepted.
                 Use {"{{first_name}}"}, {"{{last_name}}"}, {"{{company}}"}, {"{{title}}"} as variables.
               </p>
+              <div>
+                <label className="text-xs text-muted-foreground">Delay after acceptance (hours)</label>
+                <Input
+                  type="number"
+                  min="0"
+                  value={editFollowupDelayHours}
+                  onChange={(e) => setEditFollowupDelayHours(e.target.value)}
+                  placeholder="0"
+                  disabled={!editFollowupEnabled}
+                  className="mt-1 max-w-[200px]"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Set to 0 to send immediately. Otherwise messages are queued and sent after the delay.
+                </p>
+              </div>
               <div>
                 <label className="text-xs text-muted-foreground">Message 1</label>
                 <textarea
