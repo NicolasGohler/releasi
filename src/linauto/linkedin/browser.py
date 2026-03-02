@@ -261,10 +261,15 @@ class LinkedInBrowser:
         try:
             await page.goto("https://www.linkedin.com/feed/", wait_until="load", timeout=30000)
             await page.wait_for_timeout(5000)
+            # Save screenshot for debugging
+            await page.screenshot(path="data/debug_avatar.png")
+
             info = await page.evaluate("""() => {
                 const results = {};
                 results.url = window.location.href;
                 results.title = document.title;
+                results.body_html_length = document.body?.innerHTML?.length || 0;
+                results.body_text = (document.body?.innerText || '').substring(0, 500);
                 // All images on page (first 20)
                 const allImgs = Array.from(document.querySelectorAll('img')).slice(0, 20).map(i => ({
                     src: i.src?.substring(0, 200),
