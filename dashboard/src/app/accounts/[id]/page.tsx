@@ -282,6 +282,8 @@ export default function AccountDetailPage({
                 <Button
                   variant="outline"
                   onClick={async () => {
+                    // Open window synchronously to avoid popup blocker
+                    const loginWindow = window.open("about:blank", "_blank");
                     setLoginLoading(true);
                     try {
                       const res = await startLoginSession(id);
@@ -289,12 +291,15 @@ export default function AccountDetailPage({
                       const novncBase =
                         process.env.NEXT_PUBLIC_NOVNC_URL ||
                         `http://${window.location.hostname}:6080`;
-                      window.open(
-                        `${novncBase}${res.novnc_url}`,
-                        "_blank"
-                      );
+                      const url = `${novncBase}${res.novnc_url}`;
+                      if (loginWindow) {
+                        loginWindow.location.href = url;
+                      } else {
+                        window.open(url, "_blank");
+                      }
                       toast.success("Login browser opened — complete login in the new tab");
                     } catch (err: unknown) {
+                      loginWindow?.close();
                       toast.error(err instanceof Error ? err.message : "Failed to start session");
                     } finally {
                       setLoginLoading(false);
