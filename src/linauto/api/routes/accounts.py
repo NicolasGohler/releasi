@@ -18,6 +18,8 @@ from linauto.api.schemas import (
 from linauto.db.repository import Repository
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
+# Public router for endpoints that don't require auth (e.g. avatar served via <img> tags)
+public_router = APIRouter()
 
 
 @router.get("/accounts", response_model=List[AccountOut])
@@ -193,7 +195,7 @@ async def cancel_login_session(
     return {"success": True, "message": "Login session cancelled"}
 
 
-@router.get("/accounts/{account_id}/avatar")
+@public_router.get("/accounts/{account_id}/avatar")
 async def get_avatar(account_id: str, repo: Repository = Depends(get_repo)):
     account = await repo.get_account(account_id)
     if not account:

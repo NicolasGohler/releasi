@@ -32,6 +32,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(accounts.router, prefix="/api/v1")
+    app.include_router(accounts.public_router, prefix="/api/v1")
     app.include_router(campaigns.router, prefix="/api/v1")
     app.include_router(leads.router, prefix="/api/v1")
     app.include_router(lead_lists.router, prefix="/api/v1")

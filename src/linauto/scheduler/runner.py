@@ -200,6 +200,13 @@ async def dispatch():
                                 consecutive=consecutive_errors,
                             )
                             await repo.update_account(account, status="cookie_expired")
+                            # Reset SCHEDULED leads back to PENDING so they're
+                            # re-planned when the cookie is renewed
+                            await repo.bulk_update_lead_status(
+                                campaign.id,
+                                from_status=LeadStatus.SCHEDULED,
+                                to_status=LeadStatus.PENDING,
+                            )
                             await repo.log_action(
                                 account_id=account.id,
                                 campaign_id=campaign.id,
@@ -506,10 +513,25 @@ async def dispatch_followups():
                             messages_sent=fu_result["messages_sent"],
                         )
                     else:
-                        logger.warning(
-                            "followup.sequence_failed",
-                            url=lead.linkedin_url,
-                        )
+                        new_retries = (lead.retry_count or 0) + 1
+                        if new_retries >= 3:
+                            await repo.update_lead(
+                                lead,
+                                status=LeadStatus.ERROR,
+                                retry_count=new_retries,
+                            )
+                            logger.warning(
+                                "followup.max_retries_reached",
+                                url=lead.linkedin_url,
+                                retries=new_retries,
+                            )
+                        else:
+                            await repo.update_lead(lead, retry_count=new_retries)
+                            logger.warning(
+                                "followup.sequence_failed",
+                                url=lead.linkedin_url,
+                                retry=new_retries,
+                            )
                     if fu_result.get("fatal"):
                         break
 
