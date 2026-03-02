@@ -161,6 +161,13 @@ class LinkedInBrowser:
                     logger.warning("session.expired", url=current_url)
                     return False
 
+            # Wait for page to fully render before scraping avatar
+            try:
+                await page.wait_for_load_state("load", timeout=10000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(2000)
+
             # Try to scrape profile photo from nav bar
             try:
                 self._avatar_url = await self._scrape_nav_avatar(page)
@@ -253,7 +260,7 @@ class LinkedInBrowser:
         page = await self._context.new_page()
         try:
             await page.goto("https://www.linkedin.com/feed/", wait_until="load", timeout=30000)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(5000)
             info = await page.evaluate("""() => {
                 const results = {};
                 results.url = window.location.href;
