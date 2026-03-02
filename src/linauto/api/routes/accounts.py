@@ -85,6 +85,39 @@ async def update_cookie(
     return AccountOut.model_validate(account)
 
 
+@router.post("/accounts/{account_id}/check-connection")
+async def check_connection(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """Quick session check — verifies the cookie works without full validation."""
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    from linauto.linkedin.browser import LinkedInBrowser
+    browser = LinkedInBrowser()
+    try:
+        await browser.launch(
+            account_id=account.id,
+            li_at_cookie=account.li_at_cookie,
+            user_agent=account.user_agent,
+            proxy_url=account.proxy_url,
+            timezone=account.timezone,
+        )
+        result = await browser.quick_check_session()
+
+        # If invalid, mark account as cookie_expired
+        if not result.get("valid"):
+            await repo.update_account(account, status="cookie_expired")
+
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Check failed: {e}")
+    finally:
+        await browser.close()
+
+
 @router.post("/accounts/{account_id}/login-session")
 async def start_login_session(
     account_id: str,

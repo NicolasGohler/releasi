@@ -232,3 +232,11 @@ export const getAvatarUrl = (accountId: string) =>
 
 export const fetchAvatar = (accountId: string) =>
   apiFetch<{ success: boolean }>(`/accounts/${accountId}/fetch-avatar`, { method: "POST" });
+
+// ── Connection Check ────────────────────────────────────────────────────
+
+export const checkConnection = (accountId: string) =>
+  apiFetch<{ valid: boolean; title?: string; has_content?: boolean; url?: string; reason?: string; error?: string; elapsed_ms: number }>(
+    `/accounts/${accountId}/check-connection`,
+    { method: "POST" }
+  );

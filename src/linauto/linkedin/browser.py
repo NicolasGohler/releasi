@@ -219,6 +219,48 @@ class LinkedInBrowser:
             pass
         return None
 
+    async def quick_check_session(self) -> dict:
+        """Fast session check — just verifies feed loads without login redirect.
+
+        Returns dict with valid, title, has_feed_content, and timing info.
+        Designed to complete in under 5 seconds.
+        """
+        import time
+        start = time.monotonic()
+
+        if not self._context:
+            return {"valid": False, "error": "no browser context", "elapsed_ms": 0}
+
+        page = await self._context.new_page()
+        try:
+            await page.goto(FEED_URL, wait_until="domcontentloaded", timeout=15000)
+            current_url = page.url
+
+            for pattern in LOGIN_URL_PATTERNS:
+                if pattern in current_url:
+                    elapsed = int((time.monotonic() - start) * 1000)
+                    return {"valid": False, "reason": "redirected_to_login", "url": current_url, "elapsed_ms": elapsed}
+
+            # Quick check: does the page have actual content?
+            title = await page.title()
+            has_content = await page.evaluate("""() => {
+                return document.body && document.body.innerHTML.length > 1000;
+            }""")
+
+            elapsed = int((time.monotonic() - start) * 1000)
+            return {
+                "valid": True,
+                "title": title,
+                "has_content": has_content,
+                "url": current_url,
+                "elapsed_ms": elapsed,
+            }
+        except Exception as e:
+            elapsed = int((time.monotonic() - start) * 1000)
+            return {"valid": False, "error": str(e), "elapsed_ms": elapsed}
+        finally:
+            await page.close()
+
     def get_avatar_url(self) -> Optional[str]:
         """Return the avatar URL scraped during validate_session()."""
         return getattr(self, '_avatar_url', None)

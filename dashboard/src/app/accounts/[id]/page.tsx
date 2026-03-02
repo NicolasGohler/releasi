@@ -19,7 +19,7 @@ import { DailyChart } from "@/components/stats/daily-chart";
 import { ActivityTimeline } from "@/components/activity-timeline";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { startLoginSession, finishLoginSession, cancelLoginSession, getAvatarUrl } from "@/lib/api";
+import { startLoginSession, finishLoginSession, cancelLoginSession, getAvatarUrl, checkConnection } from "@/lib/api";
 
 export default function AccountDetailPage({
   params,
@@ -41,6 +41,7 @@ export default function AccountDetailPage({
   const [loginSessionActive, setLoginSessionActive] = useState(false);
   const [editWithdrawThreshold, setEditWithdrawThreshold] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
+  const [connectionChecking, setConnectionChecking] = useState(false);
 
   // Initialize edit fields from account data once loaded
   if (account && !settingsInitialized) {
@@ -354,6 +355,41 @@ export default function AccountDetailPage({
                   </div>
                 </div>
               )}
+
+              <div className="relative pt-2">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t border-border" />
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-card px-2 text-muted-foreground">verify</span>
+                </div>
+              </div>
+
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  setConnectionChecking(true);
+                  try {
+                    const result = await checkConnection(id);
+                    if (result.valid) {
+                      toast.success(`Connection OK (${result.elapsed_ms}ms)`);
+                    } else {
+                      toast.error(
+                        result.reason === "redirected_to_login"
+                          ? "Session expired — cookie is invalid"
+                          : `Connection failed: ${result.error || result.reason}`
+                      );
+                    }
+                  } catch (err: unknown) {
+                    toast.error(err instanceof Error ? err.message : "Check failed");
+                  } finally {
+                    setConnectionChecking(false);
+                  }
+                }}
+                disabled={connectionChecking}
+              >
+                {connectionChecking ? "Checking..." : "Check Connection"}
+              </Button>
             </CardContent>
           </Card>
         </TabsContent>
