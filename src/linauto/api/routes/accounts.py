@@ -109,8 +109,11 @@ async def check_connection(
         )
         result = await browser.quick_check_session()
 
-        # If invalid, mark account as cookie_expired
-        if not result.get("valid"):
+        # Update account status based on result
+        if result.get("valid"):
+            if account.status == "cookie_expired":
+                await repo.update_account(account, status="active")
+        else:
             await repo.update_account(account, status="cookie_expired")
 
         return result
