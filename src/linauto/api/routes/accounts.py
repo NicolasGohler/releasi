@@ -201,7 +201,9 @@ async def fetch_avatar_now(
         if avatar_path:
             await repo.update_account(account, avatar_path=avatar_path)
             return {"success": True, "avatar_path": avatar_path}
-        return {"success": False, "message": "Could not find profile photo on page"}
+        # Debug: get nav HTML to diagnose selector issues
+        debug_info = await browser.debug_nav_html()
+        return {"success": False, "message": "Could not find profile photo on page", "debug": debug_info}
     finally:
         await browser.close()
 

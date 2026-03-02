@@ -246,6 +246,47 @@ class LinkedInBrowser:
             logger.warning("avatar.download_failed", error=str(e))
         return None
 
+    async def debug_nav_html(self) -> dict:
+        """Debug helper: return info about images on the current page nav."""
+        if not self._context:
+            return {"error": "no context"}
+        page = await self._context.new_page()
+        try:
+            await page.goto("https://www.linkedin.com/feed/", wait_until="load", timeout=30000)
+            await page.wait_for_timeout(3000)
+            info = await page.evaluate("""() => {
+                const results = {};
+                // Check global-nav
+                const nav = document.querySelector('.global-nav');
+                results.has_global_nav = !!nav;
+                // All images in nav
+                const navImgs = nav ? Array.from(nav.querySelectorAll('img')).map(i => ({
+                    src: i.src?.substring(0, 200),
+                    alt: i.alt,
+                    className: i.className,
+                    width: i.naturalWidth,
+                    height: i.naturalHeight,
+                })) : [];
+                results.nav_images = navImgs;
+                // Me button area
+                const me = document.querySelector('.global-nav__me');
+                results.has_me_button = !!me;
+                if (me) {
+                    const meImgs = Array.from(me.querySelectorAll('img')).map(i => ({
+                        src: i.src?.substring(0, 200),
+                        alt: i.alt,
+                        className: i.className,
+                    }));
+                    results.me_images = meImgs;
+                }
+                return results;
+            }""")
+            return info
+        except Exception as e:
+            return {"error": str(e)}
+        finally:
+            await page.close()
+
     async def new_page(self):
         """Get a new page from the browser context."""
         if not self._context:
