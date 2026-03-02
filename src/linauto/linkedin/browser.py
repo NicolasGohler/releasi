@@ -178,15 +178,38 @@ class LinkedInBrowser:
     async def _scrape_nav_avatar(self, page) -> Optional[str]:
         """Extract profile photo URL from the LinkedIn nav bar."""
         from playwright.async_api import TimeoutError as PlaywrightTimeout
+        # Try CSS selectors first
         for sel in NAV_AVATAR:
             try:
                 img = page.locator(sel).first
                 await img.wait_for(state="visible", timeout=3000)
                 src = await img.get_attribute("src")
-                if src and ("profile" in src or "media" in src):
+                if src and src.startswith("http"):
                     return src
             except (PlaywrightTimeout, Exception):
                 continue
+        # Fallback: JS evaluation to find nav profile image
+        try:
+            src = await page.evaluate("""() => {
+                // Try nav bar Me button area
+                const nav = document.querySelector('.global-nav__me')
+                          || document.querySelector('[data-test-global-nav-me]')
+                          || document.querySelector('.global-nav');
+                if (nav) {
+                    const img = nav.querySelector('img');
+                    if (img && img.src && img.src.startsWith('http')) return img.src;
+                }
+                // Try any small circular profile image in the header
+                const imgs = document.querySelectorAll('nav img, header img, .global-nav img');
+                for (const img of imgs) {
+                    if (img.src && img.src.startsWith('http') && img.naturalWidth > 0) return img.src;
+                }
+                return null;
+            }""")
+            if src:
+                return src
+        except Exception:
+            pass
         return None
 
     def get_avatar_url(self) -> Optional[str]:
