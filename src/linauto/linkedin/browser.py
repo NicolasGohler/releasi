@@ -256,29 +256,19 @@ class LinkedInBrowser:
             await page.wait_for_timeout(3000)
             info = await page.evaluate("""() => {
                 const results = {};
-                // Check global-nav
-                const nav = document.querySelector('.global-nav');
-                results.has_global_nav = !!nav;
-                // All images in nav
-                const navImgs = nav ? Array.from(nav.querySelectorAll('img')).map(i => ({
+                results.url = window.location.href;
+                results.title = document.title;
+                // All images on page (first 20)
+                const allImgs = Array.from(document.querySelectorAll('img')).slice(0, 20).map(i => ({
                     src: i.src?.substring(0, 200),
-                    alt: i.alt,
-                    className: i.className,
-                    width: i.naturalWidth,
-                    height: i.naturalHeight,
-                })) : [];
-                results.nav_images = navImgs;
-                // Me button area
-                const me = document.querySelector('.global-nav__me');
-                results.has_me_button = !!me;
-                if (me) {
-                    const meImgs = Array.from(me.querySelectorAll('img')).map(i => ({
-                        src: i.src?.substring(0, 200),
-                        alt: i.alt,
-                        className: i.className,
-                    }));
-                    results.me_images = meImgs;
-                }
+                    alt: (i.alt || '').substring(0, 100),
+                    className: (i.className || '').substring(0, 100),
+                    parent: i.parentElement?.className?.substring(0, 100) || '',
+                }));
+                results.all_images = allImgs;
+                // Nav-like elements
+                const nav = document.querySelector('nav') || document.querySelector('header') || document.querySelector('[role="navigation"]');
+                results.nav_tag = nav ? nav.tagName + '.' + (nav.className || '').substring(0, 100) : null;
                 return results;
             }""")
             return info
