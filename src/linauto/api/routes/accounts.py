@@ -75,7 +75,7 @@ async def update_cookie(
     account = await repo.get_account(account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    kwargs = {"li_at_cookie": body.li_at_cookie}
+    kwargs = {"li_at_cookie": body.li_at_cookie, "status": "active"}
     if body.li_a_cookie is not None:
         kwargs["li_a_cookie"] = body.li_a_cookie
     account = await repo.update_account(account, **kwargs)

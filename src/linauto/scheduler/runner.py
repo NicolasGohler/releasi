@@ -146,6 +146,7 @@ async def dispatch():
 
                 successful_sends = 0
                 attempts = 0
+                consecutive_errors = 0
                 max_attempts = target * 3  # Safety cap: don't try more than 3x target
                 lead_queue = list(due_leads[:target])
                 stop_account = False
@@ -186,7 +187,29 @@ async def dispatch():
 
                     if result.get("success"):
                         successful_sends += 1
+                        consecutive_errors = 0
                     else:
+                        consecutive_errors += 1
+
+                        # 3+ consecutive errors likely means cookie expired / session broken
+                        if consecutive_errors >= 3:
+                            logger.error(
+                                "dispatch.consecutive_errors_detected",
+                                account=account.name,
+                                campaign=campaign.name,
+                                consecutive=consecutive_errors,
+                            )
+                            await repo.update_account(account, status="cookie_expired")
+                            await repo.log_action(
+                                account_id=account.id,
+                                campaign_id=campaign.id,
+                                action_type=ActionType.ERROR,
+                                status=ActionLogStatus.FAILED,
+                                details={"reason": "consecutive_navigation_errors", "count": consecutive_errors},
+                            )
+                            stop_account = True
+                            break
+
                         # Lead was skipped/errored — backfill from pending pool
                         backfill = await repo.get_pending_leads(campaign.id, limit=1)
                         if backfill:
