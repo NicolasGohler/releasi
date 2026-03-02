@@ -23,6 +23,7 @@ async def _enrich_campaign(repo: Repository, campaign) -> CampaignOut:
     account = await repo.get_account(campaign.account_id)
     if account:
         out.account_name = account.name
+        out.account_status = account.status.value if hasattr(account.status, 'value') else account.status
         out.account_paused_until = account.paused_until
     return out
 

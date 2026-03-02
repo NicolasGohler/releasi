@@ -41,6 +41,7 @@ export interface Campaign {
   csv_filename: string | null;
   total_leads: number;
   status_counts: Record<string, number> | null;
+  account_status: string | null;
   account_paused_until: string | null;
   created_at: string;
   updated_at: string;

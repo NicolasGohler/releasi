@@ -69,6 +69,7 @@ class CampaignOut(BaseModel):
     csv_filename: Optional[str] = None
     total_leads: int
     status_counts: Optional[Dict[str, int]] = None
+    account_status: Optional[str] = None
     account_paused_until: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime

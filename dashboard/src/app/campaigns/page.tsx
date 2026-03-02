@@ -88,7 +88,11 @@ export default function CampaignsPage() {
                     <p className="text-xs text-muted-foreground">
                       {c.account_name ?? "—"}
                     </p>
-                    {c.account_paused_until && new Date(c.account_paused_until) > new Date() && (
+                    {c.account_status === "cookie_expired" ? (
+                      <p className="text-xs text-red-400">
+                        Cookie expired — update in account settings
+                      </p>
+                    ) : c.account_paused_until && new Date(c.account_paused_until) > new Date() ? (
                       <p className="text-xs text-amber-400">
                         Paused — resumes{" "}
                         {new Date(c.account_paused_until).toLocaleString(undefined, {
@@ -99,7 +103,7 @@ export default function CampaignsPage() {
                           minute: "2-digit",
                         })}
                       </p>
-                    )}
+                    ) : null}
                     <div className="space-y-1">
                       <div className="flex justify-between text-xs text-muted-foreground">
                         <span>{progress.accepted + progress.sent + progress.other} / {progress.total} processed</span>
