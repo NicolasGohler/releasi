@@ -220,18 +220,38 @@ class LinkedInBrowser:
         return None
 
     async def quick_check_session(self) -> dict:
-        """Fast session check — just verifies feed loads without login redirect.
+        """Fast session check using a fresh ephemeral context.
 
-        Returns dict with valid, title, has_feed_content, and timing info.
-        Designed to complete in under 5 seconds.
+        Uses a clean browser context (no cached data) to truly test whether
+        the li_at cookie alone is valid. Returns dict with valid, title, etc.
         """
         import time
         start = time.monotonic()
 
-        if not self._context:
-            return {"valid": False, "error": "no browser context", "elapsed_ms": 0}
+        if not self._playwright:
+            return {"valid": False, "error": "no playwright instance", "elapsed_ms": 0}
 
-        page = await self._context.new_page()
+        settings = get_settings()
+        browser = await self._playwright.chromium.launch(
+            headless=settings.browser_headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+            ],
+        )
+        context = await browser.new_context()
+
+        # Inject only the li_at cookie — no cached state
+        cookies = await self._context.cookies() if self._context else []
+        li_at_cookie = next((c for c in cookies if c["name"] == "li_at"), None)
+        if li_at_cookie:
+            await context.add_cookies([li_at_cookie])
+        else:
+            await browser.close()
+            return {"valid": False, "error": "no li_at cookie found", "elapsed_ms": 0}
+
+        page = await context.new_page()
         try:
             await page.goto(FEED_URL, wait_until="domcontentloaded", timeout=15000)
             current_url = page.url
@@ -241,7 +261,6 @@ class LinkedInBrowser:
                     elapsed = int((time.monotonic() - start) * 1000)
                     return {"valid": False, "reason": "redirected_to_login", "url": current_url, "elapsed_ms": elapsed}
 
-            # Quick check: does the page have actual content?
             title = await page.title()
             has_content = await page.evaluate("""() => {
                 return document.body && document.body.innerHTML.length > 1000;
@@ -260,6 +279,8 @@ class LinkedInBrowser:
             return {"valid": False, "error": str(e), "elapsed_ms": elapsed}
         finally:
             await page.close()
+            await context.close()
+            await browser.close()
 
     def get_avatar_url(self) -> Optional[str]:
         """Return the avatar URL scraped during validate_session()."""
