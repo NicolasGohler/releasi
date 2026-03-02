@@ -199,18 +199,26 @@ class LinkedInBrowser:
         if not url:
             return None
 
-        import httpx
+        import asyncio
+        from urllib.request import urlopen, Request
+
         avatar_dir = Path("data/avatars")
         avatar_dir.mkdir(parents=True, exist_ok=True)
         path = avatar_dir / f"{account_id}.jpg"
 
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url, timeout=10)
-                if resp.status_code == 200:
-                    path.write_bytes(resp.content)
-                    logger.info("avatar.saved", account_id=account_id, path=str(path))
-                    return str(path)
+            def _download():
+                req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urlopen(req, timeout=10) as resp:
+                    if resp.status == 200:
+                        path.write_bytes(resp.read())
+                        return True
+                return False
+
+            ok = await asyncio.get_event_loop().run_in_executor(None, _download)
+            if ok:
+                logger.info("avatar.saved", account_id=account_id, path=str(path))
+                return str(path)
         except Exception as e:
             logger.warning("avatar.download_failed", error=str(e))
         return None
