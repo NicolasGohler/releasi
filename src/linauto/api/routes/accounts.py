@@ -84,6 +84,15 @@ async def update_cookie(
     if body.li_a_cookie is not None:
         kwargs["li_a_cookie"] = body.li_a_cookie
     account = await repo.update_account(account, **kwargs)
+
+    # Evict old pool slot so pool picks up the new cookie cleanly
+    try:
+        from linauto.linkedin.pool import get_browser_pool
+        pool = get_browser_pool()
+        await pool.evict(account.id)
+    except RuntimeError:
+        pass  # Pool not initialized
+
     return AccountOut.model_validate(account)
 
 
@@ -92,35 +101,68 @@ async def check_connection(
     account_id: str,
     repo: Repository = Depends(get_repo),
 ):
-    """Quick session check — verifies the cookie works without full validation."""
+    """Quick session check — uses the pool browser (same fingerprint) if available."""
     account = await repo.get_account(account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    from linauto.linkedin.browser import LinkedInBrowser
-    browser = LinkedInBrowser()
+    import time
+    start = time.monotonic()
+
+    # Try to use the pool (scheduler context) — avoids spawning a separate browser
     try:
-        await browser.launch(
-            account_id=account.id,
-            li_at_cookie=account.li_at_cookie,
-            user_agent=account.user_agent,
-            proxy_url=account.proxy_url,
-            timezone=account.timezone,
-        )
-        result = await browser.quick_check_session()
+        from linauto.linkedin.pool import get_browser_pool
+        pool = get_browser_pool()
+        context = await pool.acquire(account)
+        try:
+            page = await context.new_page()
+            try:
+                from linauto.linkedin.selectors import FEED_URL, LOGIN_URL_PATTERNS
+                await page.goto(FEED_URL, wait_until="domcontentloaded", timeout=15000)
+                current_url = page.url
 
-        # Update account status based on result
-        if result.get("valid"):
-            if account.status == "cookie_expired":
-                await repo.update_account(account, status="active")
-        else:
-            await repo.update_account(account, status="cookie_expired")
+                for pattern in LOGIN_URL_PATTERNS:
+                    if pattern in current_url:
+                        elapsed = int((time.monotonic() - start) * 1000)
+                        await repo.update_account(account, status="cookie_expired")
+                        return {"valid": False, "reason": "redirected_to_login", "url": current_url, "elapsed_ms": elapsed}
 
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Check failed: {e}")
-    finally:
-        await browser.close()
+                elapsed = int((time.monotonic() - start) * 1000)
+                if account.status == "cookie_expired":
+                    await repo.update_account(account, status="active")
+                return {"valid": True, "url": current_url, "elapsed_ms": elapsed}
+            except Exception as e:
+                elapsed = int((time.monotonic() - start) * 1000)
+                return {"valid": False, "error": str(e), "elapsed_ms": elapsed}
+            finally:
+                await page.close()
+        finally:
+            pool.release(account.id)
+    except RuntimeError:
+        # Pool not initialized (e.g. no scheduler running) — fall back to ephemeral
+        from linauto.linkedin.browser import LinkedInBrowser
+        browser = LinkedInBrowser()
+        try:
+            await browser.launch(
+                account_id=account.id,
+                li_at_cookie=account.li_at_cookie,
+                user_agent=account.user_agent,
+                proxy_url=account.proxy_url,
+                timezone=account.timezone,
+            )
+            valid = await browser.validate_session()
+            elapsed = int((time.monotonic() - start) * 1000)
+            if valid:
+                if account.status == "cookie_expired":
+                    await repo.update_account(account, status="active")
+                return {"valid": True, "elapsed_ms": elapsed}
+            else:
+                await repo.update_account(account, status="cookie_expired")
+                return {"valid": False, "reason": "session_invalid", "elapsed_ms": elapsed}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Check failed: {e}")
+        finally:
+            await browser.close()
 
 
 @router.post("/accounts/{account_id}/login-session")
@@ -176,6 +218,15 @@ async def finish_login_session(
         update_kwargs["li_a_cookie"] = result["li_a"]
     await repo.update_account(account, **update_kwargs)
 
+    # Evict old pool slot so the pool creates a fresh browser with the new cookie
+    # on next acquire (avoids stale cookie / fingerprint mismatch)
+    try:
+        from linauto.linkedin.pool import get_browser_pool
+        pool = get_browser_pool()
+        await pool.evict(account.id)
+    except RuntimeError:
+        pass  # Pool not initialized (CLI context)
+
     return {"success": True, "message": "Cookies extracted and saved successfully"}
 
 
@@ -216,32 +267,53 @@ async def fetch_avatar_now(
     account_id: str,
     repo: Repository = Depends(get_repo),
 ):
-    """One-time fetch of avatar for an existing account."""
+    """One-time fetch of avatar — uses pool browser if available."""
     account = await repo.get_account(account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    from linauto.linkedin.browser import LinkedInBrowser
-    browser = LinkedInBrowser()
+    # Try to use pool (avoids spawning a separate browser fingerprint)
     try:
-        await browser.launch(
-            account_id=account.id,
-            li_at_cookie=account.li_at_cookie,
-            user_agent=account.user_agent,
-            proxy_url=account.proxy_url,
-            timezone=account.timezone,
-        )
-        valid = await browser.validate_session()
-        if not valid:
-            raise HTTPException(status_code=400, detail="Session invalid — cookie may be expired")
-
-        avatar_path = await browser.save_avatar(account.id)
-        if avatar_path:
-            await repo.update_account(account, avatar_path=avatar_path)
-            return {"success": True, "avatar_path": avatar_path}
-        return {"success": False, "message": "Could not find profile photo on page"}
-    finally:
-        await browser.close()
+        from linauto.linkedin.pool import get_browser_pool
+        pool = get_browser_pool()
+        await pool.acquire(account)
+        try:
+            slot = pool._slots.get(account.id)
+            if slot:
+                # validate_session scrapes the avatar
+                valid = await slot.browser.validate_session()
+                if not valid:
+                    raise HTTPException(status_code=400, detail="Session invalid — cookie may be expired")
+                avatar_path = await slot.browser.save_avatar(account.id)
+                if avatar_path:
+                    await repo.update_account(account, avatar_path=avatar_path)
+                    return {"success": True, "avatar_path": avatar_path}
+                return {"success": False, "message": "Could not find profile photo on page"}
+            return {"success": False, "message": "Pool slot not available"}
+        finally:
+            pool.release(account.id)
+    except RuntimeError:
+        # Pool not initialized — fall back to ephemeral browser
+        from linauto.linkedin.browser import LinkedInBrowser
+        browser = LinkedInBrowser()
+        try:
+            await browser.launch(
+                account_id=account.id,
+                li_at_cookie=account.li_at_cookie,
+                user_agent=account.user_agent,
+                proxy_url=account.proxy_url,
+                timezone=account.timezone,
+            )
+            valid = await browser.validate_session()
+            if not valid:
+                raise HTTPException(status_code=400, detail="Session invalid — cookie may be expired")
+            avatar_path = await browser.save_avatar(account.id)
+            if avatar_path:
+                await repo.update_account(account, avatar_path=avatar_path)
+                return {"success": True, "avatar_path": avatar_path}
+            return {"success": False, "message": "Could not find profile photo on page"}
+        finally:
+            await browser.close()
 
 
 @router.get("/accounts/{account_id}/activity", response_model=List[ActionLogOut])

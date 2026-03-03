@@ -103,6 +103,8 @@ class LoginSessionManager:
 
         Uses a temporary profile directory so it doesn't conflict with the
         automation browser that may be using the account's main profile.
+        Uses the same deterministic User-Agent as the pool browser to
+        maintain a consistent fingerprint.
 
         Returns the noVNC URL path for the user to access.
         """
@@ -127,12 +129,17 @@ class LoginSessionManager:
         self._start_websockify()
         await asyncio.sleep(0.5)
 
+        # Use the same deterministic UA as the pool browser
+        from linauto.linkedin.browser import _deterministic_ua
+        ua = _deterministic_ua(account_id)
+
         # Launch headed Chromium with the temporary profile
         self._playwright = await async_playwright().start()
         self._context = await self._playwright.chromium.launch_persistent_context(
             user_data_dir=self._temp_dir,
             headless=False,
             viewport={"width": 1200, "height": 750},
+            user_agent=ua,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
