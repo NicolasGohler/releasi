@@ -95,6 +95,7 @@ class Account(Base):
     weekly_limit: Mapped[int] = mapped_column(Integer, default=80)
     timezone: Mapped[Optional[str]] = mapped_column(String(63), default="Europe/Berlin")
     proxy_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    proxy_country: Mapped[Optional[str]] = mapped_column(String(63), nullable=True)
     paused_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     withdraw_threshold: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     avatar_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

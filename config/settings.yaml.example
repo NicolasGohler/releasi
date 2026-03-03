@@ -48,6 +48,14 @@ page_load_delay_max: 3.0
 typing_delay_min_ms: 50
 typing_delay_max_ms: 150
 
+# Residential proxy (IPRoyal) — set credentials once, then just
+# assign proxy_country per account (e.g., "ca-montreal", "de-berlin")
+# proxy_username: "your_iproyal_username"
+# proxy_password: "your_iproyal_base_password"  # Without _country-xx params
+# proxy_hostname: "geo.iproyal.com"
+# proxy_port: 12321
+# proxy_lifetime: "168h"   # Sticky session duration (168h = 7 days)
+
 # Browser pool (persistent browsers for session keep-alive)
 # Keeps Chromium instances alive across scheduler jobs, preserving
 # cookies that accumulate naturally (bcookie, JSESSIONID, etc.)

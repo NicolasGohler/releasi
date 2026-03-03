@@ -56,6 +56,7 @@ class CampaignExecutor:
                 li_at_cookie=account.li_at_cookie,
                 user_agent=account.user_agent,
                 proxy_url=account.proxy_url,
+                proxy_country=account.proxy_country,
                 timezone=account.timezone,
             )
             valid = await browser.validate_session()
@@ -202,6 +203,7 @@ class CampaignExecutor:
                 li_at_cookie=account.li_at_cookie,
                 user_agent=account.user_agent,
                 proxy_url=account.proxy_url,
+                proxy_country=account.proxy_country,
                 timezone=account.timezone,
             )
             valid = await browser.validate_session()
@@ -297,6 +299,9 @@ class CampaignExecutor:
                 account_id=account.id,
                 li_at_cookie=account.li_at_cookie,
                 user_agent=account.user_agent,
+                proxy_url=account.proxy_url,
+                proxy_country=account.proxy_country,
+                timezone=account.timezone,
             )
 
             # Validate session first

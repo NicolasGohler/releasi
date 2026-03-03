@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     stealth_enabled: bool = True
     default_timezone: str = "Europe/Berlin"
 
+    # Residential proxy (IPRoyal) — auto-generates per-account proxy URLs
+    # Set these globally, then just set proxy_country on each account
+    proxy_provider: str = "iproyal"
+    proxy_username: str = ""
+    proxy_password: str = ""       # Base password (without _country-xx params)
+    proxy_hostname: str = "geo.iproyal.com"
+    proxy_port: int = 12321
+    proxy_lifetime: str = "168h"   # Sticky session duration (168h = 7 days)
+
     # Browser pool (persistent browsers for session keep-alive)
     pool_max_browsers: int = 3
     pool_keepalive_interval_hours: float = 2.5

@@ -90,7 +90,11 @@ def account_add(
         "Europe/Berlin", "--timezone", "-tz", help="Account timezone (e.g., 'America/New_York')"
     ),
     proxy: str = typer.Option(
-        None, "--proxy", help="Proxy URL (e.g., 'http://user:pass@host:port')"
+        None, "--proxy", help="Explicit proxy URL (e.g., 'http://user:pass@host:port')"
+    ),
+    proxy_country: str = typer.Option(
+        None, "--proxy-country", "-pc",
+        help="Auto-generate residential proxy for country (e.g., 'ca-montreal', 'de-berlin', 'es')"
     ),
 ):
     """Add a new LinkedIn account with its session cookie."""
@@ -104,12 +108,16 @@ def account_add(
         kwargs = {"timezone": timezone}
         if proxy:
             kwargs["proxy_url"] = proxy
+        if proxy_country:
+            kwargs["proxy_country"] = proxy_country
 
         account = await repo.create_account(name=name, li_at_cookie=li_at, **kwargs)
         console.print(f"[green]Account '{name}' added (id: {account.id[:8]}...)[/green]")
         console.print(f"  Timezone: {timezone}")
         if proxy:
-            console.print(f"  Proxy: configured")
+            console.print(f"  Proxy: configured (explicit)")
+        if proxy_country:
+            console.print(f"  Proxy country: {proxy_country} (auto-generated)")
         await _cleanup(session)
 
     _run(_add())
@@ -167,6 +175,9 @@ def account_validate(
                 account_id=account.id,
                 li_at_cookie=account.li_at_cookie,
                 user_agent=account.user_agent,
+                proxy_url=account.proxy_url,
+                proxy_country=account.proxy_country,
+                timezone=account.timezone,
             )
             valid = await browser.validate_session()
             if valid:
@@ -670,6 +681,7 @@ def debug_profile(
                 li_at_cookie=account.li_at_cookie,
                 user_agent=account.user_agent,
                 proxy_url=account.proxy_url,
+                proxy_country=account.proxy_country,
                 timezone=account.timezone,
             )
             valid = await browser.validate_session()

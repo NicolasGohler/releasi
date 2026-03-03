@@ -16,6 +16,7 @@ class AccountOut(BaseModel):
     daily_limit: int
     weekly_limit: int
     timezone: Optional[str] = None
+    proxy_country: Optional[str] = None
     paused_until: Optional[datetime] = None
     withdraw_threshold: Optional[int] = None
     avatar_path: Optional[str] = None
@@ -33,11 +34,13 @@ class AccountCreate(BaseModel):
     user_agent: Optional[str] = None
     timezone: Optional[str] = "Europe/Berlin"
     proxy_url: Optional[str] = None
+    proxy_country: Optional[str] = None
 
 
 class AccountUpdate(BaseModel):
     name: Optional[str] = None
     timezone: Optional[str] = None
+    proxy_country: Optional[str] = None
     daily_limit: Optional[int] = None
     weekly_limit: Optional[int] = None
     withdraw_threshold: Optional[int] = None

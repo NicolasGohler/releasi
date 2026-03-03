@@ -48,6 +48,7 @@ async def create_account(body: AccountCreate, repo: Repository = Depends(get_rep
         user_agent=body.user_agent,
         timezone=body.timezone,
         proxy_url=body.proxy_url,
+        proxy_country=body.proxy_country,
     )
     # If no cookie provided, mark as needing login
     if not body.li_at_cookie:
@@ -148,6 +149,7 @@ async def check_connection(
                 li_at_cookie=account.li_at_cookie,
                 user_agent=account.user_agent,
                 proxy_url=account.proxy_url,
+                proxy_country=account.proxy_country,
                 timezone=account.timezone,
             )
             valid = await browser.validate_session()
@@ -302,6 +304,7 @@ async def fetch_avatar_now(
                 li_at_cookie=account.li_at_cookie,
                 user_agent=account.user_agent,
                 proxy_url=account.proxy_url,
+                proxy_country=account.proxy_country,
                 timezone=account.timezone,
             )
             valid = await browser.validate_session()

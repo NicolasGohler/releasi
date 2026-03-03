@@ -61,6 +61,46 @@ def _deterministic_ua(account_id: str) -> str:
     return _USER_AGENTS[idx]
 
 
+def _build_proxy_url(account_id: str, proxy_country: str) -> Optional[str]:
+    """Auto-generate an IPRoyal proxy URL for an account.
+
+    Uses the global proxy credentials from settings and the account's
+    proxy_country.  Each account gets a deterministic sticky session ID
+    derived from its account_id so it always lands on the same residential IP
+    (until the sticky period expires and IPRoyal rotates it).
+
+    The proxy_country format is "{country}" or "{country}-{city}", e.g.
+    "ca", "ca-montreal", "de-berlin", "es".
+    """
+    settings = get_settings()
+    if not settings.proxy_username or not settings.proxy_password:
+        return None
+
+    # Deterministic session ID from account_id (8 hex chars)
+    session_id = hashlib.sha256(account_id.encode()).hexdigest()[:12]
+
+    # Parse country and optional city from proxy_country
+    parts = proxy_country.split("-", 1)
+    country_code = parts[0]
+    city = parts[1] if len(parts) > 1 else None
+
+    # Build password with IPRoyal parameters
+    password_parts = [
+        settings.proxy_password,
+        f"country-{country_code}",
+    ]
+    if city:
+        password_parts.append(f"city-{city}")
+    password_parts.append(f"session-{session_id}")
+    password_parts.append(f"lifetime-{settings.proxy_lifetime}")
+    password = "_".join(password_parts)
+
+    return (
+        f"http://{settings.proxy_username}:{password}"
+        f"@{settings.proxy_hostname}:{settings.proxy_port}"
+    )
+
+
 class LinkedInBrowser:
     """Manages Playwright browser instances per LinkedIn account."""
 
@@ -75,6 +115,7 @@ class LinkedInBrowser:
         li_at_cookie: str,
         user_agent: Optional[str] = None,
         proxy_url: Optional[str] = None,
+        proxy_country: Optional[str] = None,
         timezone: Optional[str] = None,
     ) -> BrowserContext:
         """
@@ -112,7 +153,11 @@ class LinkedInBrowser:
             ],
         )
 
-        # Add proxy if provided
+        # Auto-generate proxy URL from proxy_country if no explicit proxy_url
+        if not proxy_url and proxy_country:
+            proxy_url = _build_proxy_url(account_id, proxy_country)
+
+        # Add proxy if available
         if proxy_url:
             context_kwargs["proxy"] = {"server": proxy_url}
             logger.info("browser.proxy_configured", proxy=proxy_url.split("@")[-1])
