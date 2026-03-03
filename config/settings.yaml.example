@@ -48,6 +48,12 @@ page_load_delay_max: 3.0
 typing_delay_min_ms: 50
 typing_delay_max_ms: 150
 
+# Browser pool (persistent browsers for session keep-alive)
+# Keeps Chromium instances alive across scheduler jobs, preserving
+# cookies that accumulate naturally (bcookie, JSESSIONID, etc.)
+pool_max_browsers: 3              # Max concurrent persistent browsers
+pool_keepalive_interval_hours: 2.5 # How often to ping LinkedIn to prevent session timeout
+
 # Browser
 browser_headless: true
 browser_viewport_width: 1920

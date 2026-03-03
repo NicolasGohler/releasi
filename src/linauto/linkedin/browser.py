@@ -1,7 +1,7 @@
 """Playwright browser lifecycle management per LinkedIn account."""
 from __future__ import annotations
 
-import random
+import hashlib
 from pathlib import Path
 from typing import Optional
 
@@ -51,12 +51,23 @@ def _timezone_to_locale(timezone_str: Optional[str]) -> str:
     return "en-US"
 
 
+def _deterministic_ua(account_id: str) -> str:
+    """Pick a stable User-Agent per account using a hash-based index.
+
+    This ensures the same account always presents the same browser fingerprint,
+    unlike random.choice which changes on every launch.
+    """
+    idx = int(hashlib.sha256(account_id.encode()).hexdigest()[:8], 16) % len(_USER_AGENTS)
+    return _USER_AGENTS[idx]
+
+
 class LinkedInBrowser:
     """Manages Playwright browser instances per LinkedIn account."""
 
-    def __init__(self):
+    def __init__(self, pool_managed: bool = False):
         self._playwright: Optional[Playwright] = None
         self._context: Optional[BrowserContext] = None
+        self._pool_managed = pool_managed
 
     async def launch(
         self,
@@ -79,7 +90,7 @@ class LinkedInBrowser:
 
         self._playwright = await async_playwright().start()
 
-        ua = user_agent or random.choice(_USER_AGENTS)
+        ua = user_agent or _deterministic_ua(account_id)
         tz = timezone or settings.default_timezone
         locale = _timezone_to_locale(tz)
 
@@ -120,18 +131,29 @@ class LinkedInBrowser:
             except ImportError:
                 logger.warning("browser.stealth_not_installed", hint="pip install playwright-stealth")
 
-        # Inject LinkedIn session cookie
-        await self._context.add_cookies([
-            {
-                "name": "li_at",
-                "value": li_at_cookie,
-                "domain": ".linkedin.com",
-                "path": "/",
-                "httpOnly": True,
-                "secure": True,
-                "sameSite": "None",
-            }
-        ])
+        # Smart cookie injection: only inject li_at if missing or changed.
+        # This preserves bcookie, bscookie, JSESSIONID, li_rm etc. that
+        # accumulate naturally during browsing and help keep the session alive.
+        existing_cookies = await self._context.cookies("https://www.linkedin.com")
+        existing_li_at = next(
+            (c for c in existing_cookies if c["name"] == "li_at"), None
+        )
+        if not existing_li_at or existing_li_at["value"] != li_at_cookie:
+            if existing_li_at:
+                logger.info("browser.cookie_updated", account_id=account_id)
+            await self._context.add_cookies([
+                {
+                    "name": "li_at",
+                    "value": li_at_cookie,
+                    "domain": ".linkedin.com",
+                    "path": "/",
+                    "httpOnly": True,
+                    "secure": True,
+                    "sameSite": "None",
+                }
+            ])
+        else:
+            logger.debug("browser.cookie_preserved", account_id=account_id)
 
         logger.info(
             "browser.launched",
@@ -323,7 +345,15 @@ class LinkedInBrowser:
         return await self._context.new_page()
 
     async def close(self):
-        """Clean shutdown of browser context and Playwright."""
+        """Clean shutdown of browser context and Playwright.
+
+        When pool_managed=True, this is a no-op — the pool manages the
+        browser lifecycle. This prevents executor code from accidentally
+        closing a shared browser.
+        """
+        if self._pool_managed:
+            logger.debug("browser.close_skipped_pool_managed")
+            return
         if self._context:
             await self._context.close()
             self._context = None
@@ -331,3 +361,19 @@ class LinkedInBrowser:
             await self._playwright.stop()
             self._playwright = None
         logger.info("browser.closed")
+
+    async def force_close(self):
+        """Unconditional shutdown, ignoring pool_managed flag. Used by the pool itself."""
+        if self._context:
+            try:
+                await self._context.close()
+            except Exception:
+                pass
+            self._context = None
+        if self._playwright:
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+        logger.info("browser.force_closed")

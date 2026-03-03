@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     stealth_enabled: bool = True
     default_timezone: str = "Europe/Berlin"
 
+    # Browser pool (persistent browsers for session keep-alive)
+    pool_max_browsers: int = 3
+    pool_keepalive_interval_hours: float = 2.5
+
     # Browser
     browser_headless: bool = True
     browser_viewport_width: int = 1920

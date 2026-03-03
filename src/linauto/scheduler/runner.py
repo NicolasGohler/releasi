@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import signal
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -18,6 +19,7 @@ from linauto.db.models import (
     Lead, LeadStatus, ActionType, ActionLogStatus,
 )
 from linauto.db.repository import Repository
+from linauto.linkedin.pool import get_browser_pool, init_pool, shutdown_pool
 from linauto.scheduler.planner import generate_daily_plan, SlotType
 from linauto.safety.cooldown import is_cooldown_expired, calculate_cooldown_resume, push_cooldown_one_day
 from linauto.safety import limits as rate_limits
@@ -130,118 +132,130 @@ async def dispatch():
                 logger.info("dispatch.daily_limit_reached", account=account.name)
                 continue
 
-            campaigns = await repo.get_active_campaigns(account.id)
-            for campaign in campaigns:
-                due_leads = list(await repo.get_scheduled_leads(campaign.id, before=now))
-                if not due_leads:
-                    continue
+            # Acquire pool browser once per account
+            pool = get_browser_pool()
+            pool_context = None
+            try:
+                pool_context = await pool.acquire(account)
+            except Exception as e:
+                logger.error("dispatch.pool_acquire_failed", account=account.name, error=str(e))
+                continue
 
-                # Calculate target for this dispatch cycle
-                target = len(due_leads)
-                if remaining is not None:
-                    target = min(target, remaining)
+            try:
+                campaigns = await repo.get_active_campaigns(account.id)
+                for campaign in campaigns:
+                    due_leads = list(await repo.get_scheduled_leads(campaign.id, before=now))
+                    if not due_leads:
+                        continue
 
-                from linauto.campaign.executor import CampaignExecutor
-                executor = CampaignExecutor(repo)
+                    # Calculate target for this dispatch cycle
+                    target = len(due_leads)
+                    if remaining is not None:
+                        target = min(target, remaining)
 
-                successful_sends = 0
-                attempts = 0
-                consecutive_errors = 0
-                max_attempts = target * 3  # Safety cap: don't try more than 3x target
-                lead_queue = list(due_leads[:target])
-                stop_account = False
+                    from linauto.campaign.executor import CampaignExecutor
+                    executor = CampaignExecutor(repo, browser_context=pool_context)
 
-                while lead_queue and successful_sends < target and attempts < max_attempts:
-                    attempts += 1
-                    lead = lead_queue.pop(0)
-                    result = await executor.execute_single_lead(account, campaign, lead)
+                    successful_sends = 0
+                    attempts = 0
+                    consecutive_errors = 0
+                    max_attempts = target * 3  # Safety cap: don't try more than 3x target
+                    lead_queue = list(due_leads[:target])
+                    stop_account = False
 
-                    if result.get("limit_reached"):
-                        # Trigger cooldown
-                        resume = calculate_cooldown_resume(account.timezone)
-                        await repo.update_account(account, paused_until=resume)
-                        await repo.bulk_update_lead_status(
-                            campaign.id,
-                            from_status=LeadStatus.SCHEDULED,
-                            to_status=LeadStatus.LIMIT_PAUSED,
-                        )
-                        await repo.log_action(
-                            account_id=account.id,
-                            campaign_id=campaign.id,
-                            action_type=ActionType.COOLDOWN_STARTED,
-                            status=ActionLogStatus.SUCCESS,
-                            details={"paused_until": str(resume)},
-                        )
-                        logger.warning(
-                            "dispatch.cooldown_started",
-                            account=account.name,
-                            resume=str(resume),
-                        )
-                        stop_account = True
-                        break
+                    while lead_queue and successful_sends < target and attempts < max_attempts:
+                        attempts += 1
+                        lead = lead_queue.pop(0)
+                        result = await executor.execute_single_lead(account, campaign, lead)
 
-                    if result.get("fatal"):
-                        # CAPTCHA or session expired — stop this account
-                        stop_account = True
-                        break
-
-                    if result.get("success"):
-                        successful_sends += 1
-                        consecutive_errors = 0
-                    else:
-                        consecutive_errors += 1
-
-                        # 3+ consecutive errors likely means cookie expired / session broken
-                        if consecutive_errors >= 3:
-                            logger.error(
-                                "dispatch.consecutive_errors_detected",
-                                account=account.name,
-                                campaign=campaign.name,
-                                consecutive=consecutive_errors,
-                            )
-                            await repo.update_account(account, status="cookie_expired")
-                            # Reset SCHEDULED leads back to PENDING so they're
-                            # re-planned when the cookie is renewed
+                        if result.get("limit_reached"):
+                            # Trigger cooldown
+                            resume = calculate_cooldown_resume(account.timezone)
+                            await repo.update_account(account, paused_until=resume)
                             await repo.bulk_update_lead_status(
                                 campaign.id,
                                 from_status=LeadStatus.SCHEDULED,
-                                to_status=LeadStatus.PENDING,
+                                to_status=LeadStatus.LIMIT_PAUSED,
                             )
                             await repo.log_action(
                                 account_id=account.id,
                                 campaign_id=campaign.id,
-                                action_type=ActionType.ERROR,
-                                status=ActionLogStatus.FAILED,
-                                details={"reason": "consecutive_navigation_errors", "count": consecutive_errors},
+                                action_type=ActionType.COOLDOWN_STARTED,
+                                status=ActionLogStatus.SUCCESS,
+                                details={"paused_until": str(resume)},
+                            )
+                            logger.warning(
+                                "dispatch.cooldown_started",
+                                account=account.name,
+                                resume=str(resume),
                             )
                             stop_account = True
                             break
 
-                        # Lead was skipped/errored — backfill from pending pool
-                        backfill = await repo.get_pending_leads(campaign.id, limit=1)
-                        if backfill:
-                            bl = backfill[0]
-                            # Transition to SCHEDULED so executor can mark CONNECTION_REQUESTED
-                            bl.status = LeadStatus.SCHEDULED
-                            bl.scheduled_at = datetime.utcnow()
-                            await repo.session.commit()
-                            lead_queue.append(bl)
-                            logger.info(
-                                "dispatch.backfill_lead",
-                                campaign=campaign.name,
-                                new_lead=bl.linkedin_url,
-                            )
+                        if result.get("fatal"):
+                            # CAPTCHA or session expired — stop this account
+                            stop_account = True
+                            break
 
-                if successful_sends > 0:
-                    logger.info(
-                        "dispatch.campaign_done",
-                        campaign=campaign.name,
-                        successful=successful_sends,
-                        target=target,
-                    )
+                        if result.get("success"):
+                            successful_sends += 1
+                            consecutive_errors = 0
+                        else:
+                            consecutive_errors += 1
 
-                if stop_account:
-                    break
+                            # 3+ consecutive errors likely means cookie expired / session broken
+                            if consecutive_errors >= 3:
+                                logger.error(
+                                    "dispatch.consecutive_errors_detected",
+                                    account=account.name,
+                                    campaign=campaign.name,
+                                    consecutive=consecutive_errors,
+                                )
+                                await repo.update_account(account, status="cookie_expired")
+                                # Reset SCHEDULED leads back to PENDING so they're
+                                # re-planned when the cookie is renewed
+                                await repo.bulk_update_lead_status(
+                                    campaign.id,
+                                    from_status=LeadStatus.SCHEDULED,
+                                    to_status=LeadStatus.PENDING,
+                                )
+                                await repo.log_action(
+                                    account_id=account.id,
+                                    campaign_id=campaign.id,
+                                    action_type=ActionType.ERROR,
+                                    status=ActionLogStatus.FAILED,
+                                    details={"reason": "consecutive_navigation_errors", "count": consecutive_errors},
+                                )
+                                stop_account = True
+                                break
+
+                            # Lead was skipped/errored — backfill from pending pool
+                            backfill = await repo.get_pending_leads(campaign.id, limit=1)
+                            if backfill:
+                                bl = backfill[0]
+                                # Transition to SCHEDULED so executor can mark CONNECTION_REQUESTED
+                                bl.status = LeadStatus.SCHEDULED
+                                bl.scheduled_at = datetime.utcnow()
+                                await repo.session.commit()
+                                lead_queue.append(bl)
+                                logger.info(
+                                    "dispatch.backfill_lead",
+                                    campaign=campaign.name,
+                                    new_lead=bl.linkedin_url,
+                                )
+
+                    if successful_sends > 0:
+                        logger.info(
+                            "dispatch.campaign_done",
+                            campaign=campaign.name,
+                            successful=successful_sends,
+                            target=target,
+                        )
+
+                    if stop_account:
+                        break
+            finally:
+                pool.release(account.id)
 
     except Exception as e:
         logger.error("dispatch.failed", error=str(e))
@@ -314,24 +328,18 @@ async def check_acceptances():
                 # Limit checks per cycle
                 to_check = requested_leads[:settings.max_profiles_per_acceptance_check]
 
-                from linauto.linkedin.browser import LinkedInBrowser
                 from linauto.linkedin.actions import LinkedInActions
 
-                browser = LinkedInBrowser()
+                pool = get_browser_pool()
+                pool_context = None
                 try:
-                    await browser.launch(
-                        account_id=account.id,
-                        li_at_cookie=account.li_at_cookie,
-                        user_agent=account.user_agent,
-                        proxy_url=account.proxy_url,
-                        timezone=account.timezone,
-                    )
-                    valid = await browser.validate_session()
-                    if not valid:
-                        logger.warning("acceptance.session_expired", account=account.name)
-                        continue
+                    pool_context = await pool.acquire(account)
+                except Exception as e:
+                    logger.error("acceptance.pool_acquire_failed", account=account.name, error=str(e))
+                    continue
 
-                    page = await browser.new_page()
+                try:
+                    page = await pool_context.new_page()
                     actions = LinkedInActions(page)
 
                     newly_connected = []
@@ -400,7 +408,7 @@ async def check_acceptances():
 
                     await page.close()
                 finally:
-                    await browser.close()
+                    pool.release(account.id)
 
                 # Schedule or send follow-up messages for newly connected leads
                 if newly_connected and campaign.followup_enabled:
@@ -427,36 +435,45 @@ async def check_acceptances():
                                     delay_hours=delay_hours,
                                 )
                         else:
-                            # Send immediately (delay=0)
-                            from linauto.campaign.executor import CampaignExecutor
-                            executor = CampaignExecutor(repo)
-                            for lead in newly_connected:
-                                logger.info(
-                                    "followup.starting_sequence",
-                                    url=lead.linkedin_url,
-                                    campaign=campaign.name,
-                                )
-                                fu_result = await executor.execute_followup_sequence(
-                                    account, campaign, lead
-                                )
-                                if fu_result["success"]:
-                                    await repo.update_lead(
-                                        lead,
-                                        status=LeadStatus.FOLLOWUP_SENT,
-                                        followup_sent_at=datetime.utcnow(),
-                                    )
+                            # Send immediately (delay=0) — re-acquire pool context
+                            pool_ctx_fu = None
+                            try:
+                                pool_ctx_fu = await pool.acquire(account)
+                            except Exception as e:
+                                logger.error("followup.pool_acquire_failed", account=account.name, error=str(e))
+                                continue
+                            try:
+                                from linauto.campaign.executor import CampaignExecutor
+                                executor = CampaignExecutor(repo, browser_context=pool_ctx_fu)
+                                for lead in newly_connected:
                                     logger.info(
-                                        "followup.sequence_done",
+                                        "followup.starting_sequence",
                                         url=lead.linkedin_url,
-                                        messages_sent=fu_result["messages_sent"],
+                                        campaign=campaign.name,
                                     )
-                                else:
-                                    logger.warning(
-                                        "followup.sequence_failed",
-                                        url=lead.linkedin_url,
+                                    fu_result = await executor.execute_followup_sequence(
+                                        account, campaign, lead
                                     )
-                                if fu_result.get("fatal"):
-                                    break
+                                    if fu_result["success"]:
+                                        await repo.update_lead(
+                                            lead,
+                                            status=LeadStatus.FOLLOWUP_SENT,
+                                            followup_sent_at=datetime.utcnow(),
+                                        )
+                                        logger.info(
+                                            "followup.sequence_done",
+                                            url=lead.linkedin_url,
+                                            messages_sent=fu_result["messages_sent"],
+                                        )
+                                    else:
+                                        logger.warning(
+                                            "followup.sequence_failed",
+                                            url=lead.linkedin_url,
+                                        )
+                                    if fu_result.get("fatal"):
+                                        break
+                            finally:
+                                pool.release(account.id)
 
     except Exception as e:
         logger.error("acceptance.check_failed", error=str(e))
@@ -480,60 +497,82 @@ async def dispatch_followups():
             if account.paused_until and not is_cooldown_expired(account.paused_until):
                 continue
 
+            # Check if any campaign has due follow-ups before acquiring pool
             campaigns = await repo.get_active_campaigns(account.id)
+            has_due = False
             for campaign in campaigns:
-                if not campaign.followup_enabled:
-                    continue
+                if campaign.followup_enabled:
+                    due = await repo.get_followup_due_leads(campaign.id, before=now)
+                    if due:
+                        has_due = True
+                        break
+            if not has_due:
+                continue
 
-                due_leads = await repo.get_followup_due_leads(campaign.id, before=now)
-                if not due_leads:
-                    continue
+            pool = get_browser_pool()
+            pool_context = None
+            try:
+                pool_context = await pool.acquire(account)
+            except Exception as e:
+                logger.error("followup_dispatch.pool_acquire_failed", account=account.name, error=str(e))
+                continue
 
+            try:
                 from linauto.campaign.executor import CampaignExecutor
-                executor = CampaignExecutor(repo)
+                executor = CampaignExecutor(repo, browser_context=pool_context)
 
-                for lead in due_leads:
-                    logger.info(
-                        "followup.starting_sequence",
-                        url=lead.linkedin_url,
-                        campaign=campaign.name,
-                    )
-                    fu_result = await executor.execute_followup_sequence(
-                        account, campaign, lead
-                    )
-                    if fu_result["success"]:
-                        await repo.update_lead(
-                            lead,
-                            status=LeadStatus.FOLLOWUP_SENT,
-                            followup_sent_at=datetime.utcnow(),
-                        )
+                for campaign in campaigns:
+                    if not campaign.followup_enabled:
+                        continue
+
+                    due_leads = await repo.get_followup_due_leads(campaign.id, before=now)
+                    if not due_leads:
+                        continue
+
+                    for lead in due_leads:
                         logger.info(
-                            "followup.sequence_done",
+                            "followup.starting_sequence",
                             url=lead.linkedin_url,
-                            messages_sent=fu_result["messages_sent"],
+                            campaign=campaign.name,
                         )
-                    else:
-                        new_retries = (lead.retry_count or 0) + 1
-                        if new_retries >= 3:
+                        fu_result = await executor.execute_followup_sequence(
+                            account, campaign, lead
+                        )
+                        if fu_result["success"]:
                             await repo.update_lead(
                                 lead,
-                                status=LeadStatus.ERROR,
-                                retry_count=new_retries,
+                                status=LeadStatus.FOLLOWUP_SENT,
+                                followup_sent_at=datetime.utcnow(),
                             )
-                            logger.warning(
-                                "followup.max_retries_reached",
+                            logger.info(
+                                "followup.sequence_done",
                                 url=lead.linkedin_url,
-                                retries=new_retries,
+                                messages_sent=fu_result["messages_sent"],
                             )
                         else:
-                            await repo.update_lead(lead, retry_count=new_retries)
-                            logger.warning(
-                                "followup.sequence_failed",
-                                url=lead.linkedin_url,
-                                retry=new_retries,
-                            )
-                    if fu_result.get("fatal"):
-                        break
+                            new_retries = (lead.retry_count or 0) + 1
+                            if new_retries >= 3:
+                                await repo.update_lead(
+                                    lead,
+                                    status=LeadStatus.ERROR,
+                                    retry_count=new_retries,
+                                )
+                                logger.warning(
+                                    "followup.max_retries_reached",
+                                    url=lead.linkedin_url,
+                                    retries=new_retries,
+                                )
+                            else:
+                                await repo.update_lead(lead, retry_count=new_retries)
+                                logger.warning(
+                                    "followup.sequence_failed",
+                                    url=lead.linkedin_url,
+                                    retry=new_retries,
+                                )
+                        if fu_result.get("fatal"):
+                            break
+            finally:
+                pool.release(account.id)
 
     except Exception as e:
         logger.error("followup_dispatch.failed", error=str(e))
@@ -555,40 +594,86 @@ async def check_cookie_health():
             if account.paused_until and not is_cooldown_expired(account.paused_until):
                 continue
 
-            from linauto.linkedin.browser import LinkedInBrowser
-            browser = LinkedInBrowser()
+            pool = get_browser_pool()
             try:
-                await browser.launch(
+                pool_context = await pool.acquire(account)
+            except Exception as e:
+                logger.error("cookie_health.pool_acquire_failed", account=account.name, error=str(e))
+                # Pool acquire failed — session is likely invalid
+                await repo.update_account(account, status="cookie_expired")
+                await repo.log_action(
                     account_id=account.id,
-                    li_at_cookie=account.li_at_cookie,
-                    user_agent=account.user_agent,
-                    proxy_url=account.proxy_url,
-                    timezone=account.timezone,
+                    action_type=ActionType.ERROR,
+                    status=ActionLogStatus.FAILED,
+                    details={"reason": "cookie_health_pool_acquire_failed", "error": str(e)},
                 )
-                valid = await browser.validate_session()
-                if not valid:
-                    logger.warning("cookie_health.expired", account=account.name)
-                    await repo.update_account(account, status="cookie_expired")
-                    await repo.log_action(
-                        account_id=account.id,
-                        action_type=ActionType.ERROR,
-                        status=ActionLogStatus.FAILED,
-                        details={"reason": "cookie_health_check_failed"},
-                    )
-                else:
-                    logger.info("cookie_health.valid", account=account.name)
-                    # Save avatar if not yet saved
-                    if not account.avatar_path:
-                        avatar_path = await browser.save_avatar(account.id)
+                continue
+
+            try:
+                # Session was validated during acquire — just log success
+                logger.info("cookie_health.valid", account=account.name)
+                # Save avatar if not yet saved
+                if not account.avatar_path:
+                    slot = pool._slots.get(account.id)
+                    if slot:
+                        avatar_path = await slot.browser.save_avatar(account.id)
                         if avatar_path:
                             await repo.update_account(account, avatar_path=avatar_path)
             except Exception as e:
                 logger.error("cookie_health.error", account=account.name, error=str(e))
             finally:
-                await browser.close()
+                pool.release(account.id)
 
     except Exception as e:
         logger.error("cookie_health.sweep_failed", error=str(e))
+    finally:
+        await session.close()
+
+
+async def keep_alive():
+    """
+    Lightweight session keep-alive for persistent browser pool.
+
+    Runs every ~2.5 hours (configurable). For each active account,
+    visits the feed and scrolls briefly to prevent session timeout.
+    Skips accounts whose browser is currently in use by another job.
+    """
+    repo, session = await _get_repo()
+    try:
+        pool = get_browser_pool()
+        accounts = await repo.list_active_accounts()
+
+        for account in accounts:
+            if account.paused_until and not is_cooldown_expired(account.paused_until):
+                continue
+
+            # Skip if another job is using this browser
+            if pool.is_busy(account.id):
+                logger.debug("keepalive.skipped_busy", account=account.name)
+                continue
+
+            try:
+                context = await pool.acquire(account)
+            except Exception as e:
+                logger.warning("keepalive.acquire_failed", account=account.name, error=str(e))
+                continue
+
+            try:
+                page = await context.new_page()
+                try:
+                    from linauto.linkedin.noise import BrowsingNoise
+                    noise = BrowsingNoise(page)
+                    await noise.scroll_feed(duration_seconds=random.uniform(3, 8))
+                    logger.info("keepalive.pinged", account=account.name)
+                except Exception as e:
+                    logger.warning("keepalive.scroll_failed", account=account.name, error=str(e))
+                finally:
+                    await page.close()
+            finally:
+                pool.release(account.id)
+
+    except Exception as e:
+        logger.error("keepalive.failed", error=str(e))
     finally:
         await session.close()
 
@@ -622,9 +707,18 @@ async def start_scheduler():
     """Start the APScheduler daemon. Blocks until interrupted."""
     await init_db()
 
+    # Pre-warm browser pool for active accounts
+    repo, session = await _get_repo()
+    try:
+        active_accounts = await repo.list_active_accounts()
+    finally:
+        await session.close()
+    await init_pool(active_accounts)
+
     # Start API server if enabled
     await _start_api_server()
 
+    settings = get_settings()
     scheduler = AsyncIOScheduler()
 
     # Daily planning sweep at 06:00
@@ -646,7 +740,6 @@ async def start_scheduler():
     )
 
     # Acceptance checker every 3 hours
-    settings = get_settings()
     scheduler.add_job(
         check_acceptances,
         IntervalTrigger(hours=settings.acceptance_check_interval_hours),
@@ -682,6 +775,16 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # Session keep-alive (prevents LinkedIn session timeout)
+    keepalive_hours = settings.pool_keepalive_interval_hours
+    scheduler.add_job(
+        keep_alive,
+        IntervalTrigger(hours=keepalive_hours),
+        id="keepalive",
+        name="Session Keep-Alive",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info("scheduler.started", jobs=len(scheduler.get_jobs()))
 
@@ -702,5 +805,6 @@ async def start_scheduler():
     await stop_event.wait()
 
     scheduler.shutdown(wait=True)
+    await shutdown_pool()
     await close_db()
     logger.info("scheduler.stopped")

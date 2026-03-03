@@ -8,6 +8,8 @@ from typing import List, Optional, Sequence
 
 import structlog
 
+from playwright.async_api import BrowserContext
+
 from linauto.db.models import Lead, LeadStatus, Account, Campaign, ActionType, ActionLogStatus
 from linauto.db.repository import Repository
 from linauto.linkedin.browser import LinkedInBrowser
@@ -23,10 +25,11 @@ logger = structlog.get_logger()
 class CampaignExecutor:
     """Executes campaign actions for a batch of leads."""
 
-    def __init__(self, repo: Repository):
+    def __init__(self, repo: Repository, browser_context: Optional[BrowserContext] = None):
         self.repo = repo
         self.delay = DelayGenerator()
         self._browser: Optional[LinkedInBrowser] = None
+        self._shared_context = browser_context
 
     async def execute_single_lead(
         self,
@@ -36,12 +39,18 @@ class CampaignExecutor:
     ) -> dict:
         """
         Execute a single connection request (used by the scheduler dispatcher).
-        Manages browser lifecycle per call. Returns result dict.
+
+        When ``self._shared_context`` is set (pool mode), opens/closes only
+        pages on the shared browser.  Otherwise creates an ephemeral browser.
         """
         result = {"success": False, "limit_reached": False, "fatal": False}
 
-        browser = LinkedInBrowser()
-        try:
+        # Pool mode: use shared context, only manage pages
+        browser: Optional[LinkedInBrowser] = None
+        if self._shared_context:
+            page = await self._shared_context.new_page()
+        else:
+            browser = LinkedInBrowser()
             await browser.launch(
                 account_id=account.id,
                 li_at_cookie=account.li_at_cookie,
@@ -49,14 +58,15 @@ class CampaignExecutor:
                 proxy_url=account.proxy_url,
                 timezone=account.timezone,
             )
-
             valid = await browser.validate_session()
             if not valid:
                 logger.error("executor.session_invalid", account=account.name)
                 result["fatal"] = True
+                await browser.close()
                 return result
-
             page = await browser.new_page()
+
+        try:
             actions = LinkedInActions(page)
 
             # Optional: browsing noise before request
@@ -137,8 +147,6 @@ class CampaignExecutor:
                 )
                 await self.repo.increment_daily_stat(account.id, "errors")
 
-            await page.close()
-
         except Exception as e:
             logger.error("executor.single_lead_failed", error=str(e))
             try:
@@ -152,7 +160,9 @@ class CampaignExecutor:
                 pass  # Best-effort — don't mask the original error
             result["fatal"] = True
         finally:
-            await browser.close()
+            await page.close()
+            if browser:
+                await browser.close()
 
         return result
 
@@ -181,8 +191,12 @@ class CampaignExecutor:
             logger.warning("followup.no_messages_configured", campaign=campaign.name)
             return result
 
-        browser = LinkedInBrowser()
-        try:
+        # Pool mode: use shared context, only manage pages
+        browser: Optional[LinkedInBrowser] = None
+        if self._shared_context:
+            page = await self._shared_context.new_page()
+        else:
+            browser = LinkedInBrowser()
             await browser.launch(
                 account_id=account.id,
                 li_at_cookie=account.li_at_cookie,
@@ -190,14 +204,15 @@ class CampaignExecutor:
                 proxy_url=account.proxy_url,
                 timezone=account.timezone,
             )
-
             valid = await browser.validate_session()
             if not valid:
                 logger.error("followup.session_invalid", account=account.name)
                 result["fatal"] = True
+                await browser.close()
                 return result
-
             page = await browser.new_page()
+
+        try:
             actions = LinkedInActions(page)
 
             for i, msg_template in enumerate(messages):
@@ -254,13 +269,13 @@ class CampaignExecutor:
             if result["messages_sent"] > 0:
                 result["success"] = True
 
-            await page.close()
-
         except Exception as e:
             logger.error("followup.sequence_failed", error=str(e))
             result["fatal"] = True
         finally:
-            await browser.close()
+            await page.close()
+            if browser:
+                await browser.close()
 
         return result
 
