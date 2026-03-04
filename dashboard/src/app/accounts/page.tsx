@@ -9,6 +9,35 @@ import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 
+const PROXY_LABELS: Record<string, string> = {
+  us: "US", "us-newyork": "US / New York", "us-losangeles": "US / LA",
+  "us-chicago": "US / Chicago", "us-miami": "US / Miami",
+  "us-sanfrancisco": "US / SF", "us-dallas": "US / Dallas",
+  ca: "Canada", "ca-toronto": "CA / Toronto", "ca-montreal": "CA / Montreal",
+  "ca-vancouver": "CA / Vancouver", mx: "Mexico", "mx-mexicocity": "MX / Mexico City",
+  gb: "UK", "gb-london": "UK / London",
+  de: "Germany", "de-berlin": "DE / Berlin", "de-munich": "DE / Munich", "de-frankfurt": "DE / Frankfurt",
+  fr: "France", "fr-paris": "FR / Paris",
+  nl: "Netherlands", "nl-amsterdam": "NL / Amsterdam",
+  es: "Spain", "es-madrid": "ES / Madrid", "es-barcelona": "ES / Barcelona",
+  it: "Italy", "it-rome": "IT / Rome", "it-milan": "IT / Milan",
+  ch: "Switzerland", "ch-zurich": "CH / Zurich",
+  at: "Austria", "at-vienna": "AT / Vienna",
+  pt: "Portugal", "pt-lisbon": "PT / Lisbon",
+  se: "Sweden", ie: "Ireland", pl: "Poland",
+  sg: "Singapore", jp: "Japan",
+  ae: "UAE", "ae-dubai": "UAE / Dubai", il: "Israel",
+  "in": "India", "in-mumbai": "IN / Mumbai",
+  br: "Brazil", "br-saopaulo": "BR / São Paulo", ar: "Argentina", co: "Colombia",
+  za: "South Africa", ma: "Morocco", ng: "Nigeria",
+  au: "Australia", "au-sydney": "AU / Sydney", nz: "New Zealand",
+};
+
+function proxyLabel(code: string | null): string {
+  if (!code) return "None";
+  return PROXY_LABELS[code] || code.replace("-", " / ");
+}
+
 function AccountAvatar({ accountId, name }: { accountId: string; name: string }) {
   const initials = name
     .split(/\s+/)
@@ -98,7 +127,7 @@ export default function AccountsPage() {
                     </div>
                     <div>
                       <p className="text-xs text-muted-foreground">Proxy</p>
-                      <p>{a.proxy_country ? a.proxy_country.replace("-", " / ") : "None"}</p>
+                      <p>{proxyLabel(a.proxy_country)}</p>
                     </div>
                   </div>
                   {a.paused_until && (

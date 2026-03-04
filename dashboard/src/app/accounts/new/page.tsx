@@ -19,6 +19,7 @@ export default function NewAccountPage() {
   const [name, setName] = useState("");
   const [cookie, setCookie] = useState("");
   const [timezone, setTimezone] = useState("Europe/Berlin");
+  const [proxyCountry, setProxyCountry] = useState("");
   const [method, setMethod] = useState<LoginMethod>("cookie");
 
   async function handleSubmit(e: React.FormEvent) {
@@ -37,6 +38,7 @@ export default function NewAccountPage() {
         name,
         li_at_cookie: method === "cookie" ? cookie : undefined,
         timezone,
+        proxy_country: proxyCountry || undefined,
       },
       {
         onSuccess: (account) => {
@@ -130,6 +132,71 @@ export default function NewAccountPage() {
                 <option value="Europe/Berlin">Europe — CET (Berlin)</option>
                 <option value="Asia/Singapore">Asia — SGT (Singapore)</option>
               </select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="proxy">Proxy Location</Label>
+              <select
+                id="proxy"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                value={proxyCountry}
+                onChange={(e) => setProxyCountry(e.target.value)}
+              >
+                <option value="">No proxy</option>
+                <optgroup label="North America">
+                  <option value="us">United States</option>
+                  <option value="us-newyork">US — New York</option>
+                  <option value="us-losangeles">US — Los Angeles</option>
+                  <option value="us-chicago">US — Chicago</option>
+                  <option value="us-miami">US — Miami</option>
+                  <option value="us-sanfrancisco">US — San Francisco</option>
+                  <option value="ca">Canada</option>
+                  <option value="ca-toronto">Canada — Toronto</option>
+                  <option value="ca-montreal">Canada — Montreal</option>
+                  <option value="ca-vancouver">Canada — Vancouver</option>
+                </optgroup>
+                <optgroup label="Europe">
+                  <option value="gb">United Kingdom</option>
+                  <option value="gb-london">UK — London</option>
+                  <option value="de">Germany</option>
+                  <option value="de-berlin">Germany — Berlin</option>
+                  <option value="de-munich">Germany — Munich</option>
+                  <option value="fr">France</option>
+                  <option value="fr-paris">France — Paris</option>
+                  <option value="nl">Netherlands</option>
+                  <option value="nl-amsterdam">Netherlands — Amsterdam</option>
+                  <option value="es">Spain</option>
+                  <option value="es-madrid">Spain — Madrid</option>
+                  <option value="it">Italy</option>
+                  <option value="ch">Switzerland</option>
+                  <option value="at">Austria</option>
+                  <option value="pt">Portugal</option>
+                  <option value="se">Sweden</option>
+                  <option value="ie">Ireland</option>
+                </optgroup>
+                <optgroup label="Asia & Middle East">
+                  <option value="sg">Singapore</option>
+                  <option value="jp">Japan</option>
+                  <option value="ae">UAE</option>
+                  <option value="ae-dubai">UAE — Dubai</option>
+                  <option value="il">Israel</option>
+                  <option value="in">India</option>
+                </optgroup>
+                <optgroup label="South America">
+                  <option value="br">Brazil</option>
+                  <option value="ar">Argentina</option>
+                  <option value="co">Colombia</option>
+                </optgroup>
+                <optgroup label="Africa & Oceania">
+                  <option value="za">South Africa</option>
+                  <option value="ma">Morocco</option>
+                  <option value="au">Australia</option>
+                  <option value="nz">New Zealand</option>
+                </optgroup>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                Residential proxy via IPRoyal. Each account gets a sticky IP.
+              </p>
             </div>
 
             <Button type="submit" disabled={createAccount.isPending}>
