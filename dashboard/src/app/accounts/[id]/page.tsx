@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   useAccount,
@@ -46,6 +46,14 @@ export default function AccountDetailPage({
   const [editProxyCountry, setEditProxyCountry] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
   const [connectionChecking, setConnectionChecking] = useState(false);
+  const [checkStep, setCheckStep] = useState(0);
+  const [connectionResult, setConnectionResult] = useState<{
+    valid: boolean;
+    reason?: string;
+    error?: string;
+    elapsed_ms?: number;
+  } | null>(null);
+  const stepTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   if (account && !settingsInitialized) {
     setEditName(account.name);
@@ -472,32 +480,100 @@ export default function AccountDetailPage({
                   </div>
                 </div>
 
+                {/* Connection check status panel */}
+                {connectionChecking && (() => {
+                  const steps = [
+                    "Launching browser...",
+                    "Configuring proxy...",
+                    "Reaching LinkedIn...",
+                    "Verifying session...",
+                  ];
+                  return (
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        {steps.map((label, i) => (
+                          <div key={i} className="flex items-center gap-2 text-sm">
+                            {i < checkStep ? (
+                              <svg className="h-4 w-4 shrink-0 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                              </svg>
+                            ) : i === checkStep ? (
+                              <svg className="h-4 w-4 shrink-0 animate-spin text-blue-400" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                              </svg>
+                            ) : (
+                              <div className="h-4 w-4 shrink-0 rounded-full border border-border" />
+                            )}
+                            <span className={i === checkStep ? "text-foreground" : i < checkStep ? "text-muted-foreground" : "text-muted-foreground/50"}>
+                              {label}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full bg-blue-500 transition-all duration-700"
+                          style={{ width: `${Math.min(((checkStep + 1) / steps.length) * 100, 95)}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {!connectionChecking && connectionResult && (
+                  <div className={`rounded-md border px-4 py-3 ${
+                    connectionResult.valid
+                      ? "border-green-500/30 bg-green-500/10"
+                      : "border-red-500/30 bg-red-500/10"
+                  }`}>
+                    <p className={`text-sm font-medium ${connectionResult.valid ? "text-green-400" : "text-red-400"}`}>
+                      {connectionResult.valid
+                        ? `Connection OK (${connectionResult.elapsed_ms}ms)`
+                        : connectionResult.reason === "redirected_to_login"
+                        ? "Session expired — cookie is invalid"
+                        : connectionResult.reason === "proxy_unreachable"
+                        ? "Proxy unreachable — LinkedIn could not be reached via your proxy"
+                        : `Connection failed: ${connectionResult.error || connectionResult.reason}`}
+                    </p>
+                    {connectionResult.elapsed_ms && !connectionResult.valid && (
+                      <p className="text-xs text-muted-foreground mt-1">{connectionResult.elapsed_ms}ms</p>
+                    )}
+                  </div>
+                )}
+
                 <Button
                   variant="outline"
                   onClick={async () => {
                     setConnectionChecking(true);
+                    setConnectionResult(null);
+                    setCheckStep(0);
+                    // Animate steps: steps advance at roughly 0s, 3s, 7s, 12s
+                    const delays = [3000, 4000, 5000];
+                    let step = 0;
+                    const advance = () => {
+                      step += 1;
+                      setCheckStep(step);
+                      if (step < 3 && delays[step]) {
+                        stepTimerRef.current = setTimeout(advance, delays[step]);
+                      }
+                    };
+                    stepTimerRef.current = setTimeout(advance, delays[0]);
                     try {
                       const result = await checkConnection(id);
-                      if (result.valid) {
-                        toast.success(`Connection OK (${result.elapsed_ms}ms)`);
-                      } else {
-                        toast.error(
-                          result.reason === "redirected_to_login"
-                            ? "Session expired — cookie is invalid"
-                            : result.reason === "proxy_unreachable"
-                            ? "Proxy unreachable — LinkedIn could not be reached via your proxy location"
-                            : `Connection failed: ${result.error || result.reason}`
-                        );
-                      }
+                      if (stepTimerRef.current) clearTimeout(stepTimerRef.current);
+                      setCheckStep(4); // all done
+                      setConnectionResult(result);
                     } catch (err: unknown) {
-                      toast.error(err instanceof Error ? err.message : "Check failed");
+                      if (stepTimerRef.current) clearTimeout(stepTimerRef.current);
+                      setConnectionResult({ valid: false, error: err instanceof Error ? err.message : "Check failed" });
                     } finally {
                       setConnectionChecking(false);
                     }
                   }}
                   disabled={connectionChecking}
                 >
-                  {connectionChecking ? "Checking..." : "Check Connection"}
+                  {connectionChecking ? "Checking..." : connectionResult ? "Check Again" : "Check Connection"}
                 </Button>
               </CardContent>
             </Card>
