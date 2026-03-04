@@ -4,7 +4,7 @@ from __future__ import annotations
 import tempfile
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile, File
 
 from linauto.api.auth import require_api_key
 from linauto.api.deps import get_repo
@@ -46,11 +46,24 @@ async def list_leads(
 async def import_csv(
     campaign_id: str,
     file: UploadFile = File(...),
+    list_name: Optional[str] = Form(None),
     repo: Repository = Depends(get_repo),
 ):
     campaign = await repo.get_campaign(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Auto-create a lead list if list_name provided
+    lead_list = None
+    lead_list_id = None
+    if list_name:
+        existing_list = await repo.get_lead_list_by_name(list_name)
+        if existing_list:
+            raise HTTPException(status_code=409, detail="Lead list name already exists")
+        lead_list = await repo.create_lead_list(
+            name=list_name, csv_filename=file.filename
+        )
+        lead_list_id = lead_list.id
 
     # Save uploaded file to temp location
     contents = await file.read()
@@ -66,7 +79,12 @@ async def import_csv(
 
     # Parse CSV using existing importer
     from linauto.campaign.importer import parse_csv
-    leads, result = parse_csv(tmp_path, campaign_id=campaign_id, existing_urls=existing_urls)
+    leads, result = parse_csv(
+        tmp_path,
+        campaign_id=campaign_id,
+        lead_list_id=lead_list_id,
+        existing_urls=existing_urls,
+    )
 
     if leads:
         count = await repo.bulk_create_leads(leads)
@@ -74,6 +92,15 @@ async def import_csv(
         await repo.update_campaign(
             campaign, total_leads=campaign.total_leads + count
         )
+        # Update lead list total and create campaign link
+        if lead_list:
+            await repo.update_lead_list(lead_list, total_leads=count)
+            from linauto.db.models import CampaignLeadList
+            link = CampaignLeadList(
+                campaign_id=campaign_id, lead_list_id=lead_list_id
+            )
+            repo.session.add(link)
+            await repo.session.commit()
 
     # Clean up temp file
     import os

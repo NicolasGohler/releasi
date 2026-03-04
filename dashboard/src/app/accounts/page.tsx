@@ -93,12 +93,12 @@ export default function AccountsPage() {
                       <p>{a.timezone ?? "—"}</p>
                     </div>
                     <div>
-                      <p className="text-xs text-muted-foreground">Daily Limit</p>
-                      <p>{a.daily_limit}</p>
-                    </div>
-                    <div>
                       <p className="text-xs text-muted-foreground">Weekly Limit</p>
                       <p>{a.weekly_limit}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Proxy</p>
+                      <p>{a.proxy_country ? a.proxy_country.replace("-", " / ") : "None"}</p>
                     </div>
                   </div>
                   {a.paused_until && (

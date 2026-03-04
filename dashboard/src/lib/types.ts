@@ -5,6 +5,7 @@ export interface Account {
   daily_limit: number;
   weekly_limit: number;
   timezone: string | null;
+  proxy_country: string | null;
   paused_until: string | null;
   withdraw_threshold: number | null;
   avatar_path: string | null;
@@ -63,7 +64,7 @@ export interface LeadListDetail extends LeadList {
 
 export interface Lead {
   id: string;
-  campaign_id: string;
+  campaign_id: string | null;
   lead_list_id: string | null;
   linkedin_url: string;
   first_name: string | null;

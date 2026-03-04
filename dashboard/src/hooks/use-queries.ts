@@ -42,7 +42,7 @@ export function useCreateAccount() {
 export function useUpdateAccount(id: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { name?: string; timezone?: string; daily_limit?: number; weekly_limit?: number }) =>
+    mutationFn: (data: { name?: string; timezone?: string; daily_limit?: number; weekly_limit?: number; proxy_country?: string | null }) =>
       api.updateAccount(id, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["accounts", id] });
@@ -138,10 +138,12 @@ export function useLeads(
 export function useImportCSV(campaignId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (file: File) => api.importCSV(campaignId, file),
+    mutationFn: ({ file, listName }: { file: File; listName?: string }) =>
+      api.importCSV(campaignId, file, listName),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["leads", campaignId] });
       qc.invalidateQueries({ queryKey: ["campaigns"] });
+      qc.invalidateQueries({ queryKey: ["lead-lists"] });
     },
   });
 }

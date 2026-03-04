@@ -114,7 +114,7 @@ class CampaignUpdate(BaseModel):
 
 class LeadOut(BaseModel):
     id: str
-    campaign_id: str
+    campaign_id: Optional[str] = None
     lead_list_id: Optional[str] = None
     linkedin_url: str
     first_name: Optional[str] = None

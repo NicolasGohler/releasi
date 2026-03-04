@@ -123,9 +123,16 @@ export const fetchLeads = (
   return apiFetch<LeadPage>(`/campaigns/${campaignId}/leads${qs ? `?${qs}` : ""}`);
 };
 
-export const importCSV = async (campaignId: string, file: File): Promise<ImportResponse> => {
+export const importCSV = async (
+  campaignId: string,
+  file: File,
+  listName?: string
+): Promise<ImportResponse> => {
   const formData = new FormData();
   formData.append("file", file);
+  if (listName) {
+    formData.append("list_name", listName);
+  }
 
   const res = await fetch(`${API_URL}/api/v1/campaigns/${campaignId}/import`, {
     method: "POST",

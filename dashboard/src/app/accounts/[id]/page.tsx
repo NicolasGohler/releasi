@@ -40,6 +40,7 @@ export default function AccountDetailPage({
   const [settingsInitialized, setSettingsInitialized] = useState(false);
   const [loginSessionActive, setLoginSessionActive] = useState(false);
   const [editWithdrawThreshold, setEditWithdrawThreshold] = useState("");
+  const [editProxyCountry, setEditProxyCountry] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
   const [connectionChecking, setConnectionChecking] = useState(false);
 
@@ -50,6 +51,7 @@ export default function AccountDetailPage({
     setEditDailyLimit(String(account.daily_limit));
     setEditWeeklyLimit(String(account.weekly_limit));
     setEditWithdrawThreshold(account.withdraw_threshold ? String(account.withdraw_threshold) : "");
+    setEditProxyCountry(account.proxy_country ?? "");
     setSettingsInitialized(true);
   }
 
@@ -201,6 +203,17 @@ export default function AccountDetailPage({
                   Leave empty to disable. When pending invitations exceed this number, the oldest are automatically withdrawn.
                 </p>
               </div>
+              <div>
+                <label className="text-xs text-muted-foreground">Proxy Country</label>
+                <Input
+                  value={editProxyCountry}
+                  onChange={(e) => setEditProxyCountry(e.target.value)}
+                  placeholder="e.g. ca-montreal, de-berlin, es"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Format: country code or country-city (e.g. &quot;ca&quot;, &quot;ca-montreal&quot;, &quot;de-berlin&quot;). Leave empty for no proxy.
+                </p>
+              </div>
               <div className="flex items-center gap-3">
                 <Button
                   onClick={() => {
@@ -211,6 +224,8 @@ export default function AccountDetailPage({
                     if (Number(editWeeklyLimit) !== account.weekly_limit) data.weekly_limit = Number(editWeeklyLimit);
                     const newThreshold = editWithdrawThreshold ? Number(editWithdrawThreshold) : null;
                     if (newThreshold !== (account.withdraw_threshold ?? null)) data.withdraw_threshold = newThreshold;
+                    const newProxy = editProxyCountry.trim() || null;
+                    if (newProxy !== (account.proxy_country ?? null)) data.proxy_country = newProxy;
                     if (Object.keys(data).length === 0) {
                       toast.info("No changes to save");
                       return;
