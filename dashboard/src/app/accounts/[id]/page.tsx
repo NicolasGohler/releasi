@@ -225,8 +225,16 @@ export default function AccountDetailPage({
                     onChange={(e) => setEditTimezone(e.target.value)}
                   >
                     <option value="America/New_York">US — EST (New York)</option>
+                    <option value="Europe/London">UK — GMT (London)</option>
                     <option value="Europe/Berlin">Europe — CET (Berlin)</option>
+                    <option value="Europe/Rome">Italy — CET (Rome)</option>
+                    <option value="Europe/Athens">Greece — EET (Athens)</option>
+                    <option value="Europe/Paris">France — CET (Paris)</option>
+                    <option value="Europe/Madrid">Spain — CET (Madrid)</option>
+                    <option value="Asia/Dubai">UAE — GST (Dubai)</option>
                     <option value="Asia/Singapore">Asia — SGT (Singapore)</option>
+                    <option value="America/Toronto">Canada — EST (Toronto)</option>
+                    <option value="America/Vancouver">Canada — PST (Vancouver)</option>
                   </select>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -305,6 +313,8 @@ export default function AccountDetailPage({
                       <option value="at-vienna">Austria — Vienna</option>
                       <option value="pt">Portugal</option>
                       <option value="pt-lisbon">Portugal — Lisbon</option>
+                      <option value="gr">Greece</option>
+                      <option value="gr-athens">Greece — Athens</option>
                       <option value="se">Sweden</option>
                       <option value="ie">Ireland</option>
                       <option value="pl">Poland</option>

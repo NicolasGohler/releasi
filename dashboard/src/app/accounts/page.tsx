@@ -24,6 +24,7 @@ const PROXY_LABELS: Record<string, string> = {
   ch: "Switzerland", "ch-zurich": "CH / Zurich",
   at: "Austria", "at-vienna": "AT / Vienna",
   pt: "Portugal", "pt-lisbon": "PT / Lisbon",
+  gr: "Greece", "gr-athens": "GR / Athens",
   se: "Sweden", ie: "Ireland", pl: "Poland",
   sg: "Singapore", jp: "Japan",
   ae: "UAE", "ae-dubai": "UAE / Dubai", il: "Israel",
