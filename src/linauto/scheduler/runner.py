@@ -27,6 +27,34 @@ from linauto.safety import limits as rate_limits
 logger = structlog.get_logger()
 
 
+async def _http_check_session(li_at_cookie: str, user_agent: Optional[str] = None) -> bool:
+    """Fast HTTP session check — no browser, ~1-2s.
+
+    Returns True if the cookie is still valid, False if expired/redirected.
+    Raises on unexpected network errors (caller should handle).
+    """
+    import httpx
+    login_patterns = ["/login", "/uas/login", "/signup", "/checkpoint/"]
+    headers = {
+        "Cookie": f"li_at={li_at_cookie}",
+        "User-Agent": user_agent or "Mozilla/5.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    try:
+        async with httpx.AsyncClient(
+            headers=headers,
+            follow_redirects=True,
+            timeout=5.0,
+        ) as client:
+            resp = await client.get("https://www.linkedin.com/feed/")
+        final_url = str(resp.url)
+        if any(p in final_url for p in login_patterns):
+            return False
+        return resp.status_code == 200
+    except Exception:
+        raise
+
+
 async def _get_repo() -> tuple:
     """Get a Repository + session."""
     session = get_session_factory()()
@@ -582,47 +610,39 @@ async def dispatch_followups():
 
 async def check_cookie_health():
     """
-    Proactive daily session validation for all active accounts.
+    Proactive session validation for all active accounts via HTTP.
 
-    Runs once daily at 05:00. Marks accounts as cookie_expired if invalid.
-    Also saves avatars for accounts that don't have one yet.
+    Runs every 6 hours. Uses a fast HTTP check (no browser, no proxy) to
+    detect expired cookies without launching Chromium. Marks accounts as
+    cookie_expired if the check fails.
     """
     repo, session = await _get_repo()
     try:
         accounts = await repo.list_active_accounts()
         for account in accounts:
-            if account.paused_until and not is_cooldown_expired(account.paused_until):
+            if not account.li_at_cookie:
                 continue
 
-            pool = get_browser_pool()
             try:
-                pool_context = await pool.acquire(account)
+                valid = await _http_check_session(account.li_at_cookie, account.user_agent)
             except Exception as e:
-                logger.error("cookie_health.pool_acquire_failed", account=account.name, error=str(e))
-                # Pool acquire failed — session is likely invalid
+                logger.warning("cookie_health.check_error", account=account.name, error=str(e))
+                continue  # Network error — don't mark expired, try again next cycle
+
+            if valid:
+                logger.info("cookie_health.valid", account=account.name)
+                # Re-activate if it was previously marked expired (e.g. after cookie renewal)
+                if account.status == "cookie_expired":
+                    await repo.update_account(account, status="active")
+            else:
+                logger.warning("cookie_health.expired", account=account.name)
                 await repo.update_account(account, status="cookie_expired")
                 await repo.log_action(
                     account_id=account.id,
                     action_type=ActionType.ERROR,
                     status=ActionLogStatus.FAILED,
-                    details={"reason": "cookie_health_pool_acquire_failed", "error": str(e)},
+                    details={"reason": "cookie_expired_detected_by_health_check"},
                 )
-                continue
-
-            try:
-                # Session was validated during acquire — just log success
-                logger.info("cookie_health.valid", account=account.name)
-                # Save avatar if not yet saved
-                if not account.avatar_path:
-                    slot = pool._slots.get(account.id)
-                    if slot:
-                        avatar_path = await slot.browser.save_avatar(account.id)
-                        if avatar_path:
-                            await repo.update_account(account, avatar_path=avatar_path)
-            except Exception as e:
-                logger.error("cookie_health.error", account=account.name, error=str(e))
-            finally:
-                pool.release(account.id)
 
     except Exception as e:
         logger.error("cookie_health.sweep_failed", error=str(e))
@@ -634,8 +654,11 @@ async def keep_alive():
     """
     Lightweight session keep-alive for persistent browser pool.
 
-    Runs every ~2.5 hours (configurable). For each active account,
-    visits the feed and scrolls briefly to prevent session timeout.
+    Runs every ~2.5 hours (configurable). For each active account:
+    1. HTTP pre-check (no proxy, ~1s) — if expired, mark and skip.
+    2. Browser feed scroll (via pool) — keeps session warm with real activity.
+       If browser/proxy fails, logs a warning but doesn't mark expired
+       (HTTP already confirmed the cookie is valid).
     Skips accounts whose browser is currently in use by another job.
     """
     repo, session = await _get_repo()
@@ -647,15 +670,38 @@ async def keep_alive():
             if account.paused_until and not is_cooldown_expired(account.paused_until):
                 continue
 
-            # Skip if another job is using this browser
+            if not account.li_at_cookie:
+                continue
+
+            # Step 1: Fast HTTP check — no browser, no proxy
+            try:
+                valid = await _http_check_session(account.li_at_cookie, account.user_agent)
+            except Exception as e:
+                logger.warning("keepalive.http_check_error", account=account.name, error=str(e))
+                continue  # Network error — skip this cycle
+
+            if not valid:
+                logger.warning("keepalive.cookie_expired", account=account.name)
+                await repo.update_account(account, status="cookie_expired")
+                await repo.log_action(
+                    account_id=account.id,
+                    action_type=ActionType.ERROR,
+                    status=ActionLogStatus.FAILED,
+                    details={"reason": "cookie_expired_detected_by_keepalive"},
+                )
+                continue
+
+            # Step 2: Browser feed scroll to maintain active session
             if pool.is_busy(account.id):
                 logger.debug("keepalive.skipped_busy", account=account.name)
+                logger.info("keepalive.http_pinged", account=account.name)
                 continue
 
             try:
                 context = await pool.acquire(account)
             except Exception as e:
                 logger.warning("keepalive.acquire_failed", account=account.name, error=str(e))
+                logger.info("keepalive.http_pinged", account=account.name)
                 continue
 
             try:
@@ -666,7 +712,10 @@ async def keep_alive():
                     await noise.scroll_feed(duration_seconds=random.uniform(3, 8))
                     logger.info("keepalive.pinged", account=account.name)
                 except Exception as e:
+                    # Browser scroll failed (e.g. proxy blocks LinkedIn) but cookie
+                    # is confirmed valid via HTTP — log warning, don't mark expired
                     logger.warning("keepalive.scroll_failed", account=account.name, error=str(e))
+                    logger.info("keepalive.http_pinged", account=account.name)
                 finally:
                     await page.close()
             finally:
@@ -766,10 +815,10 @@ async def start_scheduler():
         replace_existing=True,
     )
 
-    # Cookie health check daily at 05:00
+    # Cookie health check every 6 hours (HTTP-based, no browser needed)
     scheduler.add_job(
         check_cookie_health,
-        CronTrigger(hour=5, minute=0),
+        IntervalTrigger(hours=6),
         id="cookie_health_checker",
         name="Cookie Health Check",
         replace_existing=True,

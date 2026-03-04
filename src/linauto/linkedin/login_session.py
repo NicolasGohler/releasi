@@ -158,9 +158,15 @@ class LoginSessionManager:
 
     async def finish_session(self) -> dict:
         """
-        Extract cookies from the browser, save them, and clean up.
+        Extract cookies from the browser, copy the full profile to the
+        account's persistent browser_data directory, then clean up.
 
         Returns dict with li_at and li_a cookie values (if found).
+
+        Copying the full profile (not just li_at + li_a) preserves all
+        session cookies accumulated during login: bcookie, bscookie,
+        JSESSIONID, li_rm, etc.  The pool browser will load them on its
+        next launch, resulting in a much more complete session fingerprint.
         """
         if not self.is_active or not self._context:
             raise RuntimeError("No active login session to finish.")
@@ -179,9 +185,33 @@ class LoginSessionManager:
                 "login_session.cookies_extracted",
                 has_li_at=result["li_at"] is not None,
                 has_li_a=result["li_a"] is not None,
+                total_cookies=len(cookies),
             )
         except Exception as e:
             logger.error("login_session.cookie_extraction_failed", error=str(e))
+
+        # Copy the full browser profile to the account's persistent data dir.
+        # Close the context first so all cookies are flushed to disk.
+        if self._temp_dir and self._account_id and result["li_at"]:
+            try:
+                if self._context:
+                    try:
+                        await self._context.close()
+                    except Exception:
+                        pass
+                    self._context = None
+
+                dest = Path("data/browser_data") / self._account_id
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.copytree(self._temp_dir, str(dest))
+                logger.info(
+                    "login_session.profile_copied",
+                    account_id=self._account_id,
+                    dest=str(dest),
+                )
+            except Exception as e:
+                logger.warning("login_session.profile_copy_failed", error=str(e))
 
         await self._cleanup()
 
