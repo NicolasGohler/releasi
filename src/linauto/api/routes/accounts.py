@@ -123,7 +123,7 @@ async def check_connection(
     account_id: str,
     repo: Repository = Depends(get_repo),
 ):
-    """Fast HTTP session check — no browser needed, completes in ~1-3s."""
+    """Fast HTTP session check — no browser, no proxy, completes in ~1-2s."""
     account = await repo.get_account(account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -146,18 +146,14 @@ async def check_connection(
         "Accept-Language": "en-US,en;q=0.9",
     }
 
-    proxies = None
-    if account.proxy_url:
-        proxies = {"https://": account.proxy_url, "http://": account.proxy_url}
-
+    # No proxy — cookie validity is independent of proxy; keeps check fast and reliable
     login_patterns = ["/login", "/uas/login", "/signup", "/checkpoint/"]
 
     try:
         async with httpx.AsyncClient(
             headers=headers,
-            proxies=proxies,
             follow_redirects=True,
-            timeout=8.0,
+            timeout=5.0,
         ) as client:
             resp = await client.get("https://www.linkedin.com/feed/")
 
