@@ -131,37 +131,49 @@ async def check_connection(
     import time
     start = time.monotonic()
 
-    # Try to use the pool (scheduler context) — avoids spawning a separate browser
+    from linauto.linkedin.selectors import FEED_URL, LOGIN_URL_PATTERNS
+
+    # Determine if the pool is available (scheduler running)
+    pool = None
     try:
         from linauto.linkedin.pool import get_browser_pool
         pool = get_browser_pool()
-        context = await pool.acquire(account)
+    except RuntimeError:
+        pass  # Pool not initialized
+
+    if pool is not None:
+        # Pool available — acquire context (includes session validation internally)
+        try:
+            context = await pool.acquire(account)
+        except RuntimeError as e:
+            # Pool tried to validate but failed (proxy/cookie issue) — report immediately
+            elapsed = int((time.monotonic() - start) * 1000)
+            err_msg = str(e).lower()
+            reason = "proxy_unreachable" if "timeout" in err_msg or "proxy" in err_msg else "session_invalid"
+            return {"valid": False, "reason": reason, "error": str(e), "elapsed_ms": elapsed}
         try:
             page = await context.new_page()
             try:
-                from linauto.linkedin.selectors import FEED_URL, LOGIN_URL_PATTERNS
                 await page.goto(FEED_URL, wait_until="domcontentloaded", timeout=15000)
                 current_url = page.url
-
                 for pattern in LOGIN_URL_PATTERNS:
                     if pattern in current_url:
                         elapsed = int((time.monotonic() - start) * 1000)
                         await repo.update_account(account, status="cookie_expired")
-                        return {"valid": False, "reason": "redirected_to_login", "url": current_url, "elapsed_ms": elapsed}
-
+                        return {"valid": False, "reason": "redirected_to_login", "elapsed_ms": elapsed}
                 elapsed = int((time.monotonic() - start) * 1000)
                 if account.status == "cookie_expired":
                     await repo.update_account(account, status="active")
                 return {"valid": True, "url": current_url, "elapsed_ms": elapsed}
             except Exception as e:
                 elapsed = int((time.monotonic() - start) * 1000)
-                return {"valid": False, "error": str(e), "elapsed_ms": elapsed}
+                return {"valid": False, "reason": "proxy_unreachable", "error": str(e), "elapsed_ms": elapsed}
             finally:
                 await page.close()
         finally:
             pool.release(account.id)
-    except RuntimeError:
-        # Pool not initialized (e.g. no scheduler running) — fall back to ephemeral
+    else:
+        # No pool (scheduler not running) — ephemeral browser
         from linauto.linkedin.browser import LinkedInBrowser
         browser = LinkedInBrowser()
         try:

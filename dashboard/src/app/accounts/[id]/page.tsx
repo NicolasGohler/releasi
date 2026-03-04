@@ -484,6 +484,8 @@ export default function AccountDetailPage({
                         toast.error(
                           result.reason === "redirected_to_login"
                             ? "Session expired — cookie is invalid"
+                            : result.reason === "proxy_unreachable"
+                            ? "Proxy unreachable — LinkedIn could not be reached via your proxy location"
                             : `Connection failed: ${result.error || result.reason}`
                         );
                       }

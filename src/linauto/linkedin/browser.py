@@ -220,7 +220,7 @@ class LinkedInBrowser:
         self._avatar_url: Optional[str] = None
         page = await self._context.new_page()
         try:
-            await page.goto(FEED_URL, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(FEED_URL, wait_until="domcontentloaded", timeout=15000)
             current_url = page.url
 
             for pattern in LOGIN_URL_PATTERNS:
