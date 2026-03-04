@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState, useEffect, useRef } from "react";
+import { use, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   useAccount,
@@ -46,14 +46,12 @@ export default function AccountDetailPage({
   const [editProxyCountry, setEditProxyCountry] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
   const [connectionChecking, setConnectionChecking] = useState(false);
-  const [checkStep, setCheckStep] = useState(0);
   const [connectionResult, setConnectionResult] = useState<{
     valid: boolean;
     reason?: string;
     error?: string;
     elapsed_ms?: number;
   } | null>(null);
-  const stepTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   if (account && !settingsInitialized) {
     setEditName(account.name);
@@ -351,84 +349,48 @@ export default function AccountDetailPage({
               <CardHeader>
                 <CardTitle>LinkedIn Authentication</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4 max-w-lg">
-                <p className="text-sm text-muted-foreground">
-                  Authenticate with LinkedIn by pasting a cookie or logging in via browser.
-                </p>
+              <CardContent className="space-y-5 max-w-lg">
 
-                <div className="space-y-2">
-                  <label className="text-xs text-muted-foreground">Paste li_at Cookie</label>
-                  <div className="flex gap-2">
-                    <Input
-                      value={newCookie}
-                      onChange={(e) => setNewCookie(e.target.value)}
-                      placeholder="Paste li_at cookie value"
-                      type="password"
-                    />
+                {/* Primary: browser login */}
+                {!loginSessionActive ? (
+                  <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground">
+                      Open a browser session on the server and log in to LinkedIn normally.
+                      Your cookies are saved automatically.
+                    </p>
                     <Button
-                      onClick={() => {
-                        if (!newCookie) return;
-                        updateCookie.mutate(
-                          { li_at_cookie: newCookie },
-                          {
-                            onSuccess: () => {
-                              toast.success("Cookie updated");
-                              setNewCookie("");
-                            },
-                            onError: (err) => toast.error(err.message),
+                      className="w-full"
+                      onClick={async () => {
+                        const loginWindow = window.open("about:blank", "_blank");
+                        setLoginLoading(true);
+                        try {
+                          const res = await startLoginSession(id);
+                          setLoginSessionActive(true);
+                          const novncBase =
+                            process.env.NEXT_PUBLIC_NOVNC_URL ||
+                            `http://${window.location.hostname}:6080`;
+                          const url = `${novncBase}${res.novnc_url}`;
+                          if (loginWindow) {
+                            loginWindow.location.href = url;
+                          } else {
+                            window.open(url, "_blank");
                           }
-                        );
+                        } catch (err: unknown) {
+                          loginWindow?.close();
+                          toast.error(err instanceof Error ? err.message : "Failed to start session");
+                        } finally {
+                          setLoginLoading(false);
+                        }
                       }}
-                      disabled={updateCookie.isPending}
+                      disabled={loginLoading}
                     >
-                      Save
+                      {loginLoading ? "Starting..." : "Open Login Browser"}
                     </Button>
                   </div>
-                </div>
-
-                <div className="relative">
-                  <div className="absolute inset-0 flex items-center">
-                    <span className="w-full border-t border-border" />
-                  </div>
-                  <div className="relative flex justify-center text-xs uppercase">
-                    <span className="bg-card px-2 text-muted-foreground">or</span>
-                  </div>
-                </div>
-
-                {!loginSessionActive ? (
-                  <Button
-                    variant="outline"
-                    onClick={async () => {
-                      const loginWindow = window.open("about:blank", "_blank");
-                      setLoginLoading(true);
-                      try {
-                        const res = await startLoginSession(id);
-                        setLoginSessionActive(true);
-                        const novncBase =
-                          process.env.NEXT_PUBLIC_NOVNC_URL ||
-                          `http://${window.location.hostname}:6080`;
-                        const url = `${novncBase}${res.novnc_url}`;
-                        if (loginWindow) {
-                          loginWindow.location.href = url;
-                        } else {
-                          window.open(url, "_blank");
-                        }
-                        toast.success("Login browser opened — complete login in the new tab");
-                      } catch (err: unknown) {
-                        loginWindow?.close();
-                        toast.error(err instanceof Error ? err.message : "Failed to start session");
-                      } finally {
-                        setLoginLoading(false);
-                      }
-                    }}
-                    disabled={loginLoading}
-                  >
-                    {loginLoading ? "Starting..." : "Open Login Browser"}
-                  </Button>
                 ) : (
-                  <div className="space-y-2">
-                    <p className="text-sm font-medium text-green-600">
-                      Login session active — complete the login in the browser tab
+                  <div className="rounded-md border border-green-500/30 bg-green-500/10 p-4 space-y-3">
+                    <p className="text-sm font-medium text-green-400">
+                      Browser session active — complete the login in the new tab, then click Finish.
                     </p>
                     <div className="flex gap-2">
                       <Button
@@ -450,19 +412,14 @@ export default function AccountDetailPage({
                         }}
                         disabled={loginLoading}
                       >
-                        {loginLoading ? "Extracting..." : "Finish & Save Cookies"}
+                        {loginLoading ? "Saving..." : "Finish & Save Cookies"}
                       </Button>
                       <Button
                         variant="ghost"
                         onClick={async () => {
-                          try {
-                            await cancelLoginSession(id);
-                            toast.info("Login session cancelled");
-                          } catch {
-                            // ignore
-                          } finally {
-                            setLoginSessionActive(false);
-                          }
+                          try { await cancelLoginSession(id); } catch { /* ignore */ }
+                          setLoginSessionActive(false);
+                          toast.info("Login session cancelled");
                         }}
                       >
                         Cancel
@@ -471,110 +428,109 @@ export default function AccountDetailPage({
                   </div>
                 )}
 
-                <div className="relative pt-2">
-                  <div className="absolute inset-0 flex items-center">
-                    <span className="w-full border-t border-border" />
+                {/* Advanced: paste cookie */}
+                <details className="group">
+                  <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground list-none flex items-center gap-1 select-none">
+                    <svg className="h-3 w-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                    Advanced: paste li_at cookie manually
+                  </summary>
+                  <div className="mt-3 space-y-2">
+                    <p className="text-xs text-muted-foreground">
+                      Extract your <code className="rounded bg-muted px-1 py-0.5">li_at</code> cookie from your browser&apos;s DevTools (Application → Cookies → linkedin.com).
+                    </p>
+                    <div className="flex gap-2">
+                      <Input
+                        value={newCookie}
+                        onChange={(e) => setNewCookie(e.target.value)}
+                        placeholder="Paste li_at cookie value"
+                        type="password"
+                      />
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          if (!newCookie) return;
+                          updateCookie.mutate(
+                            { li_at_cookie: newCookie },
+                            {
+                              onSuccess: () => {
+                                toast.success("Cookie saved");
+                                setNewCookie("");
+                              },
+                              onError: (err) => toast.error(err.message),
+                            }
+                          );
+                        }}
+                        disabled={updateCookie.isPending}
+                      >
+                        Save
+                      </Button>
+                    </div>
                   </div>
-                  <div className="relative flex justify-center text-xs uppercase">
-                    <span className="bg-card px-2 text-muted-foreground">verify</span>
-                  </div>
-                </div>
+                </details>
 
-                {/* Connection check status panel */}
-                {connectionChecking && (() => {
-                  const steps = [
-                    "Launching browser...",
-                    "Configuring proxy...",
-                    "Reaching LinkedIn...",
-                    "Verifying session...",
-                  ];
-                  return (
-                    <div className="space-y-3">
-                      <div className="space-y-2">
-                        {steps.map((label, i) => (
-                          <div key={i} className="flex items-center gap-2 text-sm">
-                            {i < checkStep ? (
-                              <svg className="h-4 w-4 shrink-0 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                              </svg>
-                            ) : i === checkStep ? (
-                              <svg className="h-4 w-4 shrink-0 animate-spin text-blue-400" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                              </svg>
-                            ) : (
-                              <div className="h-4 w-4 shrink-0 rounded-full border border-border" />
-                            )}
-                            <span className={i === checkStep ? "text-foreground" : i < checkStep ? "text-muted-foreground" : "text-muted-foreground/50"}>
-                              {label}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full bg-blue-500 transition-all duration-700"
-                          style={{ width: `${Math.min(((checkStep + 1) / steps.length) * 100, 95)}%` }}
-                        />
+                {/* Verify section */}
+                <div className="border-t border-border pt-4 space-y-3">
+                  <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Verify connection</p>
+
+                  {connectionChecking && (
+                    <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                      <svg className="h-4 w-4 shrink-0 animate-spin text-blue-400" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Checking session via HTTP...
+                      <div className="ml-auto h-1.5 w-24 overflow-hidden rounded-full bg-muted">
+                        <div className="h-full w-full origin-left animate-pulse rounded-full bg-blue-500" />
                       </div>
                     </div>
-                  );
-                })()}
+                  )}
 
-                {!connectionChecking && connectionResult && (
-                  <div className={`rounded-md border px-4 py-3 ${
-                    connectionResult.valid
-                      ? "border-green-500/30 bg-green-500/10"
-                      : "border-red-500/30 bg-red-500/10"
-                  }`}>
-                    <p className={`text-sm font-medium ${connectionResult.valid ? "text-green-400" : "text-red-400"}`}>
-                      {connectionResult.valid
-                        ? `Connection OK (${connectionResult.elapsed_ms}ms)`
-                        : connectionResult.reason === "redirected_to_login"
-                        ? "Session expired — cookie is invalid"
-                        : connectionResult.reason === "proxy_unreachable"
-                        ? "Proxy unreachable — LinkedIn could not be reached via your proxy"
-                        : `Connection failed: ${connectionResult.error || connectionResult.reason}`}
-                    </p>
-                    {connectionResult.elapsed_ms && !connectionResult.valid && (
-                      <p className="text-xs text-muted-foreground mt-1">{connectionResult.elapsed_ms}ms</p>
-                    )}
-                  </div>
-                )}
+                  {!connectionChecking && connectionResult && (
+                    <div className={`rounded-md border px-4 py-3 ${
+                      connectionResult.valid
+                        ? "border-green-500/30 bg-green-500/10"
+                        : "border-red-500/30 bg-red-500/10"
+                    }`}>
+                      <p className={`text-sm font-medium ${connectionResult.valid ? "text-green-400" : "text-red-400"}`}>
+                        {connectionResult.valid
+                          ? `Session valid (${connectionResult.elapsed_ms}ms)`
+                          : connectionResult.reason === "redirected_to_login"
+                          ? "Session expired — log in again or paste a fresh cookie"
+                          : connectionResult.reason === "proxy_unreachable"
+                          ? "Proxy unreachable — LinkedIn could not be reached via your proxy"
+                          : connectionResult.reason === "no_cookie"
+                          ? "No cookie saved — log in first"
+                          : `Failed: ${connectionResult.error || connectionResult.reason}`}
+                      </p>
+                      {!connectionResult.valid && connectionResult.elapsed_ms != null && (
+                        <p className="text-xs text-muted-foreground mt-0.5">{connectionResult.elapsed_ms}ms</p>
+                      )}
+                    </div>
+                  )}
 
-                <Button
-                  variant="outline"
-                  onClick={async () => {
-                    setConnectionChecking(true);
-                    setConnectionResult(null);
-                    setCheckStep(0);
-                    // Animate steps: steps advance at roughly 0s, 3s, 7s, 12s
-                    const delays = [3000, 4000, 5000];
-                    let step = 0;
-                    const advance = () => {
-                      step += 1;
-                      setCheckStep(step);
-                      if (step < 3 && delays[step]) {
-                        stepTimerRef.current = setTimeout(advance, delays[step]);
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      setConnectionChecking(true);
+                      setConnectionResult(null);
+                      try {
+                        const result = await checkConnection(id);
+                        setConnectionResult(result);
+                      } catch (err: unknown) {
+                        setConnectionResult({ valid: false, error: err instanceof Error ? err.message : "Check failed" });
+                      } finally {
+                        setConnectionChecking(false);
                       }
-                    };
-                    stepTimerRef.current = setTimeout(advance, delays[0]);
-                    try {
-                      const result = await checkConnection(id);
-                      if (stepTimerRef.current) clearTimeout(stepTimerRef.current);
-                      setCheckStep(4); // all done
-                      setConnectionResult(result);
-                    } catch (err: unknown) {
-                      if (stepTimerRef.current) clearTimeout(stepTimerRef.current);
-                      setConnectionResult({ valid: false, error: err instanceof Error ? err.message : "Check failed" });
-                    } finally {
-                      setConnectionChecking(false);
-                    }
-                  }}
-                  disabled={connectionChecking}
-                >
-                  {connectionChecking ? "Checking..." : connectionResult ? "Check Again" : "Check Connection"}
-                </Button>
+                    }}
+                    disabled={connectionChecking}
+                  >
+                    {connectionChecking ? "Checking..." : connectionResult ? "Check Again" : "Check Connection"}
+                  </Button>
+                </div>
+
               </CardContent>
             </Card>
           </TabsContent>

@@ -123,81 +123,67 @@ async def check_connection(
     account_id: str,
     repo: Repository = Depends(get_repo),
 ):
-    """Quick session check — uses the pool browser (same fingerprint) if available."""
+    """Fast HTTP session check — no browser needed, completes in ~1-3s."""
     account = await repo.get_account(account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    if not account.li_at_cookie:
+        return {"valid": False, "reason": "no_cookie", "elapsed_ms": 0}
+
     import time
+    import httpx
     start = time.monotonic()
 
-    from linauto.linkedin.selectors import FEED_URL, LOGIN_URL_PATTERNS
+    headers = {
+        "Cookie": f"li_at={account.li_at_cookie}",
+        "User-Agent": account.user_agent or (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
 
-    # Determine if the pool is available (scheduler running)
-    pool = None
+    proxies = None
+    if account.proxy_url:
+        proxies = {"https://": account.proxy_url, "http://": account.proxy_url}
+
+    login_patterns = ["/login", "/uas/login", "/signup", "/checkpoint/"]
+
     try:
-        from linauto.linkedin.pool import get_browser_pool
-        pool = get_browser_pool()
-    except RuntimeError:
-        pass  # Pool not initialized
+        async with httpx.AsyncClient(
+            headers=headers,
+            proxies=proxies,
+            follow_redirects=True,
+            timeout=8.0,
+        ) as client:
+            resp = await client.get("https://www.linkedin.com/feed/")
 
-    if pool is not None:
-        # Pool available — acquire context (includes session validation internally)
-        try:
-            context = await pool.acquire(account)
-        except RuntimeError as e:
-            # Pool tried to validate but failed (proxy/cookie issue) — report immediately
-            elapsed = int((time.monotonic() - start) * 1000)
-            err_msg = str(e).lower()
-            reason = "proxy_unreachable" if "timeout" in err_msg or "proxy" in err_msg else "session_invalid"
-            return {"valid": False, "reason": reason, "error": str(e), "elapsed_ms": elapsed}
-        try:
-            page = await context.new_page()
-            try:
-                await page.goto(FEED_URL, wait_until="domcontentloaded", timeout=15000)
-                current_url = page.url
-                for pattern in LOGIN_URL_PATTERNS:
-                    if pattern in current_url:
-                        elapsed = int((time.monotonic() - start) * 1000)
-                        await repo.update_account(account, status="cookie_expired")
-                        return {"valid": False, "reason": "redirected_to_login", "elapsed_ms": elapsed}
-                elapsed = int((time.monotonic() - start) * 1000)
-                if account.status == "cookie_expired":
-                    await repo.update_account(account, status="active")
-                return {"valid": True, "url": current_url, "elapsed_ms": elapsed}
-            except Exception as e:
-                elapsed = int((time.monotonic() - start) * 1000)
-                return {"valid": False, "reason": "proxy_unreachable", "error": str(e), "elapsed_ms": elapsed}
-            finally:
-                await page.close()
-        finally:
-            pool.release(account.id)
-    else:
-        # No pool (scheduler not running) — ephemeral browser
-        from linauto.linkedin.browser import LinkedInBrowser
-        browser = LinkedInBrowser()
-        try:
-            await browser.launch(
-                account_id=account.id,
-                li_at_cookie=account.li_at_cookie,
-                user_agent=account.user_agent,
-                proxy_url=account.proxy_url,
-                proxy_country=account.proxy_country,
-                timezone=account.timezone,
-            )
-            valid = await browser.validate_session()
-            elapsed = int((time.monotonic() - start) * 1000)
-            if valid:
-                if account.status == "cookie_expired":
-                    await repo.update_account(account, status="active")
-                return {"valid": True, "elapsed_ms": elapsed}
-            else:
-                await repo.update_account(account, status="cookie_expired")
-                return {"valid": False, "reason": "session_invalid", "elapsed_ms": elapsed}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Check failed: {e}")
-        finally:
-            await browser.close()
+        elapsed = int((time.monotonic() - start) * 1000)
+        final_url = str(resp.url)
+
+        if any(p in final_url for p in login_patterns):
+            await repo.update_account(account, status="cookie_expired")
+            return {"valid": False, "reason": "redirected_to_login", "elapsed_ms": elapsed}
+
+        if resp.status_code == 200:
+            if account.status == "cookie_expired":
+                await repo.update_account(account, status="active")
+            return {"valid": True, "elapsed_ms": elapsed}
+
+        return {"valid": False, "reason": f"unexpected_status_{resp.status_code}", "elapsed_ms": elapsed}
+
+    except httpx.ProxyError as e:
+        elapsed = int((time.monotonic() - start) * 1000)
+        return {"valid": False, "reason": "proxy_unreachable", "error": str(e), "elapsed_ms": elapsed}
+    except httpx.TimeoutException:
+        elapsed = int((time.monotonic() - start) * 1000)
+        return {"valid": False, "reason": "proxy_unreachable", "error": "Connection timed out", "elapsed_ms": elapsed}
+    except Exception as e:
+        elapsed = int((time.monotonic() - start) * 1000)
+        return {"valid": False, "reason": "error", "error": str(e), "elapsed_ms": elapsed}
 
 
 @router.post("/accounts/{account_id}/login-session")
