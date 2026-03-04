@@ -39,8 +39,11 @@ class Repository:
     async def get_account(self, account_id: str) -> Account | None:
         return await self.session.get(Account, account_id)
 
-    async def list_accounts(self) -> Sequence[Account]:
-        result = await self.session.execute(select(Account).order_by(Account.name))
+    async def list_accounts(self, include_archived: bool = False) -> Sequence[Account]:
+        stmt = select(Account).order_by(Account.name)
+        if not include_archived:
+            stmt = stmt.where(Account.archived == False)  # noqa: E712
+        result = await self.session.execute(stmt)
         return result.scalars().all()
 
     async def update_account(self, account: Account, **kwargs) -> Account:
@@ -68,10 +71,12 @@ class Repository:
     async def get_campaign(self, campaign_id: str) -> Campaign | None:
         return await self.session.get(Campaign, campaign_id)
 
-    async def list_campaigns(self, account_id: str | None = None) -> Sequence[Campaign]:
+    async def list_campaigns(self, account_id: str | None = None, include_archived: bool = False) -> Sequence[Campaign]:
         stmt = select(Campaign).order_by(Campaign.created_at.desc())
         if account_id:
             stmt = stmt.where(Campaign.account_id == account_id)
+        if not include_archived:
+            stmt = stmt.where(Campaign.archived == False)  # noqa: E712
         result = await self.session.execute(stmt)
         return result.scalars().all()
 
@@ -255,9 +260,12 @@ class Repository:
     # ── Scheduler helpers ─────────────────────────────────────────────────
 
     async def list_active_accounts(self) -> Sequence[Account]:
-        """Get all accounts with status=active."""
+        """Get all non-archived accounts with status=active."""
         result = await self.session.execute(
-            select(Account).where(Account.status == AccountStatus.ACTIVE)
+            select(Account).where(
+                Account.status == AccountStatus.ACTIVE,
+                Account.archived == False,  # noqa: E712
+            )
         )
         return result.scalars().all()
 
@@ -269,11 +277,12 @@ class Repository:
         return result.scalars().all()
 
     async def get_active_campaigns(self, account_id: str) -> Sequence[Campaign]:
-        """Get all active campaigns for an account."""
+        """Get all active, non-archived campaigns for an account."""
         result = await self.session.execute(
             select(Campaign).where(
                 Campaign.account_id == account_id,
                 Campaign.status == CampaignStatus.ACTIVE,
+                Campaign.archived == False,  # noqa: E712
             )
         )
         return result.scalars().all()
@@ -527,10 +536,11 @@ class Repository:
         )
         return result.scalar_one_or_none()
 
-    async def list_lead_lists(self) -> Sequence[LeadList]:
-        result = await self.session.execute(
-            select(LeadList).order_by(LeadList.created_at.desc())
-        )
+    async def list_lead_lists(self, include_archived: bool = False) -> Sequence[LeadList]:
+        stmt = select(LeadList).order_by(LeadList.created_at.desc())
+        if not include_archived:
+            stmt = stmt.where(LeadList.archived == False)  # noqa: E712
+        result = await self.session.execute(stmt)
         return result.scalars().all()
 
     async def update_lead_list(self, lead_list: LeadList, **kwargs) -> LeadList:

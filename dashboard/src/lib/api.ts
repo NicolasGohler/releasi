@@ -35,7 +35,10 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 
 // ── Accounts ──────────────────────────────────────────────────────────────
 
-export const fetchAccounts = () => apiFetch<Account[]>("/accounts");
+export const fetchAccounts = (params?: { include_archived?: boolean }) => {
+  const qs = params?.include_archived ? "?include_archived=true" : "";
+  return apiFetch<Account[]>(`/accounts${qs}`);
+};
 
 export const fetchAccount = (id: string) => apiFetch<Account>(`/accounts/${id}`);
 
@@ -78,10 +81,11 @@ export const fetchAccountStats = (id: string, days = 30) =>
 
 // ── Campaigns ─────────────────────────────────────────────────────────────
 
-export const fetchCampaigns = (params?: { account_id?: string; status?: string }) => {
+export const fetchCampaigns = (params?: { account_id?: string; status?: string; include_archived?: boolean }) => {
   const sp = new URLSearchParams();
   if (params?.account_id) sp.set("account_id", params.account_id);
   if (params?.status) sp.set("status", params.status);
+  if (params?.include_archived) sp.set("include_archived", "true");
   const qs = sp.toString();
   return apiFetch<Campaign[]>(`/campaigns${qs ? `?${qs}` : ""}`);
 };
@@ -151,7 +155,10 @@ export const importCSV = async (
 
 // ── Lead Lists ───────────────────────────────────────────────────────────
 
-export const fetchLeadLists = () => apiFetch<LeadList[]>("/lead-lists");
+export const fetchLeadLists = (params?: { include_archived?: boolean }) => {
+  const qs = params?.include_archived ? "?include_archived=true" : "";
+  return apiFetch<LeadList[]>(`/lead-lists${qs}`);
+};
 
 export const fetchLeadList = (id: string) =>
   apiFetch<LeadListDetail>(`/lead-lists/${id}`);
@@ -248,3 +255,23 @@ export const checkConnection = (accountId: string) =>
     `/accounts/${accountId}/check-connection`,
     { method: "POST" }
   );
+
+// ── Archive ──────────────────────────────────────────────────────────────
+
+export const archiveAccount = (id: string) =>
+  apiFetch<Account>(`/accounts/${id}/archive`, { method: "POST" });
+
+export const unarchiveAccount = (id: string) =>
+  apiFetch<Account>(`/accounts/${id}/unarchive`, { method: "POST" });
+
+export const archiveCampaign = (id: string) =>
+  apiFetch<Campaign>(`/campaigns/${id}/archive`, { method: "POST" });
+
+export const unarchiveCampaign = (id: string) =>
+  apiFetch<Campaign>(`/campaigns/${id}/unarchive`, { method: "POST" });
+
+export const archiveLeadList = (id: string) =>
+  apiFetch<LeadList>(`/lead-lists/${id}/archive`, { method: "POST" });
+
+export const unarchiveLeadList = (id: string) =>
+  apiFetch<LeadList>(`/lead-lists/${id}/unarchive`, { method: "POST" });

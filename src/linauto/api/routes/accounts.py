@@ -23,9 +23,30 @@ public_router = APIRouter()
 
 
 @router.get("/accounts", response_model=List[AccountOut])
-async def list_accounts(repo: Repository = Depends(get_repo)):
-    accounts = await repo.list_accounts()
+async def list_accounts(
+    include_archived: bool = Query(False),
+    repo: Repository = Depends(get_repo),
+):
+    accounts = await repo.list_accounts(include_archived=include_archived)
     return [AccountOut.model_validate(a) for a in accounts]
+
+
+@router.post("/accounts/{account_id}/archive", response_model=AccountOut)
+async def archive_account(account_id: str, repo: Repository = Depends(get_repo)):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    account = await repo.update_account(account, archived=True, status="cookie_expired")
+    return AccountOut.model_validate(account)
+
+
+@router.post("/accounts/{account_id}/unarchive", response_model=AccountOut)
+async def unarchive_account(account_id: str, repo: Repository = Depends(get_repo)):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    account = await repo.update_account(account, archived=False)
+    return AccountOut.model_validate(account)
 
 
 @router.get("/accounts/{account_id}", response_model=AccountOut)

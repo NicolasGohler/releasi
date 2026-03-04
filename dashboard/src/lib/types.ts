@@ -9,6 +9,7 @@ export interface Account {
   paused_until: string | null;
   withdraw_threshold: number | null;
   avatar_path: string | null;
+  archived: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -29,6 +30,7 @@ export interface Campaign {
   account_name: string | null;
   name: string;
   status: string;
+  archived: boolean;
   connection_message_template: string | null;
   followup_message_template: string | null;
   followup_delay_hours: number;
@@ -54,6 +56,7 @@ export interface LeadList {
   csv_filename: string | null;
   total_leads: number;
   campaign_count: number;
+  archived: boolean;
   created_at: string;
   updated_at: string;
 }

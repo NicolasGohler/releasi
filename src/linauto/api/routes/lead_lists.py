@@ -4,7 +4,7 @@ from __future__ import annotations
 import tempfile
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File  # noqa: F401
 
 from linauto.api.auth import require_api_key
 from linauto.api.deps import get_repo
@@ -31,8 +31,11 @@ async def _enrich_lead_list(repo: Repository, lead_list) -> LeadListOut:
 
 
 @router.get("/lead-lists", response_model=list[LeadListOut])
-async def list_lead_lists(repo: Repository = Depends(get_repo)):
-    lists = await repo.list_lead_lists()
+async def list_lead_lists(
+    include_archived: bool = Query(False),
+    repo: Repository = Depends(get_repo),
+):
+    lists = await repo.list_lead_lists(include_archived=include_archived)
     return [await _enrich_lead_list(repo, ll) for ll in lists]
 
 
@@ -64,6 +67,24 @@ async def create_lead_list(
     if existing:
         raise HTTPException(status_code=409, detail="Lead list name already exists")
     ll = await repo.create_lead_list(name=body.name)
+    return await _enrich_lead_list(repo, ll)
+
+
+@router.post("/lead-lists/{lead_list_id}/archive", response_model=LeadListOut)
+async def archive_lead_list(lead_list_id: str, repo: Repository = Depends(get_repo)):
+    ll = await repo.get_lead_list(lead_list_id)
+    if not ll:
+        raise HTTPException(status_code=404, detail="Lead list not found")
+    ll = await repo.update_lead_list(ll, archived=True)
+    return await _enrich_lead_list(repo, ll)
+
+
+@router.post("/lead-lists/{lead_list_id}/unarchive", response_model=LeadListOut)
+async def unarchive_lead_list(lead_list_id: str, repo: Repository = Depends(get_repo)):
+    ll = await repo.get_lead_list(lead_list_id)
+    if not ll:
+        raise HTTPException(status_code=404, detail="Lead list not found")
+    ll = await repo.update_lead_list(ll, archived=False)
     return await _enrich_lead_list(repo, ll)
 
 

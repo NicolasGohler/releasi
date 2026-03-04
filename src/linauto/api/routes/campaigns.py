@@ -32,9 +32,10 @@ async def _enrich_campaign(repo: Repository, campaign) -> CampaignOut:
 async def list_campaigns(
     account_id: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    include_archived: bool = Query(False),
     repo: Repository = Depends(get_repo),
 ):
-    campaigns = await repo.list_campaigns(account_id=account_id)
+    campaigns = await repo.list_campaigns(account_id=account_id, include_archived=include_archived)
     if status:
         campaigns = [c for c in campaigns if c.status.value == status]
     return [await _enrich_campaign(repo, c) for c in campaigns]
@@ -105,6 +106,24 @@ async def reset_leads(campaign_id: str, repo: Repository = Depends(get_repo)):
         raise HTTPException(status_code=404, detail="Campaign not found")
     count = await repo.reset_campaign_leads(campaign_id)
     return {"reset_count": count}
+
+
+@router.post("/campaigns/{campaign_id}/archive", response_model=CampaignOut)
+async def archive_campaign(campaign_id: str, repo: Repository = Depends(get_repo)):
+    campaign = await repo.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    campaign = await repo.update_campaign(campaign, archived=True, status=CampaignStatus.PAUSED)
+    return await _enrich_campaign(repo, campaign)
+
+
+@router.post("/campaigns/{campaign_id}/unarchive", response_model=CampaignOut)
+async def unarchive_campaign(campaign_id: str, repo: Repository = Depends(get_repo)):
+    campaign = await repo.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    campaign = await repo.update_campaign(campaign, archived=False)
+    return await _enrich_campaign(repo, campaign)
 
 
 @router.get("/campaigns/{campaign_id}/stats", response_model=CampaignStatsResponse)

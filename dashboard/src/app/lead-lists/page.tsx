@@ -34,7 +34,7 @@ export default function LeadListsPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Lead Lists" description="Manage reusable lead collections">
+      <PageHeader title="Lists" description="Manage reusable lead collections">
         <Button onClick={() => setShowCreate(!showCreate)}>
           {showCreate ? "Cancel" : "New List"}
         </Button>

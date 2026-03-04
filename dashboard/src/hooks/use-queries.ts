@@ -5,8 +5,11 @@ import * as api from "@/lib/api";
 
 // ── Accounts ──────────────────────────────────────────────────────────────
 
-export function useAccounts() {
-  return useQuery({ queryKey: ["accounts"], queryFn: api.fetchAccounts });
+export function useAccounts(params?: { include_archived?: boolean }) {
+  return useQuery({
+    queryKey: ["accounts", params],
+    queryFn: () => api.fetchAccounts(params),
+  });
 }
 
 export function useAccount(id: string, opts?: { enabled?: boolean }) {
@@ -61,7 +64,7 @@ export function useUpdateCookie(id: string) {
 
 // ── Campaigns ─────────────────────────────────────────────────────────────
 
-export function useCampaigns(params?: { account_id?: string; status?: string }) {
+export function useCampaigns(params?: { account_id?: string; status?: string; include_archived?: boolean }) {
   return useQuery({
     queryKey: ["campaigns", params],
     queryFn: () => api.fetchCampaigns(params),
@@ -150,8 +153,8 @@ export function useImportCSV(campaignId: string) {
 
 // ── Lead Lists ───────────────────────────────────────────────────────────
 
-export function useLeadLists() {
-  return useQuery({ queryKey: ["lead-lists"], queryFn: api.fetchLeadLists });
+export function useLeadLists(params?: { include_archived?: boolean }) {
+  return useQuery({ queryKey: ["lead-lists", params], queryFn: () => api.fetchLeadLists(params) });
 }
 
 export function useLeadList(id: string) {
@@ -258,6 +261,56 @@ export function useRestoreLead() {
       qc.invalidateQueries({ queryKey: ["leads"] });
       qc.invalidateQueries({ queryKey: ["campaigns"] });
     },
+  });
+}
+
+// ── Archive ───────────────────────────────────────────────────────────────
+
+export function useArchiveAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.archiveAccount,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["accounts"] }),
+  });
+}
+
+export function useUnarchiveAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.unarchiveAccount,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["accounts"] }),
+  });
+}
+
+export function useArchiveCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.archiveCampaign,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["campaigns"] }),
+  });
+}
+
+export function useUnarchiveCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.unarchiveCampaign,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["campaigns"] }),
+  });
+}
+
+export function useArchiveLeadList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.archiveLeadList,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["lead-lists"] }),
+  });
+}
+
+export function useUnarchiveLeadList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.unarchiveLeadList,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["lead-lists"] }),
   });
 }
 

@@ -20,6 +20,7 @@ class AccountOut(BaseModel):
     paused_until: Optional[datetime] = None
     withdraw_threshold: Optional[int] = None
     avatar_path: Optional[str] = None
+    archived: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -71,6 +72,7 @@ class CampaignOut(BaseModel):
     filter_min_connections: Optional[int] = None
     csv_filename: Optional[str] = None
     total_leads: int
+    archived: bool = False
     status_counts: Optional[Dict[str, int]] = None
     account_status: Optional[str] = None
     account_paused_until: Optional[datetime] = None
@@ -158,6 +160,7 @@ class LeadListOut(BaseModel):
     csv_filename: Optional[str] = None
     total_leads: int
     campaign_count: int = 0
+    archived: bool = False
     created_at: datetime
     updated_at: datetime
 
