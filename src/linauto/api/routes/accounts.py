@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from linauto.api.auth import require_api_key
@@ -209,6 +209,7 @@ async def start_login_session(
 @router.post("/accounts/{account_id}/login-session/finish")
 async def finish_login_session(
     account_id: str,
+    background_tasks: BackgroundTasks,
     repo: Repository = Depends(get_repo),
 ):
     account = await repo.get_account(account_id)
@@ -243,6 +244,21 @@ async def finish_login_session(
         await pool.evict(account.id)
     except RuntimeError:
         pass  # Pool not initialized (CLI context)
+
+    # Validate the new session immediately via proxy HTTP check in the background.
+    # This confirms the cookie works and the proxy route is healthy, and will
+    # auto-recover the account to ACTIVE status if the health check passes.
+    async def _validate_after_login(acct_id: str):
+        try:
+            from linauto.scheduler.runner import check_cookie_health
+            await check_cookie_health()
+            logger.info("post_login.health_check_done", account_id=acct_id)
+        except Exception as e:
+            logger.warning("post_login.health_check_failed", account_id=acct_id, error=str(e))
+
+    import structlog as _structlog
+    logger = _structlog.get_logger()
+    background_tasks.add_task(_validate_after_login, account_id)
 
     return {"success": True, "message": "Cookies extracted and saved successfully"}
 

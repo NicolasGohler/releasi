@@ -691,14 +691,13 @@ async def check_cookie_health():
 
 async def keep_alive():
     """
-    Lightweight session keep-alive for persistent browser pool.
+    Daily organic morning session — simulates a user opening LinkedIn in the morning.
 
-    Runs every ~2.5 hours (configurable). For each active account:
-    1. HTTP pre-check (no proxy, ~1s) — if expired, mark and skip.
-    2. Browser feed scroll (via pool) — keeps session warm with real activity.
-       If browser/proxy fails, logs a warning but doesn't mark expired
-       (HTTP already confirmed the cookie is valid).
-    Skips accounts whose browser is currently in use by another job.
+    Runs once per day at 8:00 ±90 min. Does a multi-step browsing sequence
+    (feed scroll + one additional page) to look like natural morning usage.
+    Session expiry is detected reactively by the dispatcher (3 consecutive errors),
+    not by this job. This job's purpose is organic-looking activity, not health checking.
+    Skips accounts whose browser is currently in use by the dispatcher.
     """
     repo, session = await _get_repo()
     try:
@@ -727,31 +726,33 @@ async def keep_alive():
                 page = await context.new_page()
                 try:
                     from linauto.linkedin.noise import BrowsingNoise
-                    from linauto.linkedin.detector import LimitDetector
-                    activity_name, activity_url = random.choices(
-                        _KEEPALIVE_ACTIVITIES, weights=_KEEPALIVE_WEIGHTS, k=1
-                    )[0]
                     noise = BrowsingNoise(page)
-                    if activity_name == "feed":
-                        await noise.scroll_feed(duration_seconds=random.uniform(3, 8))
+
+                    # Step 1: Always start with the feed (most natural morning action)
+                    await noise.scroll_feed(duration_seconds=random.uniform(15, 35))
+
+                    # Step 2: Visit one more page — notifications or network
+                    second_name, second_url = random.choices(
+                        _KEEPALIVE_ACTIVITIES[1:], weights=[3, 2, 2], k=1
+                    )[0]
+                    await page.goto(second_url, wait_until="domcontentloaded", timeout=20000)
+
+                    # Check for login redirect (session expired)
+                    if any(p in page.url for p in ["/login", "/uas/login", "/signup", "/checkpoint/"]):
+                        logger.warning("keepalive.session_expired_detected", account=account.name)
+                        await repo.update_account(account, status="cookie_expired")
+                        await repo.log_action(
+                            account_id=account.id,
+                            action_type=ActionType.ERROR,
+                            status=ActionLogStatus.FAILED,
+                            details={"reason": "session_expired_detected_by_morning_warmup"},
+                        )
                     else:
-                        await page.goto(activity_url, wait_until="domcontentloaded", timeout=20000)
-                        # Check if we got redirected to login (session expired)
-                        if any(p in page.url for p in ["/login", "/uas/login", "/signup", "/checkpoint/"]):
-                            logger.warning("keepalive.session_expired_detected", account=account.name)
-                            await repo.update_account(account, status="cookie_expired")
-                            await repo.log_action(
-                                account_id=account.id,
-                                action_type=ActionType.ERROR,
-                                status=ActionLogStatus.FAILED,
-                                details={"reason": "session_expired_detected_by_keepalive"},
-                            )
-                            continue
-                        await asyncio.sleep(random.uniform(3, 8))
-                        scroll_amount = random.randint(200, 500)
-                        await page.mouse.wheel(0, scroll_amount)
-                        await asyncio.sleep(random.uniform(1, 3))
-                    logger.info("keepalive.pinged", account=account.name, activity=activity_name)
+                        await asyncio.sleep(random.uniform(5, 15))
+                        await page.mouse.wheel(0, random.randint(200, 500))
+                        await asyncio.sleep(random.uniform(2, 5))
+                        logger.info("keepalive.morning_done", account=account.name, second_page=second_name)
+
                 except Exception as e:
                     logger.warning("keepalive.scroll_failed", account=account.name, error=str(e))
                 finally:
@@ -853,27 +854,24 @@ async def start_scheduler():
         replace_existing=True,
     )
 
-    # Cookie health check every 6 hours (HTTP-based, no browser needed)
-    scheduler.add_job(
-        check_cookie_health,
-        IntervalTrigger(hours=6),
-        id="cookie_health_checker",
-        name="Cookie Health Check",
-        replace_existing=True,
-    )
-
-    # Session keep-alive (prevents LinkedIn session timeout)
-    keepalive_hours = settings.pool_keepalive_interval_hours
+    # Session keep-alive — once per day, morning window (8:00 ±90 min).
+    # Not a health check: LinkedIn sessions last months on their own.
+    # This is purely organic-looking morning activity, not a ping.
+    # Expiry is detected reactively by the dispatcher (3 consecutive errors).
     scheduler.add_job(
         keep_alive,
-        IntervalTrigger(hours=keepalive_hours, jitter=1800),  # ±30 min randomization
+        CronTrigger(hour=8, minute=0, jitter=5400),  # 6:30–9:30 AM window
         id="keepalive",
-        name="Session Keep-Alive",
+        name="Morning Session Warm-Up",
         replace_existing=True,
     )
 
     scheduler.start()
     logger.info("scheduler.started", jobs=len(scheduler.get_jobs()))
+
+    # On startup: validate all account sessions once (catches expired cookies
+    # from before this deploy without waiting for the morning warm-up).
+    await check_cookie_health()
 
     # Also run planning sweep immediately on startup
     await daily_planning_sweep()
