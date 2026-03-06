@@ -54,14 +54,11 @@ async def _http_check_session(
         "User-Agent": user_agent or "Mozilla/5.0",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
-    proxies = {"http://": proxy_url, "https://": proxy_url} if proxy_url else None
     try:
-        async with httpx.AsyncClient(
-            headers=headers,
-            follow_redirects=True,
-            timeout=10.0,
-            proxies=proxies,
-        ) as client:
+        client_kwargs = dict(headers=headers, follow_redirects=True, timeout=10.0)
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+        async with httpx.AsyncClient(**client_kwargs) as client:
             resp = await client.get("https://www.linkedin.com/feed/")
         final_url = str(resp.url)
         if any(p in final_url for p in login_patterns):
