@@ -63,7 +63,10 @@ class BrowsingNoise:
             scroll_steps = random.randint(1, 3)
             per_step = read_time / scroll_steps
             for _ in range(scroll_steps):
-                await self.page.mouse.wheel(0, random.randint(150, 400))
+                if random.random() < 0.15:
+                    await self.page.mouse.wheel(0, -random.randint(60, 150))
+                else:
+                    await self.page.mouse.wheel(0, random.randint(150, 400))
                 await asyncio.sleep(per_step)
 
             logger.info("noise.profile_viewed", url=href)
@@ -99,6 +102,8 @@ class BrowsingNoise:
                         pressed = await btn.get_attribute("aria-pressed")
                         if pressed == "true":
                             continue
+                        await btn.hover()
+                        await asyncio.sleep(random.uniform(0.08, 0.3))
                         await btn.click()
                         await self.delay.micro_delay(0.5, 1.5)
                         logger.info("noise.post_liked")
@@ -128,8 +133,17 @@ class BrowsingNoise:
 
             elapsed = 0
             while elapsed < duration_seconds:
-                scroll_amount = random.randint(200, 600)
-                await self.page.mouse.wheel(0, scroll_amount)
+                if random.random() < 0.15:
+                    # Occasional back-scroll (human-like)
+                    await self.page.mouse.wheel(0, -random.randint(100, 250))
+                else:
+                    scroll_amount = random.randint(200, 600)
+                    delta_x = random.randint(-3, 3)
+                    if random.random() < 0.25:
+                        # PageDown instead of mouse wheel (~25% of forward scrolls)
+                        await self.page.keyboard.press("PageDown")
+                    else:
+                        await self.page.mouse.wheel(delta_x, scroll_amount)
                 pause = random.uniform(2, 6)
                 await asyncio.sleep(pause)
                 elapsed += pause

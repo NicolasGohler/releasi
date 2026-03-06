@@ -26,12 +26,26 @@ from linauto.safety import limits as rate_limits
 
 logger = structlog.get_logger()
 
+# Keep-alive activity rotation: (name, url) pairs with selection weights
+_KEEPALIVE_ACTIVITIES = [
+    ("feed", "https://www.linkedin.com/feed/"),
+    ("notifications", "https://www.linkedin.com/notifications/"),
+    ("network", "https://www.linkedin.com/mynetwork/"),
+    ("messaging", "https://www.linkedin.com/messaging/"),
+]
+_KEEPALIVE_WEIGHTS = [4, 2, 2, 2]
 
-async def _http_check_session(li_at_cookie: str, user_agent: Optional[str] = None) -> bool:
-    """Fast HTTP session check — no browser, ~1-2s.
 
-    Returns True if the cookie is still valid, False if expired/redirected.
-    Raises on unexpected network errors (caller should handle).
+async def _http_check_session(
+    li_at_cookie: str,
+    user_agent: Optional[str] = None,
+    proxy_url: Optional[str] = None,
+) -> bool:
+    """Fast HTTP session check routed through the account's proxy, ~1-2s.
+
+    Always uses the proxy when available so LinkedIn sees a consistent IP.
+    Sending li_at from a datacenter IP (unproxied) is a session invalidation trigger.
+    Returns True if valid, False if expired/redirected. Raises on network errors.
     """
     import httpx
     login_patterns = ["/login", "/uas/login", "/signup", "/checkpoint/"]
@@ -40,11 +54,13 @@ async def _http_check_session(li_at_cookie: str, user_agent: Optional[str] = Non
         "User-Agent": user_agent or "Mozilla/5.0",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
+    proxies = {"http://": proxy_url, "https://": proxy_url} if proxy_url else None
     try:
         async with httpx.AsyncClient(
             headers=headers,
             follow_redirects=True,
-            timeout=5.0,
+            timeout=10.0,
+            proxies=proxies,
         ) as client:
             resp = await client.get("https://www.linkedin.com/feed/")
         final_url = str(resp.url)
@@ -610,39 +626,62 @@ async def dispatch_followups():
 
 async def check_cookie_health():
     """
-    Proactive session validation for all active accounts via HTTP.
+    Proactive session validation for all active AND cookie_expired accounts.
 
-    Runs every 6 hours. Uses a fast HTTP check (no browser, no proxy) to
-    detect expired cookies without launching Chromium. Marks accounts as
-    cookie_expired if the check fails.
+    Runs every 6 hours. Routes through the account's proxy so LinkedIn sees a
+    consistent IP — unproxied datacenter requests trigger session invalidation.
+    Also checks cookie_expired accounts so they can self-recover after re-login.
     """
+    from sqlalchemy import select as sa_select
+    from linauto.db.models import AccountStatus
+
     repo, session = await _get_repo()
     try:
-        accounts = await repo.list_active_accounts()
+        # Check both active and cookie_expired accounts (to enable self-recovery)
+        result = await session.execute(
+            sa_select(Account).where(
+                Account.status.in_([AccountStatus.ACTIVE, AccountStatus.COOKIE_EXPIRED]),
+                Account.archived == False,  # noqa: E712
+            )
+        )
+        accounts = result.scalars().all()
+
         for account in accounts:
             if not account.li_at_cookie:
                 continue
 
+            # Build proxy URL for this account (same as browser does)
+            proxy_url = None
+            if account.proxy_country:
+                from linauto.linkedin.browser import _build_proxy_url
+                try:
+                    proxy_url = _build_proxy_url(account.id, account.proxy_country)
+                except Exception:
+                    pass
+
             try:
-                valid = await _http_check_session(account.li_at_cookie, account.user_agent)
+                valid = await _http_check_session(account.li_at_cookie, account.user_agent, proxy_url)
             except Exception as e:
                 logger.warning("cookie_health.check_error", account=account.name, error=str(e))
                 continue  # Network error — don't mark expired, try again next cycle
 
             if valid:
-                logger.info("cookie_health.valid", account=account.name)
-                # Re-activate if it was previously marked expired (e.g. after cookie renewal)
-                if account.status == "cookie_expired":
+                logger.info("cookie_health.valid", account=account.name, status=account.status)
+                if account.status == AccountStatus.COOKIE_EXPIRED:
                     await repo.update_account(account, status="active")
+                    logger.info("cookie_health.auto_recovered", account=account.name)
             else:
-                logger.warning("cookie_health.expired", account=account.name)
-                await repo.update_account(account, status="cookie_expired")
-                await repo.log_action(
-                    account_id=account.id,
-                    action_type=ActionType.ERROR,
-                    status=ActionLogStatus.FAILED,
-                    details={"reason": "cookie_expired_detected_by_health_check"},
-                )
+                if account.status == AccountStatus.ACTIVE:
+                    logger.warning("cookie_health.expired", account=account.name)
+                    await repo.update_account(account, status="cookie_expired")
+                    await repo.log_action(
+                        account_id=account.id,
+                        action_type=ActionType.ERROR,
+                        status=ActionLogStatus.FAILED,
+                        details={"reason": "cookie_expired_detected_by_health_check"},
+                    )
+                else:
+                    logger.debug("cookie_health.still_expired", account=account.name)
 
     except Exception as e:
         logger.error("cookie_health.sweep_failed", error=str(e))
@@ -673,49 +712,48 @@ async def keep_alive():
             if not account.li_at_cookie:
                 continue
 
-            # Step 1: Fast HTTP check — no browser, no proxy
-            try:
-                valid = await _http_check_session(account.li_at_cookie, account.user_agent)
-            except Exception as e:
-                logger.warning("keepalive.http_check_error", account=account.name, error=str(e))
-                continue  # Network error — skip this cycle
-
-            if not valid:
-                logger.warning("keepalive.cookie_expired", account=account.name)
-                await repo.update_account(account, status="cookie_expired")
-                await repo.log_action(
-                    account_id=account.id,
-                    action_type=ActionType.ERROR,
-                    status=ActionLogStatus.FAILED,
-                    details={"reason": "cookie_expired_detected_by_keepalive"},
-                )
-                continue
-
-            # Step 2: Browser feed scroll to maintain active session
+            # Skip if browser is busy with another job — try next cycle
             if pool.is_busy(account.id):
                 logger.debug("keepalive.skipped_busy", account=account.name)
-                logger.info("keepalive.http_pinged", account=account.name)
                 continue
 
             try:
                 context = await pool.acquire(account)
             except Exception as e:
                 logger.warning("keepalive.acquire_failed", account=account.name, error=str(e))
-                logger.info("keepalive.http_pinged", account=account.name)
                 continue
 
             try:
                 page = await context.new_page()
                 try:
                     from linauto.linkedin.noise import BrowsingNoise
+                    from linauto.linkedin.detector import LimitDetector
+                    activity_name, activity_url = random.choices(
+                        _KEEPALIVE_ACTIVITIES, weights=_KEEPALIVE_WEIGHTS, k=1
+                    )[0]
                     noise = BrowsingNoise(page)
-                    await noise.scroll_feed(duration_seconds=random.uniform(3, 8))
-                    logger.info("keepalive.pinged", account=account.name)
+                    if activity_name == "feed":
+                        await noise.scroll_feed(duration_seconds=random.uniform(3, 8))
+                    else:
+                        await page.goto(activity_url, wait_until="domcontentloaded", timeout=20000)
+                        # Check if we got redirected to login (session expired)
+                        if any(p in page.url for p in ["/login", "/uas/login", "/signup", "/checkpoint/"]):
+                            logger.warning("keepalive.session_expired_detected", account=account.name)
+                            await repo.update_account(account, status="cookie_expired")
+                            await repo.log_action(
+                                account_id=account.id,
+                                action_type=ActionType.ERROR,
+                                status=ActionLogStatus.FAILED,
+                                details={"reason": "session_expired_detected_by_keepalive"},
+                            )
+                            continue
+                        await asyncio.sleep(random.uniform(3, 8))
+                        scroll_amount = random.randint(200, 500)
+                        await page.mouse.wheel(0, scroll_amount)
+                        await asyncio.sleep(random.uniform(1, 3))
+                    logger.info("keepalive.pinged", account=account.name, activity=activity_name)
                 except Exception as e:
-                    # Browser scroll failed (e.g. proxy blocks LinkedIn) but cookie
-                    # is confirmed valid via HTTP — log warning, don't mark expired
                     logger.warning("keepalive.scroll_failed", account=account.name, error=str(e))
-                    logger.info("keepalive.http_pinged", account=account.name)
                 finally:
                     await page.close()
             finally:
@@ -828,7 +866,7 @@ async def start_scheduler():
     keepalive_hours = settings.pool_keepalive_interval_hours
     scheduler.add_job(
         keep_alive,
-        IntervalTrigger(hours=keepalive_hours),
+        IntervalTrigger(hours=keepalive_hours, jitter=1800),  # ±30 min randomization
         id="keepalive",
         name="Session Keep-Alive",
         replace_existing=True,

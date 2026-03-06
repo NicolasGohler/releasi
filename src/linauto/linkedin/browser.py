@@ -13,13 +13,23 @@ from linauto.linkedin.selectors import FEED_URL, LOGIN_URL_PATTERNS, NAV_AVATAR
 
 logger = structlog.get_logger()
 
-# Realistic user agents (updated periodically)
+# User agents must match the actual Playwright Chromium binary version.
+# Playwright 1.58.0 ships Chrome 145 — mismatching causes navigator.userAgentData
+# to diverge from navigator.userAgent, which is a strong bot fingerprint.
+# To update: run `chromium --version` inside the container and set to that major version.
+_CHROMIUM_MAJOR = 145
 _USER_AGENTS = [
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CHROMIUM_MAJOR}.0.0.0 Safari/537.36",
+    f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CHROMIUM_MAJOR}.0.0.0 Safari/537.36",
+    f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CHROMIUM_MAJOR}.0.0.0 Safari/537.36",
+    f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CHROMIUM_MAJOR}.0.0.0 Safari/537.36",
+    f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CHROMIUM_MAJOR}.0.0.0 Safari/537.36",
+    f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CHROMIUM_MAJOR}.0.0.0 Safari/537.36",
 ]
+
+# Matching Sec-CH-UA headers per platform (must stay in sync with _CHROMIUM_MAJOR)
+_SEC_CH_UA_WINDOWS = f'"Chromium";v="{_CHROMIUM_MAJOR}", "Google Chrome";v="{_CHROMIUM_MAJOR}", "Not-A.Brand";v="99"'
+_SEC_CH_UA_MAC = f'"Chromium";v="{_CHROMIUM_MAJOR}", "Google Chrome";v="{_CHROMIUM_MAJOR}", "Not-A.Brand";v="99"'
 
 # Timezone to locale mapping for natural browser fingerprint
 _TIMEZONE_LOCALE_MAP = {
@@ -51,14 +61,21 @@ def _timezone_to_locale(timezone_str: Optional[str]) -> str:
     return "en-US"
 
 
-def _deterministic_ua(account_id: str) -> str:
+def _deterministic_ua(account_id: str, proxy_country: Optional[str] = None) -> str:
     """Pick a stable User-Agent per account using a hash-based index.
 
-    This ensures the same account always presents the same browser fingerprint,
-    unlike random.choice which changes on every launch.
+    Mac UAs are only selected for English-speaking markets (us, ca, gb, au, nz, ie).
+    All other markets use Windows-only UAs to match regional browser distribution.
+    This ensures the same account always presents the same browser fingerprint.
     """
-    idx = int(hashlib.sha256(account_id.encode()).hexdigest()[:8], 16) % len(_USER_AGENTS)
-    return _USER_AGENTS[idx]
+    mac_markets = {"us", "ca", "gb", "au", "nz", "ie"}
+    country_base = (proxy_country or "").split("-")[0].lower()
+    if country_base in mac_markets:
+        pool = _USER_AGENTS
+    else:
+        pool = [ua for ua in _USER_AGENTS if "Windows" in ua] or _USER_AGENTS
+    idx = int(hashlib.sha256(account_id.encode()).hexdigest()[:8], 16) % len(pool)
+    return pool[idx]
 
 
 def _build_proxy_url(account_id: str, proxy_country: str) -> Optional[str]:
@@ -131,21 +148,33 @@ class LinkedInBrowser:
 
         self._playwright = await async_playwright().start()
 
-        ua = user_agent or _deterministic_ua(account_id)
+        ua = user_agent or _deterministic_ua(account_id, proxy_country)
         tz = timezone or settings.default_timezone
         locale = _timezone_to_locale(tz)
+
+        # Deterministic viewport — consistent fingerprint per account, realistic sizes
+        _VIEWPORTS = [(1366, 768), (1440, 900), (1920, 1080), (1280, 800), (1536, 864)]
+        vp_idx = int(hashlib.sha256(account_id.encode()).hexdigest()[8:16], 16) % len(_VIEWPORTS)
+        vp_w, vp_h = _VIEWPORTS[vp_idx]
+
+        # Sec-CH-UA must match the UA to avoid Client Hints mismatch detection
+        is_mac = "Macintosh" in ua
+        sec_ch_ua = _SEC_CH_UA_MAC if is_mac else _SEC_CH_UA_WINDOWS
+        sec_ch_ua_platform = '"macOS"' if is_mac else '"Windows"'
 
         # Build context kwargs
         context_kwargs = dict(
             user_data_dir=str(user_data_dir),
             headless=settings.browser_headless,
-            viewport={
-                "width": settings.browser_viewport_width,
-                "height": settings.browser_viewport_height,
-            },
+            viewport={"width": vp_w, "height": vp_h},
             locale=locale,
             timezone_id=tz,
             user_agent=ua,
+            extra_http_headers={
+                "Sec-CH-UA": sec_ch_ua,
+                "Sec-CH-UA-Mobile": "?0",
+                "Sec-CH-UA-Platform": sec_ch_ua_platform,
+            },
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",

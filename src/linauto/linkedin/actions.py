@@ -71,59 +71,49 @@ class LinkedInActions:
             pass
         return None
 
+    async def _hover_and_click(self, locator, timeout: int = 5000):
+        """Hover over a button with a short pause before clicking (mimics human behaviour)."""
+        try:
+            await locator.hover(timeout=timeout)
+            await self.delay.micro_delay(0.08, 0.35)
+            await locator.click(timeout=timeout)
+        except Exception:
+            await locator.click(timeout=timeout)
+
     async def _find_button_by_js(self, text: str) -> Optional[Locator]:
         """
         Nuclear fallback: find a button by visible text using JavaScript.
-        Adds a temporary data attribute to the found element so we can
-        locate it reliably with a Playwright locator.
+        Uses index-based locator to avoid mutating the DOM.
         """
-        found = await self.page.evaluate("""
-            (text) => {
-                const buttons = document.querySelectorAll('button');
-                for (const btn of buttons) {
-                    const style = window.getComputedStyle(btn);
-                    if (style.display === 'none' || style.visibility === 'hidden') continue;
-                    if (btn.offsetParent === null && style.position !== 'fixed') continue;
-                    const btnText = btn.innerText.trim();
-                    if (btnText === text) {
-                        btn.setAttribute('data-linauto-found', 'true');
-                        return true;
-                    }
-                }
-                return false;
-            }
-        """, text)
-
-        if found:
-            locator = self.page.locator('button[data-linauto-found="true"]').first
+        idx = await self.page.evaluate("""(text) => {
+            const buttons = Array.from(document.querySelectorAll('button'));
+            return buttons.findIndex(btn => {
+                const style = window.getComputedStyle(btn);
+                if (style.display === 'none' || style.visibility === 'hidden') return false;
+                if (btn.offsetParent === null && style.position !== 'fixed') return false;
+                return btn.innerText.trim() === text;
+            });
+        }""", text)
+        if idx >= 0:
             logger.info("element.found_by_js", text=text)
-            return locator
+            return self.page.locator('button').nth(idx)
         return None
 
     async def _find_dropdown_item_by_js(self, text: str) -> Optional[Locator]:
         """Find a dropdown menu item by visible text using JavaScript."""
-        found = await self.page.evaluate("""
-            (text) => {
-                const candidates = document.querySelectorAll(
-                    '[role="menuitem"], [role="button"], .artdeco-dropdown__item, li'
-                );
-                for (const el of candidates) {
-                    const style = window.getComputedStyle(el);
-                    if (style.display === 'none' || style.visibility === 'hidden') continue;
-                    const elText = el.innerText.trim();
-                    if (elText === text) {
-                        el.setAttribute('data-linauto-found', 'dropdown-item');
-                        return true;
-                    }
-                }
-                return false;
-            }
-        """, text)
-
-        if found:
-            locator = self.page.locator('[data-linauto-found="dropdown-item"]').first
+        idx = await self.page.evaluate("""(text) => {
+            const candidates = Array.from(document.querySelectorAll(
+                '[role="menuitem"], [role="button"], .artdeco-dropdown__item, li'
+            ));
+            return candidates.findIndex(el => {
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden') return false;
+                return el.innerText.trim() === text;
+            });
+        }""", text)
+        if idx >= 0:
             logger.info("element.dropdown_item_found_by_js", text=text)
-            return locator
+            return self.page.locator('[role="menuitem"], [role="button"], .artdeco-dropdown__item, li').nth(idx)
         return None
 
     async def _debug_screenshot(self, label: str):
@@ -238,7 +228,7 @@ class LinkedInActions:
         await more_btn.scroll_into_view_if_needed()
         await self.delay.micro_delay(0.2, 0.5)
         try:
-            await more_btn.click(timeout=5000)
+            await self._hover_and_click(more_btn, timeout=5000)
         except PlaywrightTimeout:
             # Sticky nav bar may intercept pointer events — use JS click as fallback
             logger.info("action.more_click_intercepted_using_js", url=profile_url)
@@ -338,14 +328,14 @@ class LinkedInActions:
             )
 
         # 5. Click Connect
-        await connect_btn.click()
+        await self._hover_and_click(connect_btn)
         await self.delay.micro_delay(0.5, 1.5)
 
         # 6. Handle the "Add a note to your invitation?" modal
         if message:
             add_note_btn = await self._find_element(selectors.ADD_NOTE_BUTTON, timeout_ms=3000)
             if add_note_btn:
-                await add_note_btn.click()
+                await self._hover_and_click(add_note_btn)
                 await self.delay.micro_delay(0.3, 0.8)
 
                 note_field = await self._find_element(selectors.NOTE_TEXTAREA, timeout_ms=3000)
@@ -384,7 +374,7 @@ class LinkedInActions:
                     reason="send_button_disabled",
                     details={"url": profile_url},
                 )
-            await send_btn.click()
+            await self._hover_and_click(send_btn)
             await self.delay.micro_delay(1.0, 2.0)
         else:
             # Check if the weekly invitation limit popup appeared instead
@@ -442,7 +432,7 @@ class LinkedInActions:
         if not msg_btn:
             return ActionResult(ActionStatus.ERROR, reason="message_button_not_found")
 
-        await msg_btn.click()
+        await self._hover_and_click(msg_btn)
         await self.delay.micro_delay(1.0, 2.0)
 
         msg_input = await self._find_element(selectors.MESSAGE_INPUT, timeout_ms=5000)
@@ -458,7 +448,7 @@ class LinkedInActions:
         if not send_btn:
             return ActionResult(ActionStatus.ERROR, reason="message_send_button_not_found")
 
-        await send_btn.click()
+        await self._hover_and_click(send_btn)
         await self.delay.micro_delay(1.0, 2.0)
 
         detection = await self.detector.check_after_action(self.page)
@@ -573,13 +563,13 @@ class LinkedInActions:
             if not withdraw_btn:
                 continue
 
-            await withdraw_btn.click()
+            await self._hover_and_click(withdraw_btn)
             await self.delay.micro_delay(0.5, 1.0)
 
             # Confirm in modal
             confirm = await self._find_element(selectors.INVITATION_WITHDRAW_CONFIRM, timeout_ms=3000)
             if confirm:
-                await confirm.click()
+                await self._hover_and_click(confirm)
                 await self.delay.micro_delay(1.0, 2.0)
                 if href:
                     withdrawn_urls.append(href)
