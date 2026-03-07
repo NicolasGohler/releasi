@@ -110,7 +110,8 @@ export default function CampaignDetailPage({
   const connected = counts["connected"] ?? 0;
   const errors = counts["error"] ?? 0;
 
-  const availableLists = allLists ?? [];
+  const assignedListIds = new Set((campaign.assigned_lists ?? []).map((l) => l.id));
+  const availableLists = (allLists ?? []).filter((ll) => !assignedListIds.has(ll.id));
 
   function handleSaveSettings() {
     const data: Record<string, unknown> = {};
@@ -296,14 +297,49 @@ export default function CampaignDetailPage({
                 <CardTitle>Assigned Lists</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
+                {(campaign.assigned_lists ?? []).length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No lists assigned to this campaign.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {(campaign.assigned_lists ?? []).map((ll) => (
+                      <div
+                        key={ll.id}
+                        className="flex items-center justify-between rounded-md bg-muted px-3 py-2"
+                      >
+                        <div>
+                          <span className="text-sm font-medium">{ll.name}</span>
+                          <span className="text-xs text-muted-foreground ml-2">{ll.total_leads} leads</span>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={unassign.isPending}
+                          onClick={() =>
+                            unassign.mutate(
+                              { listId: ll.id, campaignId: id },
+                              {
+                                onSuccess: (data) =>
+                                  toast.success(`Unassigned — ${data.leads_removed} leads removed`),
+                                onError: (err) => toast.error(err.message),
+                              }
+                            )
+                          }
+                        >
+                          Unassign
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {availableLists.length > 0 && (
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 pt-2">
                     <select
                       className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
                       value={selectedList}
                       onChange={(e) => setSelectedList(e.target.value)}
                     >
-                      <option value="">Select a list...</option>
+                      <option value="">Select a list to assign...</option>
                       {availableLists.map((ll) => (
                         <option key={ll.id} value={ll.id}>
                           {ll.name} ({ll.total_leads} leads)
@@ -330,18 +366,16 @@ export default function CampaignDetailPage({
                   </div>
                 )}
 
-                {availableLists.length === 0 && (
-                  <div className="text-center py-4">
-                    <p className="text-sm text-muted-foreground">
-                      No lists available.{" "}
-                      <Link href="/lead-lists" className="text-blue-500 hover:underline">
-                        Create one
-                      </Link>
-                    </p>
-                  </div>
+                {availableLists.length === 0 && (campaign.assigned_lists ?? []).length === 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    No lists available.{" "}
+                    <Link href="/lead-lists" className="text-blue-500 hover:underline">
+                      Create one
+                    </Link>
+                  </p>
                 )}
 
-                <p className="text-xs text-muted-foreground pt-2">
+                <p className="text-xs text-muted-foreground pt-1">
                   Assigning a list copies its leads into this campaign. Unassigning marks those leads as removed.
                 </p>
               </CardContent>

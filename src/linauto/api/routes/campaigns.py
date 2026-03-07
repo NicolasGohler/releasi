@@ -25,6 +25,14 @@ async def _enrich_campaign(repo: Repository, campaign) -> CampaignOut:
         out.account_name = account.name
         out.account_status = account.status.value if hasattr(account.status, 'value') else account.status
         out.account_paused_until = account.paused_until
+    # Add assigned lead lists
+    links = await repo.get_campaign_lists(campaign.id)
+    assigned = []
+    for link in links:
+        ll = await repo.get_lead_list(link.lead_list_id)
+        if ll:
+            assigned.append({"id": ll.id, "name": ll.name, "total_leads": ll.total_leads})
+    out.assigned_lists = assigned
     return out
 
 

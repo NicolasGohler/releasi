@@ -74,6 +74,7 @@ class CampaignOut(BaseModel):
     total_leads: int
     archived: bool = False
     status_counts: Optional[Dict[str, int]] = None
+    assigned_lists: List[Dict[str, Any]] = []
     account_status: Optional[str] = None
     account_paused_until: Optional[datetime] = None
     created_at: datetime

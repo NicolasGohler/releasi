@@ -169,10 +169,13 @@ class Repository:
         return lead
 
     async def get_campaign_status_counts(self, campaign_id: str) -> dict[str, int]:
-        """Get lead counts grouped by status for a campaign."""
+        """Get lead counts grouped by status for a campaign (excludes REMOVED leads)."""
         result = await self.session.execute(
             select(Lead.status, func.count())
-            .where(Lead.campaign_id == campaign_id)
+            .where(
+                Lead.campaign_id == campaign_id,
+                Lead.status != LeadStatus.REMOVED,
+            )
             .group_by(Lead.status)
         )
         return {row[0].value: row[1] for row in result.all()}

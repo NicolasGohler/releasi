@@ -196,4 +196,5 @@ async def unassign_list_from_campaign(
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     count = await repo.unassign_list_from_campaign(lead_list_id, body.campaign_id)
+    await repo.update_campaign(campaign, total_leads=max(0, campaign.total_leads - count))
     return {"leads_removed": count}
