@@ -117,13 +117,14 @@ export const fetchCampaignStats = (id: string, days = 30) =>
 
 export const fetchLeads = (
   campaignId: string,
-  params?: { page?: number; per_page?: number; status?: string; search?: string }
+  params?: { page?: number; per_page?: number; status?: string; search?: string; excludeRemoved?: boolean }
 ) => {
   const sp = new URLSearchParams();
   if (params?.page) sp.set("page", String(params.page));
   if (params?.per_page) sp.set("per_page", String(params.per_page));
   if (params?.status) sp.set("status", params.status);
   if (params?.search) sp.set("search", params.search);
+  if (params?.excludeRemoved) sp.set("exclude_removed", "true");
   const qs = sp.toString();
   return apiFetch<LeadPage>(`/campaigns/${campaignId}/leads${qs ? `?${qs}` : ""}`);
 };

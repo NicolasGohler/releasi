@@ -21,6 +21,7 @@ async def list_leads(
     per_page: int = Query(50, ge=1, le=200),
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    exclude_removed: bool = Query(False),
     repo: Repository = Depends(get_repo),
 ):
     campaign = await repo.get_campaign(campaign_id)
@@ -33,6 +34,7 @@ async def list_leads(
         per_page=per_page,
         status_filter=status,
         search=search,
+        exclude_removed=exclude_removed,
     )
     return LeadPage(
         items=[LeadOut.model_validate(l) for l in leads],

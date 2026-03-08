@@ -352,6 +352,7 @@ class Repository:
         per_page: int = 50,
         status_filter: str | None = None,
         search: str | None = None,
+        exclude_removed: bool = False,
     ) -> tuple:
         """Return (leads, total_count) with pagination, optional status filter and search."""
         stmt = select(Lead).where(Lead.campaign_id == campaign_id)
@@ -360,6 +361,9 @@ class Repository:
         if status_filter:
             stmt = stmt.where(Lead.status == status_filter)
             count_stmt = count_stmt.where(Lead.status == status_filter)
+        elif exclude_removed:
+            stmt = stmt.where(Lead.status != "REMOVED")
+            count_stmt = count_stmt.where(Lead.status != "REMOVED")
 
         if search:
             pattern = f"%{search}%"

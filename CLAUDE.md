@@ -1,5 +1,12 @@
 # Linauto — LinkedIn Automation Tool
 
+## Server
+- **IP**: REDACTED
+- **SSH**: `ssh root@REDACTED`
+- **Docker container**: `linauto`
+- **Live DB**: `/app/data/linauto.db` inside container
+- **Query DB**: `docker exec linauto python3 -c "import sqlite3; ..."` (no sqlite3 binary in container)
+
 ## Overview
 Dripify alternative. Automates LinkedIn connection requests and follow-up messages with safety-first design (warmup ramps, cooldowns, rate limits, stealth browsing).
 

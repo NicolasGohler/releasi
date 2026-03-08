@@ -19,6 +19,12 @@ _LINKEDIN_URL_RE = re.compile(
     r'(?:https?://)?(?:www\.)?linkedin\.com/in/([\w-]+)/?(?:\?[^\s]*)?'
 )
 
+# Column names that contain a full name to be split into first/last
+_FULL_NAME_COLUMNS = {
+    "name", "full_name", "fullname", "full name", "contact name",
+    "person name", "contact", "nombre completo",
+}
+
 # Common column name variants -> standard field names
 _COLUMN_MAP = {
     # first_name
@@ -52,6 +58,10 @@ _COLUMN_MAP = {
     "employer": "company",
     "unternehmen": "company",
     "entreprise": "company",
+    "project": "company",
+    "project_name": "company",
+    "project name": "company",
+    "startup": "company",
     # title
     "title": "title",
     "job_title": "title",
@@ -133,12 +143,22 @@ def _extract_linkedin_url(row: dict, url_column: Optional[str]) -> Optional[str]
     return None
 
 
+def _split_full_name(full_name: str) -> tuple:
+    """Split 'First Last' into (first_name, last_name). Extra parts go into last_name."""
+    parts = full_name.strip().split(None, 1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return parts[0], None
+
+
 def _build_column_mapping(headers: list) -> dict:
     """Map CSV column headers to standard Lead fields."""
     mapping = {}  # csv_column -> lead_field
     for header in headers:
         normalized = header.lower().strip()
-        if normalized in _COLUMN_MAP:
+        if normalized in _FULL_NAME_COLUMNS:
+            mapping[header] = "full_name"
+        elif normalized in _COLUMN_MAP:
             mapping[header] = _COLUMN_MAP[normalized]
     return mapping
 
@@ -193,7 +213,7 @@ def parse_csv(
         # Build column mapping
         column_mapping = _build_column_mapping(headers)
         result.column_mapping = {
-            h: f for h, f in column_mapping.items() if f in _STANDARD_FIELDS
+            h: f for h, f in column_mapping.items() if f in _STANDARD_FIELDS | {"full_name"}
         }
 
         # Identify extra columns (not mapped to standard fields and not the URL column)
@@ -243,7 +263,9 @@ def parse_csv(
                     continue
 
                 mapped_field = column_mapping.get(header)
-                if mapped_field == "first_name":
+                if mapped_field == "full_name":
+                    first_name, last_name = _split_full_name(value)
+                elif mapped_field == "first_name":
                     first_name = value
                 elif mapped_field == "last_name":
                     last_name = value

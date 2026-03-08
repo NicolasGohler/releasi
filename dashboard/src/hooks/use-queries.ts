@@ -130,7 +130,7 @@ export function useResetLeads() {
 
 export function useLeads(
   campaignId: string,
-  params?: { page?: number; per_page?: number; status?: string; search?: string }
+  params?: { page?: number; per_page?: number; status?: string; search?: string; excludeRemoved?: boolean }
 ) {
   return useQuery({
     queryKey: ["leads", campaignId, params],

@@ -25,26 +25,32 @@ interface LeadsTableProps {
   campaignId: string;
 }
 
+// Sentinel value meaning "all active (exclude removed)"
+const ALL_ACTIVE = "__all_active__";
+
 export function LeadsTable({ campaignId }: LeadsTableProps) {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string | undefined>();
+  const [statusFilter, setStatusFilter] = useState<string>(ALL_ACTIVE);
 
+  const isAllActive = statusFilter === ALL_ACTIVE;
   const { data, isLoading } = useLeads(campaignId, {
     page,
     per_page: 25,
-    status: statusFilter,
+    status: isAllActive ? undefined : statusFilter,
     search: search || undefined,
+    excludeRemoved: isAllActive,
   });
 
   const statuses = [
-    undefined,
+    ALL_ACTIVE,
     "pending",
     "scheduled",
     "connection_requested",
     "connected",
     "error",
     "skipped",
+    "removed",
   ];
 
   if (isLoading) {
@@ -74,7 +80,7 @@ export function LeadsTable({ campaignId }: LeadsTableProps) {
         <div className="flex gap-1">
           {statuses.map((s) => (
             <Button
-              key={s ?? "all"}
+              key={s}
               variant={statusFilter === s ? "secondary" : "ghost"}
               size="sm"
               onClick={() => {
@@ -82,7 +88,7 @@ export function LeadsTable({ campaignId }: LeadsTableProps) {
                 setPage(1);
               }}
             >
-              {s ? s.replace(/_/g, " ") : "All"}
+              {s === ALL_ACTIVE ? "All" : s.replace(/_/g, " ")}
             </Button>
           ))}
         </div>
