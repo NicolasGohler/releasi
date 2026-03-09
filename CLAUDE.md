@@ -69,6 +69,7 @@ src/linauto/
 - `src/linauto/linkedin/browser.py` — Browser fingerprinting. `_CHROMIUM_MAJOR` must match the actual Playwright Chromium binary (check with `chrome --version` in container).
 - `src/linauto/db/models.py` — SQLAlchemy models. Use `Optional[X]` (not `X | None`) for Mapped[] annotations.
 - `config/settings.yaml.example` — Reference config with all available settings.
+- `src/linauto/campaign/importer.py` — CSV import. Handles `name`/`full_name` columns (splits into first/last) and `project`/`project_name` columns (maps to company). Add new column aliases to `_COLUMN_MAP` or `_FULL_NAME_COLUMNS` here.
 
 ## Scheduler Jobs (6 total)
 | Job | Schedule | Purpose |
@@ -112,11 +113,16 @@ src/linauto/
 |---------|--------|
 | Scheduler startup | `check_cookie_health()` once — catches pre-deploy expiry |
 | Login "Save" clicked | Background `check_cookie_health()` — confirms proxy route healthy |
-| 3 consecutive dispatch failures | Mark `cookie_expired` (primary detection mechanism) |
+| Pre-dispatch browser feed ping fails (redirect) | Mark `cookie_expired` immediately, before any lead is attempted |
+| Pre-dispatch browser feed ping times out | Skip cycle (proxy/network issue), do NOT mark `cookie_expired` |
+| 3 consecutive session errors (non-network) | Mark `cookie_expired` as last resort |
+| 3 consecutive network/timeout errors | Log `proxy_connectivity_issues`, skip cycle, do NOT mark `cookie_expired` |
 | Morning warm-up detects login redirect | Mark `cookie_expired` |
 | `check_cookie_health` passes for expired account | Auto-recover to `active` |
 
 **What NOT to do**: Never send bare HTTP requests with only `li_at` from the server IP. LinkedIn treats this as a stolen-cookie test and invalidates the session.
+
+**Failure mode separation** (`executor.py` → `_is_network_error()`): Navigation timeouts and proxy errors set `result["network_error"]=True` and are tracked separately from session errors. Only session errors (non-network) count toward cookie expiry detection.
 
 ### Morning Warm-Up (`runner.py` → `keep_alive`)
 - Runs once daily in the 6:30–9:30 AM window (CronTrigger jitter=5400s).
@@ -127,6 +133,17 @@ src/linauto/
 ### Proxy Health Check (`_http_check_session`)
 - Always routed through account's residential proxy (consistent IP = no location jump signal).
 - Used only on startup + post-login, never on a recurring schedule.
+- Uses lightweight `httpx` — confirms cookie validity but NOT browser-level connectivity. A passing HTTP check does not guarantee Playwright navigation will succeed.
+
+### Navigation Timeouts (`navigator.py`)
+- All `page.goto()` calls use `wait_until="domcontentloaded"` (not `"load"`) and 15s timeout.
+- `domcontentloaded` fires immediately on a /login redirect → expired session detected in <2s instead of a 30s timeout that masks the root cause.
+- Profile content rendering is handled separately by `_wait_for_profile_rendered()` after session is confirmed valid.
+
+### Proxy Location Notes
+- **Avoid city-level specificity** for small markets (e.g. use `it` not `it-rome`) — larger pool = more reliable IPs.
+- **Avoid Greece (`gr`)**: residential IPs there are too slow for browser-grade traffic (Playwright timeouts even with valid session). Use `it`, `de`, `nl`, `fr`, or `es` for Southern/Central European accounts.
+- **Mac UA markets**: `{us, ca, gb, au, nz, ie}` — all others get Windows UA. Account for this when choosing proxy country if the login browser UA matters.
 
 ## noVNC Login Flow
 - `POST /api/v1/accounts/{id}/login-session` → starts ephemeral Xvfb + x11vnc + websockify on port 6080.
