@@ -21,6 +21,20 @@ from linauto.safety.delays import DelayGenerator
 
 logger = structlog.get_logger()
 
+# Substrings in error messages that indicate a network/proxy failure rather
+# than a LinkedIn session problem.  These should NOT count toward the
+# cookie-expiry heuristic.
+_NETWORK_ERROR_SIGNALS = (
+    "timeout", "timed out", "err_tunnel", "err_proxy",
+    "err_connection", "err_name_not_resolved", "net::",
+    "proxy", "econnreset", "econnrefused", "enotfound",
+)
+
+
+def _is_network_error(msg: str) -> bool:
+    low = msg.lower()
+    return any(sig in low for sig in _NETWORK_ERROR_SIGNALS)
+
 
 class CampaignExecutor:
     """Executes campaign actions for a batch of leads."""
@@ -140,13 +154,18 @@ class CampaignExecutor:
                 )
 
             else:  # ERROR
+                reason = action_result.reason or ""
                 await self.repo.update_lead(
                     lead,
                     status=LeadStatus.ERROR,
                     retry_count=lead.retry_count + 1,
-                    error_message=action_result.reason,
+                    error_message=reason,
                 )
                 await self.repo.increment_daily_stat(account.id, "errors")
+                # Flag network/proxy errors so the dispatcher doesn't confuse
+                # them with session expiry (timeouts = proxy issue, not bad cookie)
+                if _is_network_error(reason):
+                    result["network_error"] = True
 
         except Exception as e:
             logger.error("executor.single_lead_failed", error=str(e))
@@ -159,7 +178,10 @@ class CampaignExecutor:
                 )
             except Exception:
                 pass  # Best-effort — don't mask the original error
-            result["fatal"] = True
+            if _is_network_error(str(e)):
+                result["network_error"] = True
+            else:
+                result["fatal"] = True
         finally:
             await page.close()
             if browser:

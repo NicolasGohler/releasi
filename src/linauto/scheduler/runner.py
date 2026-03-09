@@ -199,7 +199,8 @@ async def dispatch():
 
                     successful_sends = 0
                     attempts = 0
-                    consecutive_errors = 0
+                    consecutive_session_errors = 0   # non-network failures → cookie suspect
+                    consecutive_network_errors = 0   # timeouts/proxy → network suspect
                     max_attempts = target * 3  # Safety cap: don't try more than 3x target
                     lead_queue = list(due_leads[:target])
                     stop_account = False
@@ -240,17 +241,39 @@ async def dispatch():
 
                         if result.get("success"):
                             successful_sends += 1
-                            consecutive_errors = 0
+                            consecutive_session_errors = 0
+                            consecutive_network_errors = 0
+                        elif result.get("network_error"):
+                            # Proxy/timeout failure — don't penalise the session
+                            consecutive_network_errors += 1
+                            consecutive_session_errors = 0
+                            if consecutive_network_errors >= 3:
+                                logger.warning(
+                                    "dispatch.proxy_connectivity_issues",
+                                    account=account.name,
+                                    campaign=campaign.name,
+                                    consecutive=consecutive_network_errors,
+                                )
+                                await repo.log_action(
+                                    account_id=account.id,
+                                    campaign_id=campaign.id,
+                                    action_type=ActionType.ERROR,
+                                    status=ActionLogStatus.FAILED,
+                                    details={"reason": "consecutive_network_errors", "count": consecutive_network_errors},
+                                )
+                                stop_account = True
+                                break
                         else:
-                            consecutive_errors += 1
+                            consecutive_session_errors += 1
+                            consecutive_network_errors = 0
 
-                            # 3+ consecutive errors likely means cookie expired / session broken
-                            if consecutive_errors >= 3:
+                            # 3+ consecutive session errors → cookie likely expired
+                            if consecutive_session_errors >= 3:
                                 logger.error(
                                     "dispatch.consecutive_errors_detected",
                                     account=account.name,
                                     campaign=campaign.name,
-                                    consecutive=consecutive_errors,
+                                    consecutive=consecutive_session_errors,
                                 )
                                 await repo.update_account(account, status="cookie_expired")
                                 # Reset SCHEDULED leads back to PENDING so they're
@@ -265,7 +288,7 @@ async def dispatch():
                                     campaign_id=campaign.id,
                                     action_type=ActionType.ERROR,
                                     status=ActionLogStatus.FAILED,
-                                    details={"reason": "consecutive_navigation_errors", "count": consecutive_errors},
+                                    details={"reason": "consecutive_navigation_errors", "count": consecutive_session_errors},
                                 )
                                 stop_account = True
                                 break
