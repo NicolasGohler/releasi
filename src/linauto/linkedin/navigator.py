@@ -66,7 +66,13 @@ class LinkedInNavigator:
         """Navigate to a LinkedIn profile page."""
         try:
             await self._random_delay(0.5, 2.0)
-            await self.page.goto(profile_url, wait_until="load", timeout=30000)
+            # Use domcontentloaded instead of load: fires as soon as the DOM is
+            # ready, before all resources finish loading.  This means an expired
+            # session (which triggers a /login redirect) is detected in <2s
+            # rather than causing a 30s timeout waiting for the login page to
+            # fully load.  Profile content rendering is handled separately by
+            # _wait_for_profile_rendered below.
+            await self.page.goto(profile_url, wait_until="domcontentloaded", timeout=15000)
             await self._random_delay()
 
             session_valid = self._check_session(self.page.url)
@@ -91,7 +97,7 @@ class LinkedInNavigator:
     async def go_to_feed(self) -> NavigationResult:
         """Navigate to LinkedIn feed (useful for session validation)."""
         try:
-            await self.page.goto(FEED_URL, wait_until="domcontentloaded", timeout=30000)
+            await self.page.goto(FEED_URL, wait_until="domcontentloaded", timeout=15000)
             await self._random_delay()
             return NavigationResult(
                 success=True,
@@ -108,7 +114,7 @@ class LinkedInNavigator:
             await self.page.goto(
                 INVITATION_MANAGER_URL,
                 wait_until="domcontentloaded",
-                timeout=30000,
+                timeout=15000,
             )
             await self._random_delay()
             return NavigationResult(

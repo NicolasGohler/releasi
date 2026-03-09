@@ -183,6 +183,39 @@ async def dispatch():
                 continue
 
             try:
+                # Pre-dispatch browser session check: navigate to feed once
+                # using the real Playwright browser before touching any leads.
+                # This cleanly separates "cookie expired" from "proxy down":
+                #   - redirect to /login  → SESSION_EXPIRED  → mark cookie_expired
+                #   - navigation timeout  → network/proxy error → skip cycle, retry in 5 min
+                # Without this, both cases produce ambiguous 30s timeouts mid-dispatch.
+                _pre_page = await pool_context.new_page()
+                try:
+                    from linauto.linkedin.navigator import LinkedInNavigator
+                    _nav = LinkedInNavigator(_pre_page)
+                    _feed = await _nav.go_to_feed()
+                finally:
+                    await _pre_page.close()
+
+                if not _feed.success:
+                    logger.warning(
+                        "dispatch.pre_check_network_error",
+                        account=account.name,
+                        error=_feed.error,
+                    )
+                    # Proxy/network issue — skip this cycle, will retry in 5 min
+                    continue
+                if not _feed.session_valid:
+                    logger.error("dispatch.pre_check_session_expired", account=account.name)
+                    await repo.update_account(account, status="cookie_expired")
+                    await repo.log_action(
+                        account_id=account.id,
+                        action_type=ActionType.ERROR,
+                        status=ActionLogStatus.FAILED,
+                        details={"reason": "pre_dispatch_session_expired"},
+                    )
+                    continue
+
                 campaigns = await repo.get_active_campaigns(account.id)
                 for campaign in campaigns:
                     due_leads = list(await repo.get_scheduled_leads(campaign.id, before=now))
