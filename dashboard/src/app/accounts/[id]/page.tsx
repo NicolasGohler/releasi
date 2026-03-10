@@ -20,7 +20,7 @@ import { DailyChart } from "@/components/stats/daily-chart";
 import { ActivityTimeline } from "@/components/activity-timeline";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { startLoginSession, finishLoginSession, cancelLoginSession, getAvatarUrl, checkConnection } from "@/lib/api";
+import { startLoginSession, finishLoginSession, cancelLoginSession, getAvatarUrl, checkConnection, replanAccount } from "@/lib/api";
 
 export default function AccountDetailPage({
   params,
@@ -99,8 +99,19 @@ export default function AccountDetailPage({
       toast.info("No changes to save");
       return;
     }
+    const needsReplan = "daily_limit" in data || "weekly_limit" in data || "timezone" in data;
     updateAccount.mutate(data as Parameters<typeof updateAccount.mutate>[0], {
-      onSuccess: () => toast.success("Account settings saved"),
+      onSuccess: () => {
+        if (needsReplan) {
+          toast.promise(replanAccount(id), {
+            loading: "Regenerating today's plan…",
+            success: (res) => `Settings saved · ${res.scheduled} leads rescheduled`,
+            error: "Settings saved, but replanning failed",
+          });
+        } else {
+          toast.success("Account settings saved");
+        }
+      },
       onError: (err) => toast.error(err.message),
     });
   }

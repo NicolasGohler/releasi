@@ -132,7 +132,7 @@ export function LeadsTable({ campaignId }: LeadsTableProps) {
                   {lead.title || "—"}
                 </TableCell>
                 <TableCell>
-                  {lead.error_message ? (
+                  {lead.error_message || (lead.status === "scheduled" && lead.scheduled_at) ? (
                     <TooltipProvider delayDuration={200}>
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -141,7 +141,11 @@ export function LeadsTable({ campaignId }: LeadsTableProps) {
                           </span>
                         </TooltipTrigger>
                         <TooltipContent side="top" className="max-w-xs">
-                          <p className="text-xs">{lead.error_message}</p>
+                          <p className="text-xs">
+                            {lead.error_message
+                              ? lead.error_message
+                              : `Scheduled for ${new Date(lead.scheduled_at!).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`}
+                          </p>
                         </TooltipContent>
                       </Tooltip>
                     </TooltipProvider>

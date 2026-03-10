@@ -350,6 +350,54 @@ async def fetch_avatar_now(
             await browser.close()
 
 
+@router.post("/accounts/{account_id}/replan")
+async def replan_account(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """Reset today's scheduled leads and regenerate the daily plan with current settings."""
+    from datetime import date as _date
+    from sqlalchemy import update as _sql_update
+    from linauto.db.models import Lead, LeadStatus, ActionType, ActionLogStatus
+    from linauto.scheduler.planner import generate_daily_plan, SlotType
+
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    campaigns = await repo.get_active_campaigns(account.id)
+    total_scheduled = 0
+
+    for campaign in campaigns:
+        # Reset today's SCHEDULED leads back to PENDING and clear their scheduled_at
+        await repo.session.execute(
+            _sql_update(Lead)
+            .where(Lead.campaign_id == campaign.id, Lead.status == LeadStatus.SCHEDULED)
+            .values(status=LeadStatus.PENDING, scheduled_at=None)
+        )
+        await repo.session.commit()
+
+        pending = await repo.get_pending_leads(campaign.id)
+        if not pending:
+            continue
+
+        plan = generate_daily_plan(
+            account_id=account.id,
+            day=_date.today(),
+            pending_lead_ids=[l.id for l in pending],
+            daily_limit=account.daily_limit,
+            timezone_str=account.timezone,
+            campaign_weekend_enabled=campaign.weekend_enabled,
+        )
+
+        for slot in plan:
+            if slot.slot_type == SlotType.CONNECTION_REQUEST and slot.lead_id:
+                await repo.update_lead_schedule(slot.lead_id, slot.scheduled_at, LeadStatus.SCHEDULED)
+                total_scheduled += 1
+
+    return {"ok": True, "scheduled": total_scheduled}
+
+
 @router.get("/accounts/{account_id}/activity", response_model=List[ActionLogOut])
 async def account_activity(
     account_id: str,

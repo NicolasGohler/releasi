@@ -249,6 +249,9 @@ export const getAvatarUrl = (accountId: string) =>
 export const fetchAvatar = (accountId: string) =>
   apiFetch<{ success: boolean }>(`/accounts/${accountId}/fetch-avatar`, { method: "POST" });
 
+export const replanAccount = (id: string) =>
+  apiFetch<{ ok: boolean; scheduled: number }>(`/accounts/${id}/replan`, { method: "POST" });
+
 // ── Connection Check ────────────────────────────────────────────────────
 
 export const checkConnection = (accountId: string) =>
