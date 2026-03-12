@@ -276,6 +276,11 @@ async def dispatch():
                             successful_sends += 1
                             consecutive_session_errors = 0
                             consecutive_network_errors = 0
+                        elif result.get("skipped"):
+                            # Profile had no Connect button (already connected, restricted, etc.)
+                            # This is normal and should never count against session health.
+                            consecutive_session_errors = 0
+                            consecutive_network_errors = 0
                         elif result.get("network_error"):
                             # Proxy/timeout failure — don't penalise the session
                             consecutive_network_errors += 1

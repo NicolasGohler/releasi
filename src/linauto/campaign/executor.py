@@ -57,7 +57,7 @@ class CampaignExecutor:
         When ``self._shared_context`` is set (pool mode), opens/closes only
         pages on the shared browser.  Otherwise creates an ephemeral browser.
         """
-        result = {"success": False, "limit_reached": False, "fatal": False}
+        result = {"success": False, "limit_reached": False, "fatal": False, "skipped": False}
 
         # Pool mode: use shared context, only manage pages
         browser: Optional[LinkedInBrowser] = None
@@ -152,6 +152,7 @@ class CampaignExecutor:
                 await self.repo.update_lead(
                     lead, status=LeadStatus.SKIPPED, error_message=action_result.reason
                 )
+                result["skipped"] = True
 
             else:  # ERROR
                 reason = action_result.reason or ""
