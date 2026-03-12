@@ -140,8 +140,16 @@ src/linauto/
 - `domcontentloaded` fires immediately on a /login redirect → expired session detected in <2s instead of a 30s timeout that masks the root cause.
 - Profile content rendering is handled separately by `_wait_for_profile_rendered()` after session is confirmed valid.
 
+### Playwright Proxy Credentials
+- **Always use separate `username`/`password` fields** — Playwright/Chromium silently ignores credentials embedded in the server URL string (`http://user:pass@host:port`). The browser code in `browser.py` parses the URL and splits them out; do not revert this.
+- httpx (`_http_check_session`, `check-connection` endpoint) uses the URL format fine — only Playwright needs the split.
+
+### Proxy Sticky Sessions (`_build_proxy_url`)
+- Session ID is `sha256(f"{account_id}-{year}-w{isoweek}")[:12]` — **rotates every Monday**. This prevents being permanently stuck on a dead/slow residential IP; worst case is one bad week.
+- Do not remove the week component. The old fixed hash caused Italy proxy failures for 10+ days with no self-healing.
+
 ### Proxy Location Notes
-- **Avoid city-level specificity** for small markets (e.g. use `it` not `it-rome`) — larger pool = more reliable IPs.
+- **Avoid city-level specificity** — use `ca` not `ca-montreal`. City filtering shrinks the IP pool and IPRoyal often returns 502 when no city IP is available for the session. Country-level is always preferred.
 - **Avoid Greece (`gr`)**: residential IPs there are too slow for browser-grade traffic (Playwright timeouts even with valid session). Use `it`, `de`, `nl`, `fr`, or `es` for Southern/Central European accounts.
 - **Mac UA markets**: `{us, ca, gb, au, nz, ie}` — all others get Windows UA. Account for this when choosing proxy country if the login browser UA matters.
 
