@@ -186,10 +186,20 @@ class LinkedInBrowser:
         if not proxy_url and proxy_country:
             proxy_url = _build_proxy_url(account_id, proxy_country)
 
-        # Add proxy if available
+        # Add proxy if available.
+        # Playwright/Chromium does NOT parse credentials embedded in the server URL
+        # (http://user:pass@host:port) — credentials must be passed in separate fields.
         if proxy_url:
-            context_kwargs["proxy"] = {"server": proxy_url}
-            logger.info("browser.proxy_configured", proxy=proxy_url.split("@")[-1])
+            from urllib.parse import urlparse
+            _p = urlparse(proxy_url)
+            _server = f"{_p.scheme}://{_p.hostname}:{_p.port}"
+            _proxy: dict = {"server": _server}
+            if _p.username:
+                _proxy["username"] = _p.username
+            if _p.password:
+                _proxy["password"] = _p.password
+            context_kwargs["proxy"] = _proxy
+            logger.info("browser.proxy_configured", proxy=f"{_p.hostname}:{_p.port}")
 
         self._context = await self._playwright.chromium.launch_persistent_context(
             **context_kwargs
