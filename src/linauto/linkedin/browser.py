@@ -84,17 +84,23 @@ def _build_proxy_url(account_id: str, proxy_country: str) -> Optional[str]:
     Uses the global proxy credentials from settings and the account's
     proxy_country.  Each account gets a deterministic sticky session ID
     derived from its account_id so it always lands on the same residential IP
-    (until the sticky period expires and IPRoyal rotates it).
+    within a given week.
+
+    Session IDs rotate every Monday (ISO week boundary) so that a dead or
+    slow residential IP is abandoned automatically rather than being stuck
+    indefinitely.  The 168h lifetime covers the full week.
 
     The proxy_country format is "{country}" or "{country}-{city}", e.g.
     "ca", "ca-montreal", "de-berlin", "es".
     """
+    from datetime import date as _date
     settings = get_settings()
     if not settings.proxy_username or not settings.proxy_password:
         return None
 
-    # Deterministic session ID from account_id (8 hex chars)
-    session_id = hashlib.sha256(account_id.encode()).hexdigest()[:12]
+    # Weekly-rotating session ID: same IP all week, fresh IP each Monday.
+    year, week, _ = _date.today().isocalendar()
+    session_id = hashlib.sha256(f"{account_id}-{year}-w{week}".encode()).hexdigest()[:12]
 
     # Parse country and optional city from proxy_country
     parts = proxy_country.split("-", 1)
