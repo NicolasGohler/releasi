@@ -89,7 +89,16 @@ async def update_account(
     kwargs = {k: v for k, v in body.model_dump().items() if v is not None}
     if not kwargs:
         return AccountOut.model_validate(account)
+    proxy_changed = "proxy_country" in kwargs and kwargs["proxy_country"] != account.proxy_country
     account = await repo.update_account(account, **kwargs)
+    # Evict pool slot when proxy changes so next acquire launches with the new proxy
+    if proxy_changed:
+        try:
+            from linauto.linkedin.pool import get_browser_pool
+            pool = get_browser_pool()
+            await pool.evict(account.id)
+        except RuntimeError:
+            pass  # Pool not initialized
     return AccountOut.model_validate(account)
 
 
