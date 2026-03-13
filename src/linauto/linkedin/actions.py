@@ -242,6 +242,16 @@ class LinkedInActions:
             await more_btn.evaluate("el => el.click()")
         await self.delay.micro_delay(0.5, 1.5)
 
+        # Wait explicitly for the dropdown container to become visible before
+        # searching for items — LinkedIn uses a CSS transition that can cause
+        # count() to return 0 during the animation (~200ms).
+        try:
+            await self.page.locator(".artdeco-dropdown__content").first.wait_for(
+                state="visible", timeout=3000
+            )
+        except PlaywrightTimeout:
+            pass  # dropdown may use a different container class — continue anyway
+
         # Find Connect in the dropdown
         connect_btn = None
 
@@ -328,8 +338,10 @@ class LinkedInActions:
         # 4. Find Connect button (multi-strategy)
         connect_btn = await self._find_connect_button(profile_url)
         if not connect_btn:
+            # Use ERROR (not SKIPPED) so the lead re-enters retry logic tomorrow.
+            # SKIPPED is permanent; a missing button is often a transient DOM issue.
             return ActionResult(
-                ActionStatus.SKIPPED,
+                ActionStatus.ERROR,
                 reason="no_connect_button",
                 details={"url": profile_url},
             )

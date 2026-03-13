@@ -57,6 +57,10 @@ class LinkedInNavigator:
                     state="visible", timeout=per_sel_timeout
                 )
                 logger.debug("navigator.profile_rendered", indicator=sel)
+                # Brief extra pause so secondary buttons (e.g. "More") finish
+                # rendering on Follow-primary profiles where "Follow" appears
+                # before "More actions" is fully in the DOM.
+                await asyncio.sleep(0.5)
                 return
             except (PlaywrightTimeout, Exception):
                 continue

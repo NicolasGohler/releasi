@@ -36,9 +36,12 @@ CONNECT_BUTTON_MORE_DROPDOWN = [
 CONNECT_IN_DROPDOWN = [
     # Dropdown items use role="menuitem" or are inside artdeco-dropdown__content
     '[role="menuitem"]:has-text("Connect")',
+    # LinkedIn sometimes uses role="button" instead of menuitem inside dropdowns
+    '.artdeco-dropdown__content [role="button"]:has-text("Connect")',
     '.artdeco-dropdown__content li:has-text("Connect")',
     '.artdeco-dropdown__content span:text-is("Connect")',
     '.artdeco-dropdown__content [aria-label*="connect" i]',
+    '.artdeco-dropdown__content [data-control-name*="connect" i]',
 ]
 
 # ── Connection request modal ──────────────────────────────────────────────
