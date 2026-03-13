@@ -135,6 +135,26 @@ class BrowserPool:
         slot = self._slots.get(account_id)
         return slot.in_use if slot else False
 
+    def time_since_validated(self, account_id: str) -> float:
+        """Seconds since the slot's session was last confirmed healthy.
+
+        Returns infinity if the slot doesn't exist (forces a check).
+        """
+        slot = self._slots.get(account_id)
+        if not slot:
+            return float("inf")
+        return time.monotonic() - slot.last_validated
+
+    def confirm_session(self, account_id: str) -> None:
+        """Mark the session as confirmed healthy right now.
+
+        Called after a successful dispatch so the next cycle doesn't
+        re-navigate to the feed unnecessarily.
+        """
+        slot = self._slots.get(account_id)
+        if slot:
+            slot.last_validated = time.monotonic()
+
     async def evict(self, account_id: str) -> None:
         """Close and remove a slot (e.g. when an account is removed)."""
         async with self._global_lock:
