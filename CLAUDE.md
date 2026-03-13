@@ -8,14 +8,22 @@
 - **Query DB**: `docker exec linauto python3 -c "import sqlite3; ..."` (no sqlite3 binary in container)
 
 ## Deploying code changes
-`docker-compose up -d` is broken on this server (docker-compose 1.29 incompatibility with newer image format). Use this sequence:
+`src/` is volume-mounted from `/root/linauto/src` — **`git pull` on the server is all that's needed for Python code changes**. The running process reads source files directly from the host.
+
+```bash
+ssh root@REDACTED
+cd /root/linauto && git pull   # changes are live immediately
+```
+
+Only rebuild the image when changing **dependencies** (`pyproject.toml`) or **`config.py`/`models.py`** (pydantic/SQLAlchemy schema changes). `docker-compose build` is broken (v1.29 incompatibility) — use `docker run` directly:
 ```bash
 cd /root/linauto && git pull
-docker-compose build          # rebuild image from latest code
+docker-compose build
 docker stop linauto && docker rm linauto
 docker run -d --name linauto --restart unless-stopped \
   -v /root/linauto/data:/app/data \
   -v /root/linauto/config/settings.yaml:/app/config/settings.yaml:ro \
+  -v /root/linauto/src:/app/src \
   -p 8000:8000 -p 6080:6080 \
   -e LINAUTO_API_ENABLED=true \
   -e LINAUTO_API_KEY=REDACTED \
@@ -24,7 +32,6 @@ docker run -d --name linauto --restart unless-stopped \
   --memory=3g --cpus=1.5 \
   linauto_linauto:latest
 ```
-For hotfixes that don't change config.py/models: `docker cp <file> linauto:/app/src/linauto/<file>` (survives until next restart only — always rebuild for permanent deploys).
 
 ## Overview
 Dripify alternative. Automates LinkedIn connection requests and follow-up messages with safety-first design (warmup ramps, cooldowns, rate limits, stealth browsing).
