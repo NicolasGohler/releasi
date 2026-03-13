@@ -854,25 +854,22 @@ def check_acceptances_cmd(
                 if not dry_run:
                     await repo.update_account(account, status="cookie_expired")
                     console.print("[red]Account marked as cookie_expired.[/red]")
-                await browser.close()
-                await _cleanup(session)
                 return
 
             inv_page = await browser.new_page()
-            actions = LinkedInActions(inv_page)
-
-            console.print("\n[bold]Loading invitation manager...[/bold]")
-            tracked_slugs = {
-                n for lead in requested_leads
-                if (n := _normalize(lead.linkedin_url))
-            }
-            result = await actions.get_sent_invitation_urls(stop_when_found=tracked_slugs)
+            try:
+                tracked_slugs = {
+                    n for lead in requested_leads
+                    if (n := _normalize(lead.linkedin_url))
+                }
+                console.print("\n[bold]Loading invitation manager...[/bold]")
+                inv_actions = LinkedInActions(inv_page)
+                result = await inv_actions.get_sent_invitation_urls(stop_when_found=tracked_slugs)
+            finally:
+                await inv_page.close()
 
             if not result.success:
                 console.print("[red]Failed to load invitation manager.[/red]")
-                await inv_page.close()
-                await browser.close()
-                await _cleanup(session)
                 return
 
             if not result.session_valid:
@@ -880,13 +877,9 @@ def check_acceptances_cmd(
                 if not dry_run:
                     await repo.update_account(account, status="cookie_expired")
                     console.print("[red]Account marked as cookie_expired.[/red]")
-                await inv_page.close()
-                await browser.close()
-                await _cleanup(session)
                 return
 
             console.print(f"[green]Pending invitations found:[/green] {len(result.urls)}")
-            await inv_page.close()
 
             # Diff
             pending_normalized = {_normalize(u) for u in result.urls if _normalize(u)}
@@ -898,8 +891,6 @@ def check_acceptances_cmd(
 
             if not disappeared:
                 console.print("[green]All leads still pending — nothing to update.[/green]")
-                await browser.close()
-                await _cleanup(session)
                 return
 
             # Confirm each disappeared lead
