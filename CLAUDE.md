@@ -76,7 +76,7 @@ src/linauto/
 |-----|----------|---------|
 | `daily_planner` | 06:00 daily | Assign scheduled_at to pending leads |
 | `dispatcher` | Every 5 min | Execute due connection requests |
-| `acceptance_checker` | Every 3h | Detect accepted connections |
+| `acceptance_checker` | 10:00 daily | Detect accepted connections via invitation manager diff |
 | `cooldown_checker` | 00:00 daily | Resume paused accounts |
 | `followup_dispatcher` | Every 30 min | Send follow-up messages |
 | `keepalive` | 08:00 ±90min daily | Organic morning LinkedIn session |
@@ -118,11 +118,24 @@ src/linauto/
 | 3 consecutive session errors (non-network) | Mark `cookie_expired` as last resort |
 | 3 consecutive network/timeout errors | Log `proxy_connectivity_issues`, skip cycle, do NOT mark `cookie_expired` |
 | Morning warm-up detects login redirect | Mark `cookie_expired` |
+| Acceptance checker invitation manager → session invalid | Mark `cookie_expired` |
 | `check_cookie_health` passes for expired account | Auto-recover to `active` |
 
 **What NOT to do**: Never send bare HTTP requests with only `li_at` from the server IP. LinkedIn treats this as a stolen-cookie test and invalidates the session.
 
 **Failure mode separation** (`executor.py` → `_is_network_error()`): Navigation timeouts and proxy errors set `result["network_error"]=True` and are tracked separately from session errors. Only session errors (non-network) count toward cookie expiry detection.
+
+### Acceptance Checker (`runner.py` → `check_acceptances`)
+- Runs **once daily at 10:00** (`acceptance_check_hour` setting, default 10).
+- Loads the LinkedIn invitation manager page **once** per account.
+- Extracts all pending sent invitation URLs via a single JS evaluation (no per-profile visits for the check itself).
+- **Diffs** against `CONNECTION_REQUESTED` leads in DB: leads missing from the pending list have either accepted or declined.
+- Only visits profiles of disappeared leads to confirm status (~new acceptances per day, not all pending).
+- `"connected"` → mark `CONNECTED`, schedule follow-up.
+- `"not_connected"` → confirmed declined/expired → mark `WITHDRAWN`.
+- `"unknown"` → profile visit inconclusive (network issue) → leave as `CONNECTION_REQUESTED`, retry tomorrow.
+- Withdrawal check runs on the same already-loaded page (no second navigation).
+- Cost: ~1–2 MB/day (1 invitation manager page + a few profile visits) vs. old approach (~240 MB/day).
 
 ### Morning Warm-Up (`runner.py` → `keep_alive`)
 - Runs once daily in the 6:30–9:30 AM window (CronTrigger jitter=5400s).
@@ -139,6 +152,21 @@ src/linauto/
 - All `page.goto()` calls use `wait_until="domcontentloaded"` (not `"load"`) and 15s timeout.
 - `domcontentloaded` fires immediately on a /login redirect → expired session detected in <2s instead of a 30s timeout that masks the root cause.
 - Profile content rendering is handled separately by `_wait_for_profile_rendered()` after session is confirmed valid.
+
+### Proxy Bandwidth Budget (1 account, 40 leads/day)
+After all optimizations (resource blocking, DB pre-check, validation cooldown, invitation manager diff):
+
+| Component | MB/day |
+|-----------|--------|
+| Connection requests (actual work, 40 leads × 2 pages × ~1 MB) | ~80 |
+| Dispatch feed pre-check (max 6× per 30-min cooldown window) | ~6 |
+| Acceptance checker (1 invitation manager page + new acceptances) | ~2–10 |
+| Morning keep-alive (2 pages) | ~3 |
+| **Total** | **~90–100 MB/day → ~3 GB/month** |
+
+The ~3 GB/month floor is essentially irreducible — it's the cost of actually navigating to 40 LinkedIn profiles per day. Any further reduction would require LinkedIn API access.
+
+**What NOT to do to reduce bandwidth further**: do not increase `_VALIDATION_COOLDOWN` beyond 30 min or reduce the acceptance_check to less than daily — you'd miss accepted connections and delay follow-ups.
 
 ### Playwright Proxy Credentials
 - **Always use separate `username`/`password` fields** — Playwright/Chromium silently ignores credentials embedded in the server URL string (`http://user:pass@host:port`). The browser code in `browser.py` parses the URL and splits them out; do not revert this.
