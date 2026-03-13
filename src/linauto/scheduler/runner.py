@@ -26,6 +26,17 @@ from linauto.safety import limits as rate_limits
 
 logger = structlog.get_logger()
 
+import re as _re
+
+
+def _normalize_li_url(url: str) -> str:
+    """Extract '/in/slug' from any LinkedIn profile URL variant for comparison."""
+    m = _re.search(r'/in/([^/?#\s]+)', url)
+    if m:
+        return f"/in/{m.group(1).rstrip('/')}"
+    return ""
+
+
 # Keep-alive activity rotation: (name, url) pairs with selection weights
 _KEEPALIVE_ACTIVITIES = [
     ("feed", "https://www.linkedin.com/feed/"),
@@ -431,176 +442,243 @@ async def check_cooldowns():
 
 async def check_acceptances():
     """
-    Check for accepted connection requests.
+    Check for accepted connection requests using invitation manager diff.
 
-    Runs every 3 hours. Visits invitation manager and individual
-    profiles to detect newly accepted connections.
+    Runs once daily. Loads the invitation manager page ONCE, extracts all
+    pending sent invitation URLs, diffs against DB leads with CONNECTION_REQUESTED
+    status. Leads that have "disappeared" from the invitation list are visited
+    individually to confirm whether they accepted (→ CONNECTED) or declined/expired
+    (→ WITHDRAWN). This replaces the old approach of visiting up to 30 profiles
+    every 3 hours.
     """
+    from linauto.linkedin.actions import LinkedInActions
+    from linauto.safety.delays import DelayGenerator
+
     repo, session = await _get_repo()
-    settings = get_settings()
     try:
         accounts = await repo.list_active_accounts()
         for account in accounts:
+            # Skip paused accounts
             if account.paused_until and not is_cooldown_expired(account.paused_until):
                 continue
 
+            # Collect all CONNECTION_REQUESTED leads across all active campaigns
             campaigns = await repo.get_active_campaigns(account.id)
+            requested_leads = []
             for campaign in campaigns:
-                requested_leads = await repo.get_leads_by_status(
-                    campaign.id, LeadStatus.CONNECTION_REQUESTED
+                leads = await repo.get_leads_by_status(campaign.id, LeadStatus.CONNECTION_REQUESTED)
+                for lead in leads:
+                    lead._campaign = campaign  # attach for later use
+                    requested_leads.append(lead)
+
+            # Determine if a browser is needed
+            needs_browser = bool(requested_leads) or bool(account.withdraw_threshold)
+            if not needs_browser:
+                continue
+
+            pool = get_browser_pool()
+            pool_context = None
+            try:
+                pool_context = await pool.acquire(account)
+            except Exception as e:
+                logger.error("acceptance.pool_acquire_failed", account=account.name, error=str(e))
+                continue
+
+            try:
+                # Open invitation manager page
+                inv_page = await pool_context.new_page()
+                actions = LinkedInActions(inv_page)
+
+                result = await actions.get_sent_invitation_urls()
+
+                if not result.success:
+                    logger.warning("acceptance.invitation_manager_failed", account=account.name)
+                    await inv_page.close()
+                    continue
+
+                if not result.session_valid:
+                    logger.error("acceptance.session_expired", account=account.name)
+                    await repo.update_account(account, status="cookie_expired")
+                    await repo.log_action(
+                        account_id=account.id,
+                        action_type=ActionType.ERROR,
+                        status=ActionLogStatus.FAILED,
+                        details={"reason": "acceptance_checker_session_expired"},
+                    )
+                    await inv_page.close()
+                    continue
+
+                # Build normalized set of pending invitation slugs
+                pending_normalized = {
+                    _normalize_li_url(u) for u in result.urls if _normalize_li_url(u)
+                }
+
+                pool.confirm_session(account.id)
+                logger.info(
+                    "acceptance.invitation_manager_loaded",
+                    account=account.name,
+                    pending_count=len(result.urls),
+                    db_requested=len(requested_leads),
                 )
-                if not requested_leads:
+
+                # Withdrawal check — do this while still on the invitation manager page
+                if account.withdraw_threshold and len(result.urls) > account.withdraw_threshold:
+                    excess = len(result.urls) - account.withdraw_threshold
+                    to_withdraw = min(excess, 10)
+                    logger.info(
+                        "withdraw.starting",
+                        account=account.name,
+                        pending=len(result.urls),
+                        threshold=account.withdraw_threshold,
+                        withdrawing=to_withdraw,
+                    )
+                    withdrawn_urls = await actions.withdraw_oldest_invitations(
+                        to_withdraw, already_on_page=True
+                    )
+                    for url in withdrawn_urls:
+                        matching = await repo.get_leads_by_url(account.id, url)
+                        for ml in matching:
+                            if ml.status == LeadStatus.CONNECTION_REQUESTED:
+                                await repo.update_lead(ml, status=LeadStatus.WITHDRAWN)
+                    if withdrawn_urls:
+                        await repo.log_action(
+                            account_id=account.id,
+                            action_type=ActionType.INVITATION_WITHDRAWN,
+                            status=ActionLogStatus.SUCCESS,
+                            details={
+                                "withdrawn": len(withdrawn_urls),
+                                "pending_before": len(result.urls),
+                            },
+                        )
+                elif account.withdraw_threshold:
+                    logger.info(
+                        "withdraw.under_threshold",
+                        account=account.name,
+                        pending=len(result.urls),
+                        threshold=account.withdraw_threshold,
+                    )
+
+                await inv_page.close()
+
+                # Diff: find leads that disappeared from the invitation manager
+                disappeared = [
+                    lead for lead in requested_leads
+                    if _normalize_li_url(lead.linkedin_url)
+                    and _normalize_li_url(lead.linkedin_url) not in pending_normalized
+                ]
+                logger.info(
+                    "acceptance.diff_result",
+                    account=account.name,
+                    disappeared=len(disappeared),
+                )
+
+                if not disappeared:
                     continue
 
-                # Limit checks per cycle
-                to_check = requested_leads[:settings.max_profiles_per_acceptance_check]
+                # Visit disappeared profiles to confirm accepted vs declined/expired
+                confirm_page = await pool_context.new_page()
+                confirm_actions = LinkedInActions(confirm_page)
+                newly_connected = []  # list of (lead, campaign) pairs
 
-                from linauto.linkedin.actions import LinkedInActions
+                for lead in disappeared:
+                    campaign = lead._campaign
+                    status = await confirm_actions.check_connection_status(lead.linkedin_url)
+                    if status == "connected":
+                        await repo.update_lead(
+                            lead,
+                            status=LeadStatus.CONNECTED,
+                            connection_accepted_at=datetime.utcnow(),
+                        )
+                        await repo.log_action(
+                            account_id=account.id,
+                            campaign_id=campaign.id,
+                            lead_id=lead.id,
+                            action_type=ActionType.CHECK_ACCEPTANCE,
+                            status=ActionLogStatus.SUCCESS,
+                            details={"accepted": True},
+                        )
+                        await repo.increment_daily_stat(account.id, "connections_accepted")
+                        newly_connected.append((lead, campaign))
+                        logger.info("acceptance.connected", url=lead.linkedin_url)
+                    elif status in ("not_connected", "unknown"):
+                        # Invitation gone — declined or expired
+                        await repo.update_lead(lead, status=LeadStatus.WITHDRAWN)
+                        await repo.log_action(
+                            account_id=account.id,
+                            campaign_id=campaign.id,
+                            lead_id=lead.id,
+                            action_type=ActionType.CHECK_ACCEPTANCE,
+                            status=ActionLogStatus.SUCCESS,
+                            details={"accepted": False, "status": status},
+                        )
+                        logger.info("acceptance.declined_or_expired", url=lead.linkedin_url, status=status)
+                    else:
+                        # "pending" — leave as-is (URL normalization edge case)
+                        logger.debug("acceptance.still_pending", url=lead.linkedin_url)
 
-                pool = get_browser_pool()
-                pool_context = None
-                try:
-                    pool_context = await pool.acquire(account)
-                except Exception as e:
-                    logger.error("acceptance.pool_acquire_failed", account=account.name, error=str(e))
-                    continue
+                    await DelayGenerator().micro_delay(2, 5)
 
-                try:
-                    page = await pool_context.new_page()
-                    actions = LinkedInActions(page)
-
-                    newly_connected = []
-                    for lead in to_check:
-                        status = await actions.check_connection_status(lead.linkedin_url)
-                        if status == "connected":
-                            await repo.update_lead(
-                                lead,
-                                status=LeadStatus.CONNECTED,
-                                connection_accepted_at=datetime.utcnow(),
-                            )
-                            await repo.log_action(
-                                account_id=account.id,
-                                campaign_id=campaign.id,
-                                lead_id=lead.id,
-                                action_type=ActionType.CHECK_ACCEPTANCE,
-                                status=ActionLogStatus.SUCCESS,
-                                details={"accepted": True},
-                            )
-                            await repo.increment_daily_stat(
-                                account.id, "connections_accepted"
-                            )
-                            newly_connected.append(lead)
-                            logger.info("acceptance.connected", url=lead.linkedin_url)
-
-                        # Small delay between checks
-                        from linauto.safety.delays import DelayGenerator
-                        await DelayGenerator().micro_delay(2, 5)
-
-                    # Check if we need to withdraw stale invitations
-                    if account.withdraw_threshold:
-                        try:
-                            pending_count = await actions.get_pending_invitation_count()
-                            if pending_count > account.withdraw_threshold:
-                                excess = pending_count - account.withdraw_threshold
-                                to_withdraw = min(excess, 10)  # Max 10 per cycle
-                                logger.info(
-                                    "withdraw.starting",
-                                    account=account.name,
-                                    pending=pending_count,
-                                    threshold=account.withdraw_threshold,
-                                    withdrawing=to_withdraw,
-                                )
-                                withdrawn_urls = await actions.withdraw_oldest_invitations(to_withdraw)
-                                for url in withdrawn_urls:
-                                    matching = await repo.get_leads_by_url(account.id, url)
-                                    for ml in matching:
-                                        if ml.status == LeadStatus.CONNECTION_REQUESTED:
-                                            await repo.update_lead(ml, status=LeadStatus.WITHDRAWN)
-                                if withdrawn_urls:
-                                    await repo.log_action(
-                                        account_id=account.id,
-                                        action_type=ActionType.INVITATION_WITHDRAWN,
-                                        status=ActionLogStatus.SUCCESS,
-                                        details={"withdrawn": len(withdrawn_urls), "pending_before": pending_count},
-                                    )
-                            elif pending_count >= 0:
-                                logger.info(
-                                    "withdraw.under_threshold",
-                                    account=account.name,
-                                    pending=pending_count,
-                                    threshold=account.withdraw_threshold,
-                                )
-                        except Exception as e:
-                            logger.error("withdraw.failed", account=account.name, error=str(e))
-
-                    await page.close()
-                finally:
-                    pool.release(account.id)
+                await confirm_page.close()
 
                 # Schedule or send follow-up messages for newly connected leads
-                if newly_connected and campaign.followup_enabled:
+                for lead, campaign in newly_connected:
+                    if not campaign.followup_enabled:
+                        continue
                     has_messages = any(
                         getattr(campaign, f"followup_message_{i}", None)
                         for i in (1, 2, 3)
                     )
-                    if has_messages:
-                        delay_hours = campaign.followup_delay_hours or 0
-                        if delay_hours > 0:
-                            # Schedule follow-ups for later
-                            followup_time = datetime.utcnow() + timedelta(hours=delay_hours)
-                            for lead in newly_connected:
+                    if not has_messages:
+                        continue
+
+                    delay_hours = campaign.followup_delay_hours or 0
+                    if delay_hours > 0:
+                        followup_time = datetime.utcnow() + timedelta(hours=delay_hours)
+                        await repo.update_lead(
+                            lead,
+                            status=LeadStatus.FOLLOWUP_SCHEDULED,
+                            scheduled_at=followup_time,
+                        )
+                        logger.info(
+                            "followup.scheduled",
+                            url=lead.linkedin_url,
+                            campaign=campaign.name,
+                            scheduled_at=followup_time.isoformat(),
+                            delay_hours=delay_hours,
+                        )
+                    else:
+                        # Send immediately (delay=0) — use existing pool context (already acquired)
+                        try:
+                            from linauto.campaign.executor import CampaignExecutor
+                            executor = CampaignExecutor(repo, browser_context=pool_context)
+                            logger.info(
+                                "followup.starting_sequence",
+                                url=lead.linkedin_url,
+                                campaign=campaign.name,
+                            )
+                            fu_result = await executor.execute_followup_sequence(
+                                account, campaign, lead
+                            )
+                            if fu_result["success"]:
                                 await repo.update_lead(
                                     lead,
-                                    status=LeadStatus.FOLLOWUP_SCHEDULED,
-                                    scheduled_at=followup_time,
+                                    status=LeadStatus.FOLLOWUP_SENT,
+                                    followup_sent_at=datetime.utcnow(),
                                 )
                                 logger.info(
-                                    "followup.scheduled",
+                                    "followup.sequence_done",
                                     url=lead.linkedin_url,
-                                    campaign=campaign.name,
-                                    scheduled_at=followup_time.isoformat(),
-                                    delay_hours=delay_hours,
+                                    messages_sent=fu_result["messages_sent"],
                                 )
-                        else:
-                            # Send immediately (delay=0) — re-acquire pool context
-                            pool_ctx_fu = None
-                            try:
-                                pool_ctx_fu = await pool.acquire(account)
-                            except Exception as e:
-                                logger.error("followup.pool_acquire_failed", account=account.name, error=str(e))
-                                continue
-                            try:
-                                from linauto.campaign.executor import CampaignExecutor
-                                executor = CampaignExecutor(repo, browser_context=pool_ctx_fu)
-                                for lead in newly_connected:
-                                    logger.info(
-                                        "followup.starting_sequence",
-                                        url=lead.linkedin_url,
-                                        campaign=campaign.name,
-                                    )
-                                    fu_result = await executor.execute_followup_sequence(
-                                        account, campaign, lead
-                                    )
-                                    if fu_result["success"]:
-                                        await repo.update_lead(
-                                            lead,
-                                            status=LeadStatus.FOLLOWUP_SENT,
-                                            followup_sent_at=datetime.utcnow(),
-                                        )
-                                        logger.info(
-                                            "followup.sequence_done",
-                                            url=lead.linkedin_url,
-                                            messages_sent=fu_result["messages_sent"],
-                                        )
-                                    else:
-                                        logger.warning(
-                                            "followup.sequence_failed",
-                                            url=lead.linkedin_url,
-                                        )
-                                    if fu_result.get("fatal"):
-                                        break
-                            finally:
-                                pool.release(account.id)
+                            else:
+                                logger.warning("followup.sequence_failed", url=lead.linkedin_url)
+                            if fu_result.get("fatal"):
+                                break
+                        except Exception as e:
+                            logger.error("followup.immediate_failed", url=lead.linkedin_url, error=str(e))
+
+            finally:
+                pool.release(account.id)
 
     except Exception as e:
         logger.error("acceptance.check_failed", error=str(e))
@@ -910,12 +988,12 @@ async def start_scheduler():
         replace_existing=True,
     )
 
-    # Acceptance checker every 3 hours
+    # Acceptance checker once daily
     scheduler.add_job(
         check_acceptances,
-        IntervalTrigger(hours=settings.acceptance_check_interval_hours),
+        CronTrigger(hour=settings.acceptance_check_hour),
         id="acceptance_checker",
-        name="Acceptance Checker",
+        name="Daily Acceptance Checker",
         replace_existing=True,
     )
 

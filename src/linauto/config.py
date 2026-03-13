@@ -95,8 +95,9 @@ class Settings(BaseSettings):
     browser_locale: str = "en-US"
 
     # Acceptance checking
-    acceptance_check_interval_hours: int = 3
-    max_profiles_per_acceptance_check: int = 30
+    acceptance_check_interval_hours: int = 3  # Kept for backward compatibility (unused)
+    max_profiles_per_acceptance_check: int = 30  # Kept for backward compatibility (unused)
+    acceptance_check_hour: int = 10  # Run once daily at this hour (new daily diff approach)
 
     # Follow-up
     default_followup_delay_hours: int = 24

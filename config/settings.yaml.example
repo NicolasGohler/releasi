@@ -68,9 +68,8 @@ browser_viewport_width: 1920
 browser_viewport_height: 1080
 browser_locale: "en-US"
 
-# Acceptance checking
-acceptance_check_interval_hours: 3
-max_profiles_per_acceptance_check: 30
+# Acceptance checking (daily at acceptance_check_hour)
+acceptance_check_hour: 10  # Run once daily at 10:00
 
 # Follow-up
 default_followup_delay_hours: 24

@@ -37,6 +37,13 @@ class ActionResult:
     details: dict = field(default_factory=dict)
 
 
+@dataclass
+class InvitationSnapshot:
+    success: bool
+    session_valid: bool
+    urls: list  # profile URLs of all pending sent invitations
+
+
 class LinkedInActions:
     """Each method performs ONE atomic LinkedIn action."""
 
@@ -503,25 +510,84 @@ class LinkedInActions:
 
         return 0
 
-    async def withdraw_oldest_invitations(self, count: int) -> list:
+    async def get_sent_invitation_urls(self) -> InvitationSnapshot:
+        """
+        Navigate to the invitation manager and return all pending sent invitation URLs.
+        Uses a single page load + Show More loop, then extracts all profile URLs via JS.
+        """
+        try:
+            nav = await self.navigator.go_to_invitation_manager()
+            if not nav.success:
+                return InvitationSnapshot(success=False, session_valid=True, urls=[])
+            if not nav.session_valid:
+                return InvitationSnapshot(success=True, session_valid=False, urls=[])
+
+            # Click "Show more" to load all invitations
+            for _ in range(50):
+                load_more = None
+                try:
+                    load_more = self.page.locator(selectors.INVITATION_LOAD_MORE[0]).first
+                    await load_more.wait_for(state="visible", timeout=2000)
+                except Exception:
+                    load_more = None
+                if load_more is None:
+                    break
+                await load_more.click()
+                await self.delay.micro_delay(1.0, 2.0)
+
+            # Extract all profile URLs via JS
+            urls = await self.page.evaluate("""() => {
+                const cardSelectors = [
+                    'li.invitation-card',
+                    '.mn-invitation-list li',
+                    '[data-view-name="invitation-card"]',
+                ];
+                let cards = [];
+                for (const sel of cardSelectors) {
+                    cards = Array.from(document.querySelectorAll(sel));
+                    if (cards.length > 0) break;
+                }
+                const seen = new Set();
+                const urls = [];
+                for (const card of cards) {
+                    const link = card.querySelector('a[href*="/in/"]');
+                    if (link && link.href && !seen.has(link.href)) {
+                        seen.add(link.href);
+                        urls.push(link.href);
+                    }
+                }
+                return urls;
+            }""")
+
+            return InvitationSnapshot(success=True, session_valid=True, urls=urls or [])
+        except Exception as e:
+            logger.warning("action.get_sent_invitation_urls_failed", error=str(e))
+            return InvitationSnapshot(success=False, session_valid=True, urls=[])
+
+    async def withdraw_oldest_invitations(self, count: int, already_on_page: bool = False) -> list:
         """
         Withdraw the oldest N invitations from the sent invitations page.
         Returns list of profile URLs that were withdrawn.
+
+        When already_on_page=True, skips navigation and initial load-more loop
+        (caller already loaded the page via get_sent_invitation_urls).
         """
-        nav = await self.navigator.go_to_invitation_manager()
-        if not nav.success or not nav.session_valid:
-            return []
+        if not already_on_page:
+            nav = await self.navigator.go_to_invitation_manager()
+            if not nav.success or not nav.session_valid:
+                return []
 
         withdrawn_urls = []
 
-        # Scroll to load more older invitations
-        for _ in range(5):
-            load_more = await self._find_element(selectors.INVITATION_LOAD_MORE, timeout_ms=2000)
-            if load_more:
-                await load_more.click()
-                await self.delay.micro_delay(1.0, 2.0)
-            else:
-                break
+        if not already_on_page:
+            # Scroll to load more older invitations
+            for _ in range(5):
+                load_more = await self._find_element(selectors.INVITATION_LOAD_MORE, timeout_ms=2000)
+                if load_more:
+                    await load_more.click()
+                    await self.delay.micro_delay(1.0, 2.0)
+                else:
+                    break
 
         # Find all invitation cards
         cards = None
