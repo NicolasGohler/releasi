@@ -246,6 +246,17 @@ class Repository:
         )
         return result.scalar_one()
 
+    async def get_daily_proxy_mb(self, account_id: str) -> float:
+        """Get today's estimated proxy bandwidth usage in MB."""
+        stat = await self.get_or_create_daily_stat(account_id)
+        return stat.proxy_mb_used or 0.0
+
+    async def add_proxy_mb(self, account_id: str, mb: float) -> None:
+        """Add MB to today's proxy bandwidth usage tally."""
+        stat = await self.get_or_create_daily_stat(account_id)
+        stat.proxy_mb_used = round((stat.proxy_mb_used or 0.0) + mb, 2)
+        await self.session.commit()
+
     async def get_daily_requests_sent(
         self, account_id: str, stat_date: date | None = None
     ) -> int:

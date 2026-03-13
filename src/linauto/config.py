@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     max_profiles_per_acceptance_check: int = 30  # Kept for backward compatibility (unused)
     acceptance_check_hour: int = 10  # Run once daily at this hour (new daily diff approach)
 
+    # Bandwidth guard — max estimated proxy MB per account per day (safety net, not a hard cap)
+    # Typical usage is ~90-100 MB/day; 300 MB is ~3x normal and catches runaway behaviour.
+    daily_bandwidth_limit_mb: float = 300.0
+
     # Follow-up
     default_followup_delay_hours: int = 24
 

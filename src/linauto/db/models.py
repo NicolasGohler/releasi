@@ -7,7 +7,7 @@ from datetime import datetime, date
 from typing import Optional, List, Dict
 
 from sqlalchemy import (
-    String, Text, Integer, Boolean, Date, DateTime, Enum, JSON, ForeignKey,
+    String, Text, Integer, Float, Boolean, Date, DateTime, Enum, JSON, ForeignKey,
     Index, UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -230,6 +230,7 @@ class DailyStat(Base):
     followup_messages_sent: Mapped[int] = mapped_column(Integer, default=0)
     connections_accepted: Mapped[int] = mapped_column(Integer, default=0)
     errors: Mapped[int] = mapped_column(Integer, default=0)
+    proxy_mb_used: Mapped[float] = mapped_column(Float, default=0.0)
 
 
 class LeadList(Base):

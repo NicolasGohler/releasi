@@ -185,6 +185,18 @@ async def dispatch():
                 logger.info("dispatch.daily_limit_reached", account=account.name)
                 continue
 
+            # Bandwidth guard — stop before opening any browser pages
+            bw_used = await repo.get_daily_proxy_mb(account.id)
+            bw_limit = get_settings().daily_bandwidth_limit_mb
+            if bw_used >= bw_limit:
+                logger.warning(
+                    "dispatch.bandwidth_limit_reached",
+                    account=account.name,
+                    used_mb=round(bw_used, 1),
+                    limit_mb=bw_limit,
+                )
+                continue
+
             # Quick DB pre-check: skip browser entirely if no leads are due.
             # Avoids loading LinkedIn pages (and burning proxy bandwidth) when
             # the scheduler fires outside of the account's work window.
@@ -244,6 +256,7 @@ async def dispatch():
                         continue
                     # Feed navigation confirmed session healthy — stamp validated time
                     pool.confirm_session(account.id)
+                    await repo.add_proxy_mb(account.id, 1.0)  # feed pre-check page
                 else:
                     logger.debug(
                         "dispatch.pre_check_skipped",
@@ -311,6 +324,7 @@ async def dispatch():
                             successful_sends += 1
                             consecutive_session_errors = 0
                             consecutive_network_errors = 0
+                            await repo.add_proxy_mb(account.id, 2.0)  # ~2 MB per connection request
                         elif result.get("skipped"):
                             # Profile had no Connect button (already connected, restricted, etc.)
                             # This is normal and should never count against session health.
@@ -474,6 +488,18 @@ async def check_acceptances():
             if not needs_browser:
                 continue
 
+            # Bandwidth guard
+            bw_used = await repo.get_daily_proxy_mb(account.id)
+            bw_limit = get_settings().daily_bandwidth_limit_mb
+            if bw_used >= bw_limit:
+                logger.warning(
+                    "acceptance.bandwidth_limit_reached",
+                    account=account.name,
+                    used_mb=round(bw_used, 1),
+                    limit_mb=bw_limit,
+                )
+                continue
+
             pool = get_browser_pool()
             pool_context = None
             try:
@@ -517,6 +543,7 @@ async def check_acceptances():
                 }
 
                 pool.confirm_session(account.id)
+                await repo.add_proxy_mb(account.id, 5.0)  # invitation manager + profile visits
                 logger.info(
                     "acceptance.invitation_manager_loaded",
                     account=account.name,
@@ -727,6 +754,18 @@ async def dispatch_followups():
             if not has_due:
                 continue
 
+            # Bandwidth guard
+            bw_used = await repo.get_daily_proxy_mb(account.id)
+            bw_limit = get_settings().daily_bandwidth_limit_mb
+            if bw_used >= bw_limit:
+                logger.warning(
+                    "followup_dispatch.bandwidth_limit_reached",
+                    account=account.name,
+                    used_mb=round(bw_used, 1),
+                    limit_mb=bw_limit,
+                )
+                continue
+
             pool = get_browser_pool()
             pool_context = None
             try:
@@ -756,6 +795,7 @@ async def dispatch_followups():
                         fu_result = await executor.execute_followup_sequence(
                             account, campaign, lead
                         )
+                        await repo.add_proxy_mb(account.id, 1.0)  # messaging page
                         if fu_result["success"]:
                             validate_transition(lead.status, LeadStatus.FOLLOWUP_SENT)
                             await repo.update_lead(
@@ -892,6 +932,18 @@ async def keep_alive():
                 logger.debug("keepalive.skipped_busy", account=account.name)
                 continue
 
+            # Bandwidth guard
+            bw_used = await repo.get_daily_proxy_mb(account.id)
+            bw_limit = get_settings().daily_bandwidth_limit_mb
+            if bw_used >= bw_limit:
+                logger.warning(
+                    "keepalive.bandwidth_limit_reached",
+                    account=account.name,
+                    used_mb=round(bw_used, 1),
+                    limit_mb=bw_limit,
+                )
+                continue
+
             try:
                 context = await pool.acquire(account)
             except Exception as e:
@@ -927,6 +979,7 @@ async def keep_alive():
                         await asyncio.sleep(random.uniform(5, 15))
                         await page.mouse.wheel(0, random.randint(200, 500))
                         await asyncio.sleep(random.uniform(2, 5))
+                        await repo.add_proxy_mb(account.id, 3.0)  # feed scroll + second page
                         logger.info("keepalive.morning_done", account=account.name, second_page=second_name)
 
                 except Exception as e:
