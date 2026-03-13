@@ -132,8 +132,10 @@ src/linauto/
 - **Diffs** against `CONNECTION_REQUESTED` leads in DB: leads missing from the pending list have either accepted or declined.
 - Only visits profiles of disappeared leads to confirm status (~new acceptances per day, not all pending).
 - `"connected"` → mark `CONNECTED`, schedule follow-up.
-- `"not_connected"` → confirmed declined/expired → mark `WITHDRAWN`.
-- `"unknown"` → profile visit inconclusive (network issue) → leave as `CONNECTION_REQUESTED`, retry tomorrow.
+- `"not_connected"` → confirmed declined/expired → mark `WITHDRAWN`. Includes Creator-mode profiles showing "Follow" instead of "Connect".
+- `"unknown"` → profile navigation failed (network/proxy error) → leave as `CONNECTION_REQUESTED`, retry tomorrow.
+- `check_connection_status` logic: successful page load + no 1st-degree badge = `"not_connected"`. `"unknown"` only when navigation fails. This handles LinkedIn Creator profiles (Follow-primary, no Connect button).
+- Manual testing: `linauto check-acceptances --account "Name" [--dry-run]` — uses ephemeral browser, safe to run while scheduler is active (no BrowserPool conflict).
 - Withdrawal check runs on the same already-loaded page (no second navigation).
 - Cost: ~1–2 MB/day (1 invitation manager page + a few profile visits) vs. old approach (~240 MB/day).
 
