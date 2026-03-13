@@ -173,6 +173,18 @@ async def dispatch():
                 logger.info("dispatch.daily_limit_reached", account=account.name)
                 continue
 
+            # Quick DB pre-check: skip browser entirely if no leads are due.
+            # Avoids loading LinkedIn pages (and burning proxy bandwidth) when
+            # the scheduler fires outside of the account's work window.
+            campaigns_preview = await repo.get_active_campaigns(account.id)
+            any_due = False
+            for _c in campaigns_preview:
+                if await repo.get_scheduled_leads(_c.id, before=now):
+                    any_due = True
+                    break
+            if not any_due:
+                continue
+
             # Acquire pool browser once per account
             pool = get_browser_pool()
             pool_context = None

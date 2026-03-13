@@ -211,6 +211,17 @@ class LinkedInBrowser:
             **context_kwargs
         )
 
+        # Block bandwidth-heavy resources that aren't needed for DOM automation.
+        # Images, fonts, and media can account for 80-90% of page weight on LinkedIn
+        # but are never needed for button/selector interaction.
+        async def _abort_heavy_resources(route):
+            if route.request.resource_type in ("image", "media", "font"):
+                await route.abort()
+            else:
+                await route.continue_()
+        await self._context.route("**/*", _abort_heavy_resources)
+        logger.debug("browser.resource_blocking_enabled")
+
         # Apply stealth patches
         if settings.stealth_enabled:
             try:
