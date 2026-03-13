@@ -862,7 +862,11 @@ def check_acceptances_cmd(
             actions = LinkedInActions(inv_page)
 
             console.print("\n[bold]Loading invitation manager...[/bold]")
-            result = await actions.get_sent_invitation_urls()
+            tracked_slugs = {
+                n for lead in requested_leads
+                if (n := _normalize(lead.linkedin_url))
+            }
+            result = await actions.get_sent_invitation_urls(stop_when_found=tracked_slugs)
 
             if not result.success:
                 console.print("[red]Failed to load invitation manager.[/red]")

@@ -488,7 +488,12 @@ async def check_acceptances():
                 inv_page = await pool_context.new_page()
                 actions = LinkedInActions(inv_page)
 
-                result = await actions.get_sent_invitation_urls()
+                # Pass tracked slugs so pagination stops as soon as all DB leads are visible
+                tracked_slugs = {
+                    n for lead in requested_leads
+                    if (n := _normalize_li_url(lead.linkedin_url))
+                }
+                result = await actions.get_sent_invitation_urls(stop_when_found=tracked_slugs)
 
                 if not result.success:
                     logger.warning("acceptance.invitation_manager_failed", account=account.name)

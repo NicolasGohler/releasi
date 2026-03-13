@@ -514,16 +514,78 @@ class LinkedInActions:
 
         return 0
 
-    async def get_sent_invitation_urls(self) -> InvitationSnapshot:
+    async def _extract_invitation_urls(self) -> list:
+        """Extract all /in/ profile URLs from the currently loaded invitation manager page."""
+        return await self.page.evaluate("""() => {
+            const seen = new Set();
+            const urls = [];
+
+            // Strategy 1: known card container selectors
+            const cardContainerSelectors = [
+                'li.invitation-card', '.mn-invitation-list li',
+                '[data-view-name="invitation-card"]', '.invitation-card',
+                '.mn-invitation-card', 'li[class*="invitation"]',
+                '[class*="invitation-card"]', '[data-view-name*="invitation"]',
+            ];
+            let cards = [];
+            for (const sel of cardContainerSelectors) {
+                cards = Array.from(document.querySelectorAll(sel));
+                if (cards.length > 0) break;
+            }
+            if (cards.length > 0) {
+                for (const card of cards) {
+                    const link = card.querySelector('a[href*="/in/"]');
+                    if (link && link.href) {
+                        const base = link.href.split('?')[0].split('#')[0];
+                        if (!seen.has(base)) { seen.add(base); urls.push(link.href); }
+                    }
+                }
+                if (urls.length > 0) return urls;
+            }
+
+            // Strategy 2: fallback — all /in/ links in main content, excluding nav/header
+            const mainEl = document.querySelector(
+                'main, [role="main"], #main, #main-content, .scaffold-layout__main'
+            ) || document.body;
+            for (const link of mainEl.querySelectorAll('a[href*="/in/"]')) {
+                const href = link.href;
+                if (!href) continue;
+                const m = href.match(/\/in\/([^\/?#\s]+)/);
+                if (!m || m[1].length < 2) continue;
+                if (link.closest('nav, header, .global-nav, #global-nav')) continue;
+                const base = href.split('?')[0].split('#')[0];
+                if (!seen.has(base)) { seen.add(base); urls.push(href); }
+            }
+            return urls;
+        }""")
+
+    async def get_sent_invitation_urls(
+        self,
+        stop_when_found: Optional[set] = None,
+    ) -> InvitationSnapshot:
         """
         Navigate to the invitation manager and return all pending sent invitation URLs.
         Uses a single page load + Show More loop, then extracts all profile URLs via JS.
+
+        Args:
+            stop_when_found: Optional set of normalized slugs ('/in/slug'). When all slugs
+                in this set appear in the currently loaded page, pagination stops early.
+                Pass the set of tracked DB leads to avoid loading hundreds of old invitations.
 
         Extraction strategy:
           1. Try known invitation card container selectors (fast path).
           2. Fallback: collect all /in/ profile links from the main content area,
              excluding nav/header elements. This survives LinkedIn DOM changes.
         """
+        import re as _re
+
+        def _norm(url: str) -> str:
+            m = _re.search(r'/in/([^/?#\s]+)', url)
+            return f"/in/{m.group(1).rstrip('/')}" if m else ""
+
+        def _extract_slugs_js_sync(raw_urls: list) -> set:
+            return {n for u in raw_urls if (n := _norm(u))}
+
         try:
             nav = await self.navigator.go_to_invitation_manager()
             if not nav.success:
@@ -531,61 +593,29 @@ class LinkedInActions:
             if not nav.session_valid:
                 return InvitationSnapshot(success=True, session_valid=False, urls=[])
 
-            # Click "Show more" to load all invitations
+            # Click "Load more" until all tracked leads are visible or no more pages
             for _ in range(50):
                 load_more = await self._find_element(selectors.INVITATION_LOAD_MORE, timeout_ms=2000)
                 if not load_more:
                     break
+
+                # Early exit: if we already see all tracked leads, no need to load more
+                if stop_when_found:
+                    current_urls = await self._extract_invitation_urls()
+                    current_slugs = _extract_slugs_js_sync(current_urls)
+                    if stop_when_found.issubset(current_slugs):
+                        logger.debug(
+                            "action.invitation_manager_early_exit",
+                            pages_loaded=_,
+                            tracked=len(stop_when_found),
+                        )
+                        return InvitationSnapshot(success=True, session_valid=True, urls=current_urls)
+
                 await load_more.click()
                 await self.delay.micro_delay(1.0, 2.0)
 
-            # Extract all profile URLs via JS — two-strategy approach
-            urls = await self.page.evaluate("""() => {
-                const seen = new Set();
-                const urls = [];
-
-                // Strategy 1: known card container selectors (update selectors.py when LinkedIn changes DOM)
-                const cardContainerSelectors = [
-                    'li.invitation-card',
-                    '.mn-invitation-list li',
-                    '[data-view-name="invitation-card"]',
-                    '.invitation-card',
-                    '.mn-invitation-card',
-                    'li[class*="invitation"]',
-                    '[class*="invitation-card"]',
-                    '[data-view-name*="invitation"]',
-                ];
-                let cards = [];
-                for (const sel of cardContainerSelectors) {
-                    cards = Array.from(document.querySelectorAll(sel));
-                    if (cards.length > 0) break;
-                }
-                if (cards.length > 0) {
-                    for (const card of cards) {
-                        const link = card.querySelector('a[href*="/in/"]');
-                        if (link && link.href) {
-                            const base = link.href.split('?')[0].split('#')[0];
-                            if (!seen.has(base)) { seen.add(base); urls.push(link.href); }
-                        }
-                    }
-                    if (urls.length > 0) return urls;
-                }
-
-                // Strategy 2: fallback — all /in/ profile links in main content, skip nav/header
-                const mainEl = document.querySelector(
-                    'main, [role="main"], #main, #main-content, .scaffold-layout__main'
-                ) || document.body;
-                for (const link of mainEl.querySelectorAll('a[href*="/in/"]')) {
-                    const href = link.href;
-                    if (!href) continue;
-                    const m = href.match(/\\/in\\/([^\\/?#\\s]+)/);
-                    if (!m || m[1].length < 2) continue;
-                    if (link.closest('nav, header, .global-nav, #global-nav')) continue;
-                    const base = href.split('?')[0].split('#')[0];
-                    if (!seen.has(base)) { seen.add(base); urls.push(href); }
-                }
-                return urls;
-            }""")
+            # Extract all profile URLs via JS after loading all pages
+            urls = await self._extract_invitation_urls()
 
             if not urls:
                 logger.warning(
