@@ -156,6 +156,7 @@ class CampaignExecutor:
 
             else:  # ERROR
                 reason = action_result.reason or ""
+                validate_transition(lead.status, LeadStatus.ERROR)
                 await self.repo.update_lead(
                     lead,
                     status=LeadStatus.ERROR,
@@ -427,6 +428,7 @@ class CampaignExecutor:
                 else:  # ERROR
                     new_retry = lead.retry_count + 1
                     new_status = LeadStatus.ERROR
+                    validate_transition(lead.status, new_status)
                     await self.repo.update_lead(
                         lead,
                         status=new_status,

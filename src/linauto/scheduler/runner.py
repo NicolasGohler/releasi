@@ -23,6 +23,7 @@ from linauto.linkedin.pool import get_browser_pool, init_pool, shutdown_pool
 from linauto.scheduler.planner import generate_daily_plan, SlotType
 from linauto.safety.cooldown import is_cooldown_expired, calculate_cooldown_resume, push_cooldown_one_day
 from linauto.safety import limits as rate_limits
+from linauto.campaign.state_machine import validate_transition
 
 logger = structlog.get_logger()
 
@@ -370,9 +371,7 @@ async def dispatch():
                             if backfill:
                                 bl = backfill[0]
                                 # Transition to SCHEDULED so executor can mark CONNECTION_REQUESTED
-                                bl.status = LeadStatus.SCHEDULED
-                                bl.scheduled_at = datetime.utcnow()
-                                await repo.session.commit()
+                                await repo.update_lead(bl, status=LeadStatus.SCHEDULED, scheduled_at=datetime.utcnow())
                                 lead_queue.append(bl)
                                 logger.info(
                                     "dispatch.backfill_lead",
@@ -543,6 +542,7 @@ async def check_acceptances():
                         matching = await repo.get_leads_by_url(account.id, url)
                         for ml in matching:
                             if ml.status == LeadStatus.CONNECTION_REQUESTED:
+                                validate_transition(ml.status, LeadStatus.WITHDRAWN)
                                 await repo.update_lead(ml, status=LeadStatus.WITHDRAWN)
                     if withdrawn_urls:
                         await repo.log_action(
@@ -590,6 +590,7 @@ async def check_acceptances():
                             continue
                         status = await confirm_actions.check_connection_status(lead.linkedin_url)
                         if status == "connected":
+                            validate_transition(lead.status, LeadStatus.CONNECTED)
                             await repo.update_lead(
                                 lead,
                                 status=LeadStatus.CONNECTED,
@@ -608,6 +609,7 @@ async def check_acceptances():
                             logger.info("acceptance.connected", url=lead.linkedin_url)
                         elif status == "not_connected":
                             # Confirmed: invitation gone, not connected → declined or expired
+                            validate_transition(lead.status, LeadStatus.WITHDRAWN)
                             await repo.update_lead(lead, status=LeadStatus.WITHDRAWN)
                             await repo.log_action(
                                 account_id=account.id,
@@ -643,6 +645,7 @@ async def check_acceptances():
                     delay_hours = campaign.followup_delay_hours or 0
                     if delay_hours > 0:
                         followup_time = datetime.utcnow() + timedelta(hours=delay_hours)
+                        validate_transition(lead.status, LeadStatus.FOLLOWUP_SCHEDULED)
                         await repo.update_lead(
                             lead,
                             status=LeadStatus.FOLLOWUP_SCHEDULED,
@@ -669,6 +672,7 @@ async def check_acceptances():
                                 account, campaign, lead
                             )
                             if fu_result["success"]:
+                                validate_transition(lead.status, LeadStatus.FOLLOWUP_SENT)
                                 await repo.update_lead(
                                     lead,
                                     status=LeadStatus.FOLLOWUP_SENT,
@@ -753,6 +757,7 @@ async def dispatch_followups():
                             account, campaign, lead
                         )
                         if fu_result["success"]:
+                            validate_transition(lead.status, LeadStatus.FOLLOWUP_SENT)
                             await repo.update_lead(
                                 lead,
                                 status=LeadStatus.FOLLOWUP_SENT,
@@ -766,6 +771,7 @@ async def dispatch_followups():
                         else:
                             new_retries = (lead.retry_count or 0) + 1
                             if new_retries >= 3:
+                                validate_transition(lead.status, LeadStatus.ERROR)
                                 await repo.update_lead(
                                     lead,
                                     status=LeadStatus.ERROR,
