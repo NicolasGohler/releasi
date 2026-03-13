@@ -289,6 +289,20 @@ class LinkedInActions:
             logger.info("action.connect_in_dropdown_found", method="javascript")
             return connect_btn
 
+        # ── Strategy 3: Connect is a primary button that Strategy 1 missed ──
+        # The More dropdown was opened but Connect was not inside it — this means
+        # Connect is a top-level button whose container class didn't match Strategy 1.
+        # Try a direct 'main button:has-text("Connect")' search now that the page
+        # has had extra time to settle. Profile card comes before sidebar in DOM
+        # order so .first is safe.
+        connect_btn = await self._try_locator(
+            self.page.locator("main button:has-text('Connect')").first,
+            timeout_ms=2000,
+        )
+        if connect_btn:
+            logger.info("action.connect_found", method="main_fallback", url=profile_url)
+            return connect_btn
+
         logger.warning("action.connect_not_in_dropdown", url=profile_url)
         await self._debug_screenshot("connect_in_dropdown_missing")
         return None

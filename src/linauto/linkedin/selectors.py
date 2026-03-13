@@ -12,13 +12,19 @@ button labels stay stable.
 # ── Profile page: Connect button ──────────────────────────────────────────
 
 # Primary Connect button — only matches when Connect is a top-level action button.
-# Ordered: text-exact → scoped class → aria-label.
+# Ordered: most specific → broadest. _find_element uses .first so the broadest
+# selectors are safe: the profile card appears before sidebar in DOM order.
 CONNECT_BUTTON_PRIMARY = [
-    # Only match Connect when it's a top-level profile action button.
-    # Do NOT use aria-label="Invite X to connect" here — sidebar "People
-    # you may know" Connect buttons share the same aria-label pattern.
+    # Class-based (older LinkedIn DOM — kept for compatibility)
     'button.pv-s-profile-actions--connect',
+    # Scoped to known profile actions containers
     '.pv-top-card .pvs-profile-actions button:has-text("Connect")',
+    '.pv-top-card-v2-ctas button:has-text("Connect")',
+    'main .pvs-profile-actions button:has-text("Connect")',
+    # Broad but safe: profile card is first in <main>, sidebar comes after.
+    # Do NOT use without the main scope — sidebar "People you may know"
+    # Connect buttons exist outside <main>.
+    'main button:has-text("Connect")',
 ]
 
 # "More" button on profile — the dropdown trigger next to Follow/Message.
