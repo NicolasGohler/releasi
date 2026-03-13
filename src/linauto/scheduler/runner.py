@@ -464,12 +464,11 @@ async def check_acceptances():
 
             # Collect all CONNECTION_REQUESTED leads across all active campaigns
             campaigns = await repo.get_active_campaigns(account.id)
+            campaign_map = {c.id: c for c in campaigns}
             requested_leads = []
             for campaign in campaigns:
                 leads = await repo.get_leads_by_status(campaign.id, LeadStatus.CONNECTION_REQUESTED)
-                for lead in leads:
-                    lead._campaign = campaign  # attach for later use
-                    requested_leads.append(lead)
+                requested_leads.extend(leads)
 
             # Determine if a browser is needed
             needs_browser = bool(requested_leads) or bool(account.withdraw_threshold)
@@ -563,8 +562,7 @@ async def check_acceptances():
                 # Diff: find leads that disappeared from the invitation manager
                 disappeared = [
                     lead for lead in requested_leads
-                    if _normalize_li_url(lead.linkedin_url)
-                    and _normalize_li_url(lead.linkedin_url) not in pending_normalized
+                    if (n := _normalize_li_url(lead.linkedin_url)) and n not in pending_normalized
                 ]
                 logger.info(
                     "acceptance.diff_result",
@@ -577,48 +575,54 @@ async def check_acceptances():
 
                 # Visit disappeared profiles to confirm accepted vs declined/expired
                 confirm_page = await pool_context.new_page()
-                confirm_actions = LinkedInActions(confirm_page)
-                newly_connected = []  # list of (lead, campaign) pairs
+                try:
+                    confirm_actions = LinkedInActions(confirm_page)
+                    newly_connected = []  # list of (lead, campaign) pairs
 
-                for lead in disappeared:
-                    campaign = lead._campaign
-                    status = await confirm_actions.check_connection_status(lead.linkedin_url)
-                    if status == "connected":
-                        await repo.update_lead(
-                            lead,
-                            status=LeadStatus.CONNECTED,
-                            connection_accepted_at=datetime.utcnow(),
-                        )
-                        await repo.log_action(
-                            account_id=account.id,
-                            campaign_id=campaign.id,
-                            lead_id=lead.id,
-                            action_type=ActionType.CHECK_ACCEPTANCE,
-                            status=ActionLogStatus.SUCCESS,
-                            details={"accepted": True},
-                        )
-                        await repo.increment_daily_stat(account.id, "connections_accepted")
-                        newly_connected.append((lead, campaign))
-                        logger.info("acceptance.connected", url=lead.linkedin_url)
-                    elif status in ("not_connected", "unknown"):
-                        # Invitation gone — declined or expired
-                        await repo.update_lead(lead, status=LeadStatus.WITHDRAWN)
-                        await repo.log_action(
-                            account_id=account.id,
-                            campaign_id=campaign.id,
-                            lead_id=lead.id,
-                            action_type=ActionType.CHECK_ACCEPTANCE,
-                            status=ActionLogStatus.SUCCESS,
-                            details={"accepted": False, "status": status},
-                        )
-                        logger.info("acceptance.declined_or_expired", url=lead.linkedin_url, status=status)
-                    else:
-                        # "pending" — leave as-is (URL normalization edge case)
-                        logger.debug("acceptance.still_pending", url=lead.linkedin_url)
+                    for lead in disappeared:
+                        campaign = campaign_map.get(lead.campaign_id)
+                        if campaign is None:
+                            continue
+                        status = await confirm_actions.check_connection_status(lead.linkedin_url)
+                        if status == "connected":
+                            await repo.update_lead(
+                                lead,
+                                status=LeadStatus.CONNECTED,
+                                connection_accepted_at=datetime.utcnow(),
+                            )
+                            await repo.log_action(
+                                account_id=account.id,
+                                campaign_id=campaign.id,
+                                lead_id=lead.id,
+                                action_type=ActionType.CHECK_ACCEPTANCE,
+                                status=ActionLogStatus.SUCCESS,
+                                details={"accepted": True},
+                            )
+                            await repo.increment_daily_stat(account.id, "connections_accepted")
+                            newly_connected.append((lead, campaign))
+                            logger.info("acceptance.connected", url=lead.linkedin_url)
+                        elif status == "not_connected":
+                            # Confirmed: invitation gone, not connected → declined or expired
+                            await repo.update_lead(lead, status=LeadStatus.WITHDRAWN)
+                            await repo.log_action(
+                                account_id=account.id,
+                                campaign_id=campaign.id,
+                                lead_id=lead.id,
+                                action_type=ActionType.CHECK_ACCEPTANCE,
+                                status=ActionLogStatus.SUCCESS,
+                                details={"accepted": False, "status": "not_connected"},
+                            )
+                            logger.info("acceptance.declined_or_expired", url=lead.linkedin_url)
+                        elif status == "unknown":
+                            # Profile visit inconclusive (network error, page state ambiguous) — leave as-is
+                            logger.debug("acceptance.check_inconclusive", url=lead.linkedin_url)
+                        else:
+                            # "pending" — leave as-is (URL normalization edge case)
+                            logger.debug("acceptance.still_pending", url=lead.linkedin_url)
 
-                    await DelayGenerator().micro_delay(2, 5)
-
-                await confirm_page.close()
+                        await DelayGenerator().micro_delay(2, 5)
+                finally:
+                    await confirm_page.close()
 
                 # Schedule or send follow-up messages for newly connected leads
                 for lead, campaign in newly_connected:

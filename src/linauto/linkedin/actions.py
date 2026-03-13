@@ -524,13 +524,8 @@ class LinkedInActions:
 
             # Click "Show more" to load all invitations
             for _ in range(50):
-                load_more = None
-                try:
-                    load_more = self.page.locator(selectors.INVITATION_LOAD_MORE[0]).first
-                    await load_more.wait_for(state="visible", timeout=2000)
-                except Exception:
-                    load_more = None
-                if load_more is None:
+                load_more = await self._find_element(selectors.INVITATION_LOAD_MORE, timeout_ms=2000)
+                if not load_more:
                     break
                 await load_more.click()
                 await self.delay.micro_delay(1.0, 2.0)

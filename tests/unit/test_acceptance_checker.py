@@ -108,3 +108,26 @@ def test_invitation_snapshot_session_expired():
 def test_invitation_snapshot_network_error():
     snap = InvitationSnapshot(success=False, session_valid=True, urls=[])
     assert not snap.success
+
+
+def test_diff_url_with_query_params_still_matches():
+    """Leads with query params in stored URL still match pending set."""
+    pending_urls = ["https://www.linkedin.com/in/alice/"]
+    pending_normalized = {_normalize_li_url(u) for u in pending_urls if _normalize_li_url(u)}
+    # If DB stored URL has query params, should still match
+    db_url = "https://www.linkedin.com/in/alice?trk=nav_responsive_tab_profile"
+    assert _normalize_li_url(db_url) in pending_normalized
+
+
+def test_diff_empty_pending_with_many_leads():
+    """When invitation manager returns empty (all accepted/expired), all leads are disappeared."""
+    pending_urls = []
+    pending_normalized = {_normalize_li_url(u) for u in pending_urls if _normalize_li_url(u)}
+    db_leads_urls = [f"https://www.linkedin.com/in/person-{i}" for i in range(20)]
+    disappeared = [u for u in db_leads_urls if (n := _normalize_li_url(u)) and n not in pending_normalized]
+    assert len(disappeared) == 20
+
+
+def test_normalize_with_trk_query_param():
+    """LinkedIn tracking params in URL should be stripped."""
+    assert _normalize_li_url("https://www.linkedin.com/in/jane-doe?trk=nav_responsive_tab_profile_pic") == "/in/jane-doe"
