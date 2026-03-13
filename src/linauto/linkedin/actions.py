@@ -514,6 +514,11 @@ class LinkedInActions:
         """
         Navigate to the invitation manager and return all pending sent invitation URLs.
         Uses a single page load + Show More loop, then extracts all profile URLs via JS.
+
+        Extraction strategy:
+          1. Try known invitation card container selectors (fast path).
+          2. Fallback: collect all /in/ profile links from the main content area,
+             excluding nav/header elements. This survives LinkedIn DOM changes.
         """
         try:
             nav = await self.navigator.go_to_invitation_manager()
@@ -530,29 +535,61 @@ class LinkedInActions:
                 await load_more.click()
                 await self.delay.micro_delay(1.0, 2.0)
 
-            # Extract all profile URLs via JS
+            # Extract all profile URLs via JS — two-strategy approach
             urls = await self.page.evaluate("""() => {
-                const cardSelectors = [
+                const seen = new Set();
+                const urls = [];
+
+                // Strategy 1: known card container selectors (update selectors.py when LinkedIn changes DOM)
+                const cardContainerSelectors = [
                     'li.invitation-card',
                     '.mn-invitation-list li',
                     '[data-view-name="invitation-card"]',
+                    '.invitation-card',
+                    '.mn-invitation-card',
+                    'li[class*="invitation"]',
+                    '[class*="invitation-card"]',
+                    '[data-view-name*="invitation"]',
                 ];
                 let cards = [];
-                for (const sel of cardSelectors) {
+                for (const sel of cardContainerSelectors) {
                     cards = Array.from(document.querySelectorAll(sel));
                     if (cards.length > 0) break;
                 }
-                const seen = new Set();
-                const urls = [];
-                for (const card of cards) {
-                    const link = card.querySelector('a[href*="/in/"]');
-                    if (link && link.href && !seen.has(link.href)) {
-                        seen.add(link.href);
-                        urls.push(link.href);
+                if (cards.length > 0) {
+                    for (const card of cards) {
+                        const link = card.querySelector('a[href*="/in/"]');
+                        if (link && link.href) {
+                            const base = link.href.split('?')[0].split('#')[0];
+                            if (!seen.has(base)) { seen.add(base); urls.push(link.href); }
+                        }
                     }
+                    if (urls.length > 0) return urls;
+                }
+
+                // Strategy 2: fallback — all /in/ profile links in main content, skip nav/header
+                const mainEl = document.querySelector(
+                    'main, [role="main"], #main, #main-content, .scaffold-layout__main'
+                ) || document.body;
+                for (const link of mainEl.querySelectorAll('a[href*="/in/"]')) {
+                    const href = link.href;
+                    if (!href) continue;
+                    const m = href.match(/\\/in\\/([^\\/?#\\s]+)/);
+                    if (!m || m[1].length < 2) continue;
+                    if (link.closest('nav, header, .global-nav, #global-nav')) continue;
+                    const base = href.split('?')[0].split('#')[0];
+                    if (!seen.has(base)) { seen.add(base); urls.push(href); }
                 }
                 return urls;
             }""")
+
+            if not urls:
+                logger.warning(
+                    "action.invitation_manager_empty",
+                    note="JS extracted 0 URLs — LinkedIn DOM may have changed selectors",
+                    url=self.page.url,
+                )
+                await self._debug_screenshot("invitation_manager_empty")
 
             return InvitationSnapshot(success=True, session_valid=True, urls=urls or [])
         except Exception as e:

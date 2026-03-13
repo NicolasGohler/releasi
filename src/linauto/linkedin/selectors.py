@@ -138,6 +138,11 @@ INVITATION_CARDS = [
     "li.invitation-card",
     ".mn-invitation-list li",
     "[data-view-name='invitation-card']",
+    ".invitation-card",
+    ".mn-invitation-card",
+    "li[class*='invitation']",
+    "[class*='invitation-card']",
+    "[data-view-name*='invitation']",
 ]
 
 # Profile link inside an invitation card

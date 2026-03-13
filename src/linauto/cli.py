@@ -791,5 +791,158 @@ def debug_profile(
     _run(_debug())
 
 
+@app.command("check-acceptances")
+def check_acceptances_cmd(
+    account_name: str = typer.Option(..., "--account", "-a", help="Account name"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print what would change without updating DB"),
+):
+    """
+    Manually run the acceptance checker for an account (safe — uses ephemeral browser, not pool).
+
+    Loads the invitation manager once, diffs against CONNECTION_REQUESTED leads, visits
+    disappeared profiles to confirm accepted vs declined. Safe to run while the scheduler
+    is active because it does NOT share the BrowserPool.
+    """
+    async def _check():
+        import re as _re
+        from datetime import datetime
+
+        repo, session = await _get_repo()
+        account = await repo.get_account_by_name(account_name)
+        if not account:
+            console.print(f"[red]Account '{account_name}' not found.[/red]")
+            raise typer.Exit(1)
+
+        from linauto.db.models import LeadStatus, ActionType, ActionLogStatus
+        from linauto.linkedin.browser import LinkedInBrowser
+        from linauto.linkedin.actions import LinkedInActions
+
+        def _normalize(url: str) -> str:
+            m = _re.search(r'/in/([^/?#\s]+)', url)
+            if m:
+                return f"/in/{m.group(1).rstrip('/')}"
+            return ""
+
+        # Gather CONNECTION_REQUESTED leads
+        campaigns = await repo.get_active_campaigns(account.id)
+        campaign_map = {c.id: c for c in campaigns}
+        requested_leads = []
+        for campaign in campaigns:
+            leads = await repo.get_leads_by_status(campaign.id, LeadStatus.CONNECTION_REQUESTED)
+            requested_leads.extend(leads)
+
+        console.print(f"[bold]Account:[/bold] {account_name}")
+        console.print(f"[bold]CONNECTION_REQUESTED leads:[/bold] {len(requested_leads)}")
+        if not requested_leads:
+            console.print("[yellow]No CONNECTION_REQUESTED leads — nothing to check.[/yellow]")
+            await _cleanup(session)
+            return
+
+        browser = LinkedInBrowser()
+        try:
+            await browser.launch(
+                account_id=account.id,
+                li_at_cookie=account.li_at_cookie,
+                user_agent=account.user_agent,
+                proxy_url=account.proxy_url,
+                proxy_country=account.proxy_country,
+                timezone=account.timezone,
+            )
+            valid = await browser.validate_session()
+            if not valid:
+                console.print("[red]Session expired.[/red]")
+                if not dry_run:
+                    await repo.update_account(account, status="cookie_expired")
+                    console.print("[red]Account marked as cookie_expired.[/red]")
+                await browser.close()
+                await _cleanup(session)
+                return
+
+            inv_page = await browser.new_page()
+            actions = LinkedInActions(inv_page)
+
+            console.print("\n[bold]Loading invitation manager...[/bold]")
+            result = await actions.get_sent_invitation_urls()
+
+            if not result.success:
+                console.print("[red]Failed to load invitation manager.[/red]")
+                await inv_page.close()
+                await browser.close()
+                await _cleanup(session)
+                return
+
+            if not result.session_valid:
+                console.print("[red]Session invalid (redirect to login).[/red]")
+                if not dry_run:
+                    await repo.update_account(account, status="cookie_expired")
+                    console.print("[red]Account marked as cookie_expired.[/red]")
+                await inv_page.close()
+                await browser.close()
+                await _cleanup(session)
+                return
+
+            console.print(f"[green]Pending invitations found:[/green] {len(result.urls)}")
+            await inv_page.close()
+
+            # Diff
+            pending_normalized = {_normalize(u) for u in result.urls if _normalize(u)}
+            disappeared = [
+                lead for lead in requested_leads
+                if (n := _normalize(lead.linkedin_url)) and n not in pending_normalized
+            ]
+            console.print(f"[bold]Disappeared (accepted or declined):[/bold] {len(disappeared)}")
+
+            if not disappeared:
+                console.print("[green]All leads still pending — nothing to update.[/green]")
+                await browser.close()
+                await _cleanup(session)
+                return
+
+            # Confirm each disappeared lead
+            console.print()
+            accepted = []
+            declined = []
+            inconclusive = []
+
+            confirm_page = await browser.new_page()
+            try:
+                confirm_actions = LinkedInActions(confirm_page)
+                for lead in disappeared:
+                    status = await confirm_actions.check_connection_status(lead.linkedin_url)
+                    name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.linkedin_url
+                    if status == "connected":
+                        accepted.append(lead)
+                        console.print(f"  [green]CONNECTED[/green]  {name}")
+                        if not dry_run:
+                            await repo.update_lead(
+                                lead,
+                                status=LeadStatus.CONNECTED,
+                                connection_accepted_at=datetime.utcnow(),
+                            )
+                    elif status == "not_connected":
+                        declined.append(lead)
+                        console.print(f"  [red]DECLINED  [/red]  {name}")
+                        if not dry_run:
+                            await repo.update_lead(lead, status=LeadStatus.WITHDRAWN)
+                    else:
+                        inconclusive.append(lead)
+                        console.print(f"  [yellow]UNKNOWN   [/yellow]  {name}  (leaving as CONNECTION_REQUESTED)")
+            finally:
+                await confirm_page.close()
+
+            console.print()
+            console.print(f"[green]Accepted:[/green]     {len(accepted)}")
+            console.print(f"[red]Declined:[/red]     {len(declined)}")
+            console.print(f"[yellow]Inconclusive:[/yellow] {len(inconclusive)}")
+            if dry_run:
+                console.print("\n[dim]Dry-run — no changes written to DB.[/dim]")
+
+        finally:
+            await browser.close()
+        await _cleanup(session)
+
+    _run(_check())
+
+
 if __name__ == "__main__":
     app()
