@@ -252,6 +252,30 @@ Migration files are in `alembic/versions/`. Follow the existing naming pattern (
 - **Pool vs ephemeral**: Scheduler jobs use the persistent `BrowserPool`. `execute-once` CLI uses ephemeral browsers.
 - **Fingerprint stability**: UA, viewport, proxy session ID are all hash-derived from `account_id` — same account always presents identical fingerprint across restarts.
 
+## Auto-Withdraw (currently disabled)
+The auto-withdraw feature is **fully implemented but disabled**. It withdraws the N oldest pending invitations per daily acceptance check run when the pending count exceeds a threshold.
+
+To enable for an account:
+```bash
+# Set threshold (e.g. 300 = withdraw oldest invitations when pending > 300, 10/day)
+docker exec linauto python3 -c "
+import sqlite3; c=sqlite3.connect('/app/data/linauto.db')
+c.execute(\"UPDATE accounts SET withdraw_threshold=300 WHERE name='Nicolas Goehler'\")
+c.commit(); c.close()
+"
+```
+
+To disable again (set back to NULL):
+```bash
+docker exec linauto python3 -c "
+import sqlite3; c=sqlite3.connect('/app/data/linauto.db')
+c.execute(\"UPDATE accounts SET withdraw_threshold=NULL WHERE name='Nicolas Goehler'\")
+c.commit(); c.close()
+"
+```
+
+Context: ~510 pre-system invitations are sitting in LinkedIn. Setting threshold=300 would clean them up at 10/day over ~21 days. The withdrawal happens on the already-loaded invitation manager page (no extra navigation cost). Code is in `runner.py` → `check_acceptances()`, `actions.py` → `withdraw_oldest_invitations()`.
+
 ## Phase Status
 - Phase 1 (Foundation): COMPLETE — CLI, CSV import, template rendering, browser module
 - Phase 2 (Scheduling & Safety): COMPLETE — Clustered planner, warmup, cooldown, APScheduler, stealth, noise, proxy/timezone
