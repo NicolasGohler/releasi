@@ -473,6 +473,10 @@ class LinkedInActions:
         """
         Visit a profile and check connection status.
         Returns: 'connected', 'pending', 'not_connected', 'unknown'
+
+        Logic: if the profile loads successfully and no 1st-degree badge is found,
+        the person is not connected. 'unknown' is only returned when navigation fails
+        (network/proxy error), to avoid masking actual declined invitations.
         """
         nav = await self.navigator.go_to_profile(profile_url)
         if not nav.success:
@@ -482,10 +486,10 @@ class LinkedInActions:
             return "connected"
         if await self._find_element(selectors.PENDING_CONNECTION_INDICATORS, timeout_ms=2000):
             return "pending"
-        if await self._find_element(selectors.CONNECT_BUTTON_PRIMARY, timeout_ms=2000):
-            return "not_connected"
 
-        return "unknown"
+        # Profile loaded successfully — if no 1st-degree badge and no "Pending" button,
+        # the invitation was declined or expired (profile may show Follow/Connect/Other).
+        return "not_connected"
 
     async def get_pending_invitation_count(self) -> int:
         """Navigate to invitation manager and get the pending invitation count."""
