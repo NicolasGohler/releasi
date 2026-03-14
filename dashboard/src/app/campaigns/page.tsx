@@ -90,7 +90,14 @@ export default function CampaignsPage() {
                     </p>
                     {c.account_status === "cookie_expired" ? (
                       <p className="text-xs text-red-400">
-                        Cookie expired — update in account settings
+                        Cookie expired — update in{" "}
+                        <Link
+                          href={`/accounts/${c.account_id}`}
+                          className="underline hover:text-red-300"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          account settings
+                        </Link>
                       </p>
                     ) : c.account_paused_until && new Date(c.account_paused_until) > new Date() ? (
                       <p className="text-xs text-amber-400">
