@@ -24,6 +24,7 @@ from linauto.scheduler.planner import generate_daily_plan, SlotType
 from linauto.safety.cooldown import is_cooldown_expired, calculate_cooldown_resume, push_cooldown_one_day
 from linauto.safety import limits as rate_limits
 from linauto.campaign.state_machine import validate_transition
+from linauto.notifications.slack import notify as slack_notify
 
 logger = structlog.get_logger()
 
@@ -250,6 +251,10 @@ async def dispatch():
                     if not _feed.session_valid:
                         logger.error("dispatch.pre_check_session_expired", account=account.name)
                         await repo.update_account(account, status="cookie_expired")
+                        await slack_notify(
+                            f":warning: *Cookie expired* — account *{account.name}* (detected at dispatch pre-check). "
+                            "Update the cookie in account settings."
+                        )
                         await repo.log_action(
                             account_id=account.id,
                             action_type=ActionType.ERROR,
@@ -389,6 +394,10 @@ async def dispatch():
                                     consecutive=consecutive_session_errors,
                                 )
                                 await repo.update_account(account, status="cookie_expired")
+                                await slack_notify(
+                                    f":warning: *Cookie expired* — account *{account.name}* "
+                                    f"({consecutive_session_errors} consecutive session errors on campaign *{campaign.name}*)."
+                                )
                                 # Reset SCHEDULED leads back to PENDING so they're
                                 # re-planned when the cookie is renewed
                                 await repo.bulk_update_lead_status(
@@ -554,6 +563,9 @@ async def check_acceptances():
                 if not result.session_valid:
                     logger.error("acceptance.session_expired", account=account.name)
                     await repo.update_account(account, status="cookie_expired")
+                    await slack_notify(
+                        f":warning: *Cookie expired* — account *{account.name}* (detected by acceptance checker)."
+                    )
                     await repo.log_action(
                         account_id=account.id,
                         action_type=ActionType.ERROR,
@@ -1046,6 +1058,37 @@ async def _start_api_server():
     asyncio.create_task(server.serve())
 
 
+async def daily_summary():
+    """Send end-of-day Slack summary of activity across all active accounts."""
+    from datetime import date as date_type
+    repo, session = await _get_repo()
+    try:
+        accounts = await repo.list_active_accounts()
+        lines = [f"*Daily Summary — {date_type.today().strftime('%b %d')}*"]
+        for account in accounts:
+            stat = await repo.get_or_create_daily_stat(account.id)
+            campaigns = await repo.list_campaigns(account_id=account.id)
+            remaining = 0
+            skipped_today = 0
+            for campaign in campaigns:
+                remaining += await repo.count_leads_by_status(
+                    campaign.id, [LeadStatus.PENDING, LeadStatus.SCHEDULED]
+                )
+                skipped_today += await repo.count_leads_updated_today_with_status(
+                    campaign.id, LeadStatus.SKIPPED
+                )
+            lines.append(
+                f"\n*{account.name}*\n"
+                f"• Connections sent: {stat.connection_requests_sent}\n"
+                f"• Skipped: {skipped_today}\n"
+                f"• Errors: {stat.errors}\n"
+                f"• Remaining: {remaining}"
+            )
+        await slack_notify("\n".join(lines))
+    finally:
+        await session.close()
+
+
 async def start_scheduler():
     """Start the APScheduler daemon. Blocks until interrupted."""
     await init_db()
@@ -1118,6 +1161,15 @@ async def start_scheduler():
         CronTrigger(hour=8, minute=0, jitter=5400),  # 6:30–9:30 AM window
         id="keepalive",
         name="Morning Session Warm-Up",
+        replace_existing=True,
+    )
+
+    # Daily summary Slack notification at 20:00 (±5 min jitter)
+    scheduler.add_job(
+        daily_summary,
+        CronTrigger(hour=20, minute=0, jitter=300),
+        id="daily_summary",
+        name="Daily Slack Summary",
         replace_existing=True,
     )
 

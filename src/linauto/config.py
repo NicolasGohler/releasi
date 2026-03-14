@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_file: str = "data/logs/linauto.log"
 
+    # Slack notifications
+    slack_bot_token: str = "xoxb-5736340339410-9698047778609-dqUa7c0cxcQyM7zdz2bcUPnm"
+    slack_user_id: str = "U08RKK348P4"
+
     # API
     api_enabled: bool = False
     api_key: str = ""

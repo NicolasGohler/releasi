@@ -271,6 +271,29 @@ class Repository:
         )
         return result.scalar_one_or_none() or 0
 
+    async def count_leads_by_status(self, campaign_id: str, statuses: list) -> int:
+        """Count leads in a campaign matching any of the given statuses."""
+        result = await self.session.execute(
+            select(func.count()).select_from(Lead).where(
+                Lead.campaign_id == campaign_id,
+                Lead.status.in_(statuses),
+            )
+        )
+        return result.scalar_one()
+
+    async def count_leads_updated_today_with_status(self, campaign_id: str, status: LeadStatus) -> int:
+        """Count leads in a campaign updated today with the given status."""
+        from sqlalchemy import cast, Date as SADate
+        from datetime import date as date_type
+        result = await self.session.execute(
+            select(func.count()).select_from(Lead).where(
+                Lead.campaign_id == campaign_id,
+                Lead.status == status,
+                cast(Lead.updated_at, SADate) == date_type.today(),
+            )
+        )
+        return result.scalar_one()
+
     # ── Scheduler helpers ─────────────────────────────────────────────────
 
     async def list_active_accounts(self) -> Sequence[Account]:
