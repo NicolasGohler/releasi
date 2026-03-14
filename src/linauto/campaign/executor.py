@@ -126,7 +126,12 @@ class CampaignExecutor:
                 result["success"] = True
 
             elif action_result.status == ActionStatus.LIMIT_REACHED:
-                result["limit_reached"] = True
+                # Differentiate weekly quota (pause until Monday) from soft rate-limit modal
+                # (2–4 hour backoff only — leads stay SCHEDULED for later today).
+                if action_result.reason == "rate_limit_modal":
+                    result["soft_limit_reached"] = True
+                else:
+                    result["limit_reached"] = True
                 await self.repo.log_action(
                     account_id=account.id,
                     campaign_id=campaign.id,

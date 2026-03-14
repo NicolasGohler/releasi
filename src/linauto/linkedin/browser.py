@@ -212,10 +212,21 @@ class LinkedInBrowser:
         )
 
         # Block bandwidth-heavy resources that aren't needed for DOM automation.
-        # Images, fonts, and media can account for 80-90% of page weight on LinkedIn
-        # but are never needed for button/selector interaction.
+        # Images, fonts, media, stylesheets and misc resources are never needed for
+        # button/selector interaction. Analytics/tracking domains are purely overhead.
+        _TRACKING_DOMAINS = {
+            "px.ads.linkedin.com",
+            "snap.licdn.com",
+            "dc.ads.linkedin.com",
+            "platform.linkedin.com",
+            "li.protechts.net",
+        }
         async def _abort_heavy_resources(route):
-            if route.request.resource_type in ("image", "media", "font"):
+            url = route.request.url
+            if any(d in url for d in _TRACKING_DOMAINS):
+                await route.abort()
+                return
+            if route.request.resource_type in ("image", "media", "font", "stylesheet", "other"):
                 await route.abort()
             else:
                 await route.continue_()

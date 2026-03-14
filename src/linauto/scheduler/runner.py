@@ -44,8 +44,11 @@ _KEEPALIVE_ACTIVITIES = [
     ("notifications", "https://www.linkedin.com/notifications/"),
     ("network", "https://www.linkedin.com/mynetwork/"),
     ("messaging", "https://www.linkedin.com/messaging/"),
+    ("jobs", "https://www.linkedin.com/jobs/"),
+    ("learning", "https://www.linkedin.com/learning/"),
 ]
-_KEEPALIVE_WEIGHTS = [4, 2, 2, 2]
+# Weights for step-2 selection (index 1 onwards): notifications/network/messaging/jobs/learning
+_KEEPALIVE_STEP2_WEIGHTS = [3, 2, 2, 1, 1]
 
 
 async def _http_check_session(
@@ -290,6 +293,29 @@ async def dispatch():
                         attempts += 1
                         lead = lead_queue.pop(0)
                         result = await executor.execute_single_lead(account, campaign, lead)
+
+                        if result.get("soft_limit_reached"):
+                            # Rate-limit modal (soft block) — short 2–4 hour backoff.
+                            # SCHEDULED leads stay as-is; they'll be picked up on resume.
+                            tz = account.timezone or "UTC"
+                            backoff_hours = random.uniform(2, 4)
+                            resume = datetime.utcnow() + timedelta(hours=backoff_hours)
+                            await repo.update_account(account, paused_until=resume)
+                            await repo.log_action(
+                                account_id=account.id,
+                                campaign_id=campaign.id,
+                                action_type=ActionType.COOLDOWN_STARTED,
+                                status=ActionLogStatus.SUCCESS,
+                                details={"paused_until": str(resume), "reason": "rate_limit_modal", "backoff_hours": round(backoff_hours, 1)},
+                            )
+                            logger.warning(
+                                "dispatch.soft_limit_backoff",
+                                account=account.name,
+                                resume=str(resume),
+                                backoff_hours=round(backoff_hours, 1),
+                            )
+                            stop_account = True
+                            break
 
                         if result.get("limit_reached"):
                             # Trigger cooldown
@@ -959,9 +985,9 @@ async def keep_alive():
                     # Step 1: Always start with the feed (most natural morning action)
                     await noise.scroll_feed(duration_seconds=random.uniform(15, 35))
 
-                    # Step 2: Visit one more page — notifications or network
+                    # Step 2: Visit one more page — notifications, network, messaging, jobs, or learning
                     second_name, second_url = random.choices(
-                        _KEEPALIVE_ACTIVITIES[1:], weights=[3, 2, 2], k=1
+                        _KEEPALIVE_ACTIVITIES[1:], weights=_KEEPALIVE_STEP2_WEIGHTS, k=1
                     )[0]
                     await page.goto(second_url, wait_until="domcontentloaded", timeout=20000)
 
@@ -1047,10 +1073,10 @@ async def start_scheduler():
         replace_existing=True,
     )
 
-    # Dispatcher every 5 minutes
+    # Dispatcher every 5 minutes with ±75s jitter to avoid predictable cadence
     scheduler.add_job(
         dispatch,
-        IntervalTrigger(minutes=5),
+        IntervalTrigger(minutes=5, jitter=75),
         id="dispatcher",
         name="Action Dispatcher",
         replace_existing=True,

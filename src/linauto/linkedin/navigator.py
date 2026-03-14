@@ -61,6 +61,12 @@ class LinkedInNavigator:
                 # rendering on Follow-primary profiles where "Follow" appears
                 # before "More actions" is fully in the DOM.
                 await asyncio.sleep(0.5)
+                # Cancel in-flight XHR/fetch/resource requests — the DOM we need
+                # is already present. Reduces proxy bandwidth per profile visit.
+                try:
+                    await self.page.evaluate("window.stop()")
+                except Exception:
+                    pass  # Non-critical — continue even if evaluate fails
                 return
             except (PlaywrightTimeout, Exception):
                 continue

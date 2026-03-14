@@ -1,7 +1,9 @@
 """Atomic LinkedIn actions: send connection request, send message, etc."""
 from __future__ import annotations
 
+import asyncio
 import enum
+import random
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -323,7 +325,18 @@ class LinkedInActions:
         if not nav.session_valid:
             return ActionResult(ActionStatus.SESSION_EXPIRED)
 
-        # 1.5 Profile filter check (before any interaction)
+        # 1.5 Simulate reading the profile before connecting (human-like behaviour)
+        try:
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+            await self.page.mouse.wheel(0, random.randint(200, 500))   # scroll down
+            await asyncio.sleep(random.uniform(1.5, 3.0))
+            if random.random() < 0.15:  # 15% chance to scroll back up slightly
+                await self.page.mouse.wheel(0, random.randint(-300, -100))
+                await asyncio.sleep(random.uniform(0.5, 1.0))
+        except Exception:
+            pass  # Best-effort — never block the connect action
+
+        # 1.6 Profile filter check (before any interaction)
         if filters and filters.any_enabled:
             from linauto.linkedin.profile_filter import ProfileFilter
             skip_reason = await ProfileFilter().check(self.page, filters)

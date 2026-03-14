@@ -83,8 +83,8 @@ def generate_daily_plan(
     if not pending_lead_ids:
         return _generate_noise_only_plan(rng, work_start, work_end, settings)
 
-    # Daily target = daily_limit with ±15% variation (e.g. 20 → 17-23)
-    variation = max(1, int(daily_limit * 0.15))
+    # Daily target = daily_limit with ±20% variation (e.g. 20 → 16-24)
+    variation = max(1, int(daily_limit * 0.20))
     daily_target = rng.randint(daily_limit - variation, daily_limit + variation)
     daily_target = max(1, daily_target)
 
