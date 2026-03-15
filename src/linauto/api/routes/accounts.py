@@ -207,8 +207,18 @@ async def start_login_session(
     if manager.is_active:
         await manager._cleanup()
 
+    # Build proxy URL so the login browser uses the account's residential proxy,
+    # not the datacenter IP. LinkedIn records the login location.
+    proxy_url = account.proxy_url
+    if not proxy_url and account.proxy_country:
+        try:
+            from linauto.linkedin.browser import _build_proxy_url
+            proxy_url = _build_proxy_url(account.id, account.proxy_country)
+        except Exception:
+            pass
+
     try:
-        novnc_path = await manager.start_session(account_id)
+        novnc_path = await manager.start_session(account_id, proxy_url=proxy_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start login session: {e}")
 

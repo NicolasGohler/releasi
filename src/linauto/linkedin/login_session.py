@@ -97,7 +97,7 @@ class LoginSessionManager:
         self._processes.append(proc)
         logger.info("login_session.websockify_started", port=NOVNC_PORT)
 
-    async def start_session(self, account_id: str) -> str:
+    async def start_session(self, account_id: str, proxy_url: Optional[str] = None) -> str:
         """
         Start a noVNC login session for the given account.
 
@@ -105,6 +105,9 @@ class LoginSessionManager:
         automation browser that may be using the account's main profile.
         Uses the same deterministic User-Agent as the pool browser to
         maintain a consistent fingerprint.
+
+        proxy_url should be the account's residential proxy so LinkedIn sees the
+        correct country IP during login (not the datacenter IP).
 
         Returns the noVNC URL path for the user to access.
         """
@@ -133,6 +136,22 @@ class LoginSessionManager:
         from linauto.linkedin.browser import _deterministic_ua
         ua = _deterministic_ua(account_id)
 
+        # Parse proxy URL into the dict format Playwright requires.
+        # Playwright/Chromium silently ignores credentials embedded in the server URL,
+        # so credentials must be passed separately.
+        proxy_kwargs: dict = {}
+        if proxy_url:
+            from urllib.parse import urlparse
+            _p = urlparse(proxy_url)
+            _server = f"{_p.scheme}://{_p.hostname}:{_p.port}"
+            _proxy: dict = {"server": _server}
+            if _p.username:
+                _proxy["username"] = _p.username
+            if _p.password:
+                _proxy["password"] = _p.password
+            proxy_kwargs["proxy"] = _proxy
+            logger.info("login_session.proxy_configured", proxy=f"{_p.hostname}:{_p.port}")
+
         # Launch headed Chromium with the temporary profile
         self._playwright = await async_playwright().start()
         self._context = await self._playwright.chromium.launch_persistent_context(
@@ -146,6 +165,7 @@ class LoginSessionManager:
                 "--no-sandbox",
                 f"--display={DISPLAY}",
             ],
+            **proxy_kwargs,
         )
 
         # Navigate to LinkedIn login page
