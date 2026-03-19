@@ -32,4 +32,9 @@ USER appuser
 
 EXPOSE 8000
 
+# Ensure the volume-mounted /app/src takes precedence over site-packages so
+# that `git pull` on the host is sufficient for Python code changes without
+# requiring an image rebuild.
+ENV PYTHONPATH=/app/src
+
 CMD ["linauto", "run"]
