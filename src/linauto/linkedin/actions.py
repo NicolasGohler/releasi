@@ -190,6 +190,19 @@ class LinkedInActions:
             logger.info("action.connect_found", method="css_scoped", url=profile_url)
             return connect_by_css
 
+        # ── Strategy 1b: Anchor retry with longer timeout ──
+        # The navigator may have resolved (via "More" button) and called window.stop()
+        # before LinkedIn's JS finished making the Connect anchor visible. Give it up
+        # to 3 more seconds — this covers the async rendering window without slowing
+        # down profiles that genuinely have no Connect anchor.
+        anchor_btn = await self._try_locator(
+            self.page.locator('main a[aria-label^="Invite"][aria-label$="to connect"]').first,
+            timeout_ms=3000,
+        )
+        if anchor_btn:
+            logger.info("action.connect_found", method="anchor_retry", url=profile_url)
+            return anchor_btn
+
         # ── Strategy 2: More dropdown → Connect ──
         logger.info("action.trying_more_dropdown", url=profile_url)
 
