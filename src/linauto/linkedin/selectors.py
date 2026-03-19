@@ -17,9 +17,8 @@ button labels stay stable.
 CONNECT_BUTTON_PRIMARY = [
     # New LinkedIn UI (2025+): Connect is rendered as an <a> link, not a <button>.
     # aria-label pattern "Invite X to connect" is unique to the profile's own Connect anchor.
-    # This appears both before and inside <main>; prefer the one inside main (second match),
-    # but .first is safe because the profile anchor always precedes sidebar anchors in DOM order.
-    'a[aria-label^="Invite"][aria-label$="to connect"]',
+    # Scoped to <main> to skip the duplicate hidden anchor that appears before <main>.
+    'main a[aria-label^="Invite"][aria-label$="to connect"]',
     # Class-based (older LinkedIn DOM — kept for compatibility)
     'button.pv-s-profile-actions--connect',
     # Scoped to known profile actions containers
@@ -121,6 +120,9 @@ PENDING_CONNECTION_INDICATORS = [
 PROFILE_ACTION_BUTTONS = [
     'button:text-is("More")',
     'button:text-is("Connect")',
+    # New LinkedIn UI: Connect is an <a> link — wait for it so _find_connect_button
+    # doesn't run before the profile card has fully rendered its action elements.
+    'a[aria-label$="to connect"]',
     'button:has-text("Follow")',
     'button:has-text("Message")',
 ]
