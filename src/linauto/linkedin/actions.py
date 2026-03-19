@@ -195,13 +195,18 @@ class LinkedInActions:
         # before LinkedIn's JS finished making the Connect anchor visible. Give it up
         # to 3 more seconds — this covers the async rendering window without slowing
         # down profiles that genuinely have no Connect anchor.
-        anchor_btn = await self._try_locator(
-            self.page.locator('main a[aria-label^="Invite"][aria-label$="to connect"]').first,
-            timeout_ms=3000,
-        )
-        if anchor_btn:
+        # Note: must use wait_for() directly, not _try_locator(), because _try_locator
+        # checks count() first (no timeout) and exits immediately if the element isn't
+        # in the DOM yet. wait_for(state="visible") genuinely waits.
+        try:
+            anchor_loc = self.page.locator(
+                'main a[aria-label^="Invite"][aria-label$="to connect"]'
+            ).first
+            await anchor_loc.wait_for(state="visible", timeout=3000)
             logger.info("action.connect_found", method="anchor_retry", url=profile_url)
-            return anchor_btn
+            return anchor_loc
+        except Exception:
+            pass
 
         # ── Strategy 2: More dropdown → Connect ──
         logger.info("action.trying_more_dropdown", url=profile_url)
