@@ -374,8 +374,18 @@ class LinkedInActions:
             )
 
         # 5. Click Connect
-        await self._hover_and_click(connect_btn)
-        await self.delay.micro_delay(0.5, 1.5)
+        # Scroll into view first to avoid sticky nav bar interception, then
+        # hover+click. If pointer events are intercepted (nav bar overlay),
+        # fall back to JS click — same pattern as the More dropdown button.
+        await connect_btn.scroll_into_view_if_needed()
+        await self.delay.micro_delay(0.2, 0.5)
+        try:
+            await self._hover_and_click(connect_btn)
+        except Exception:
+            logger.info("action.connect_click_intercepted_using_js", url=profile_url)
+            await connect_btn.evaluate("el => el.click()")
+        # Modal takes 2-3 seconds to appear (LinkedIn renders it asynchronously).
+        await self.delay.micro_delay(1.5, 3.0)
 
         # 6. Handle the "Add a note to your invitation?" modal
         if message:

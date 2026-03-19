@@ -15,15 +15,20 @@ button labels stay stable.
 # Ordered: most specific → broadest. _find_element uses .first so the broadest
 # selectors are safe: the profile card appears before sidebar in DOM order.
 CONNECT_BUTTON_PRIMARY = [
+    # New LinkedIn UI (2025+): Connect is rendered as an <a> link, not a <button>.
+    # aria-label pattern "Invite X to connect" is unique to the profile's own Connect anchor.
+    # This appears both before and inside <main>; prefer the one inside main (second match),
+    # but .first is safe because the profile anchor always precedes sidebar anchors in DOM order.
+    'a[aria-label^="Invite"][aria-label$="to connect"]',
     # Class-based (older LinkedIn DOM — kept for compatibility)
     'button.pv-s-profile-actions--connect',
     # Scoped to known profile actions containers
     '.pv-top-card .pvs-profile-actions button:has-text("Connect")',
     '.pv-top-card-v2-ctas button:has-text("Connect")',
     'main .pvs-profile-actions button:has-text("Connect")',
-    # Broad but safe: profile card is first in <main>, sidebar comes after.
-    # Do NOT use without the main scope — sidebar "People you may know"
-    # Connect buttons exist outside <main>.
+    # Broad button fallback — only safe if anchor selector above missed.
+    # WARNING: sidebar "People you may know" also has button:has-text("Connect"),
+    # so this is last resort only.
     'main button:has-text("Connect")',
 ]
 
