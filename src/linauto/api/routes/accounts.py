@@ -375,7 +375,7 @@ async def replan_account(
     repo: Repository = Depends(get_repo),
 ):
     """Reset today's scheduled leads and regenerate the daily plan with current settings."""
-    from datetime import date as _date
+    from datetime import date as _date, datetime as _datetime
     from sqlalchemy import update as _sql_update
     from linauto.db.models import Lead, LeadStatus, ActionType, ActionLogStatus
     from linauto.scheduler.planner import generate_daily_plan, SlotType
@@ -409,8 +409,11 @@ async def replan_account(
             campaign_weekend_enabled=campaign.weekend_enabled,
         )
 
+        now = _datetime.now()
         for slot in plan:
             if slot.slot_type == SlotType.CONNECTION_REQUEST and slot.lead_id:
+                if slot.scheduled_at <= now:
+                    continue  # Skip past slots — remaining leads will be picked up tomorrow
                 await repo.update_lead_schedule(slot.lead_id, slot.scheduled_at, LeadStatus.SCHEDULED)
                 total_scheduled += 1
 
