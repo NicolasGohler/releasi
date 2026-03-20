@@ -23,12 +23,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 interface LeadsTableProps {
   campaignId: string;
+  timezone?: string | null;
 }
 
 // Sentinel value meaning "all active (exclude removed)"
 const ALL_ACTIVE = "__all_active__";
 
-export function LeadsTable({ campaignId }: LeadsTableProps) {
+export function LeadsTable({ campaignId, timezone }: LeadsTableProps) {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>(ALL_ACTIVE);
@@ -144,7 +145,7 @@ export function LeadsTable({ campaignId }: LeadsTableProps) {
                           <p className="text-xs">
                             {lead.error_message
                               ? lead.error_message
-                              : `Scheduled for ${new Date(lead.scheduled_at!).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`}
+                              : `Scheduled for ${new Date(lead.scheduled_at! + "Z").toLocaleString(undefined, { timeZone: timezone ?? undefined, dateStyle: "medium", timeStyle: "short" })}`}
                           </p>
                         </TooltipContent>
                       </Tooltip>

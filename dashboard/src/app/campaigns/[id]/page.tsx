@@ -288,7 +288,7 @@ export default function CampaignDetailPage({
 
           <TabsContent value="leads" className="space-y-4 mt-4">
             <CSVUpload campaignId={id} />
-            <LeadsTable campaignId={id} />
+            <LeadsTable campaignId={id} timezone={account?.timezone} />
           </TabsContent>
 
           <TabsContent value="lists" className="mt-4">
