@@ -59,12 +59,35 @@ def generate_daily_plan(
     if is_weekend is None:
         is_weekend = day.weekday() >= 5  # Sat=5, Sun=6
 
-    # Calculate work window with daily variation
+    # Calculate work window with daily variation.
+    # If an account timezone is set, work_start_hour/work_end_hour are interpreted
+    # in that timezone and converted to server-local naive datetimes so the
+    # dispatcher (which uses datetime.now()) fires at the right wall-clock time
+    # for the account's region. Without this, all accounts schedule in CET
+    # regardless of their configured timezone.
     start_offset = rng.randint(settings.work_start_variation[0], settings.work_start_variation[1])
     end_offset = rng.randint(settings.work_end_variation[0], settings.work_end_variation[1])
 
-    base_start = datetime.combine(day, time(settings.work_start_hour, 0))
-    base_end = datetime.combine(day, time(settings.work_end_hour, 0))
+    if timezone_str:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(timezone_str)
+            base_start = datetime(
+                day.year, day.month, day.day,
+                settings.work_start_hour, 0,
+                tzinfo=tz,
+            ).astimezone().replace(tzinfo=None)
+            base_end = datetime(
+                day.year, day.month, day.day,
+                settings.work_end_hour, 0,
+                tzinfo=tz,
+            ).astimezone().replace(tzinfo=None)
+        except Exception:
+            base_start = datetime.combine(day, time(settings.work_start_hour, 0))
+            base_end = datetime.combine(day, time(settings.work_end_hour, 0))
+    else:
+        base_start = datetime.combine(day, time(settings.work_start_hour, 0))
+        base_end = datetime.combine(day, time(settings.work_end_hour, 0))
 
     work_start = base_start + timedelta(minutes=start_offset)
     work_end = base_end + timedelta(minutes=end_offset)
