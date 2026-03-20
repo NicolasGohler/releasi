@@ -202,7 +202,7 @@ async def dispatch():
     """
     repo, session = await _get_repo()
     try:
-        now = datetime.utcnow()
+        now = datetime.now()  # match planner: both use local (CET) naive datetimes
         accounts = await repo.list_active_accounts()
 
         for account in accounts:
