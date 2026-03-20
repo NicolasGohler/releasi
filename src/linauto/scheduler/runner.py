@@ -117,6 +117,7 @@ async def daily_planning_sweep():
 
                 lead_ids = [l.id for l in pending]
 
+                now = datetime.now()
                 plan = generate_daily_plan(
                     account_id=account.id,
                     day=date.today(),
@@ -126,12 +127,44 @@ async def daily_planning_sweep():
                     campaign_weekend_enabled=campaign.weekend_enabled,
                 )
 
-                # Assign scheduled_at to leads for connection_request slots
+                # Assign scheduled_at to leads for connection_request slots.
+                # Safety guard: never schedule a slot whose time has already passed.
+                # This shouldn't normally happen at 06:00, but protects against
+                # late job runs or clock skew.
+                scheduled_count = 0
                 for slot in plan:
                     if slot.slot_type == SlotType.CONNECTION_REQUEST and slot.lead_id:
+                        if slot.scheduled_at <= now:
+                            continue
                         await repo.update_lead_schedule(
                             slot.lead_id, slot.scheduled_at, LeadStatus.SCHEDULED
                         )
+                        scheduled_count += 1
+
+                if scheduled_count == 0 and lead_ids:
+                    # All generated slots were in the past (edge case: job ran very
+                    # late). Fallback: schedule for tomorrow so leads aren't stuck.
+                    logger.warning(
+                        "planner.all_slots_past_scheduling_tomorrow",
+                        account=account.name,
+                        campaign=campaign.name,
+                    )
+                    tomorrow = date.today() + timedelta(days=1)
+                    fallback_plan = generate_daily_plan(
+                        account_id=account.id,
+                        day=tomorrow,
+                        pending_lead_ids=lead_ids,
+                        daily_limit=account.daily_limit,
+                        timezone_str=account.timezone,
+                        campaign_weekend_enabled=campaign.weekend_enabled,
+                    )
+                    for slot in fallback_plan:
+                        if slot.slot_type == SlotType.CONNECTION_REQUEST and slot.lead_id:
+                            await repo.update_lead_schedule(
+                                slot.lead_id, slot.scheduled_at, LeadStatus.SCHEDULED
+                            )
+                            scheduled_count += 1
+                    plan = fallback_plan
 
                 # Log the plan
                 await repo.log_action(

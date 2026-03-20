@@ -375,7 +375,7 @@ async def replan_account(
     repo: Repository = Depends(get_repo),
 ):
     """Reset today's scheduled leads and regenerate the daily plan with current settings."""
-    from datetime import date as _date, datetime as _datetime
+    from datetime import date as _date, datetime as _datetime, timedelta as _timedelta
     from sqlalchemy import update as _sql_update
     from linauto.db.models import Lead, LeadStatus, ActionType, ActionLogStatus
     from linauto.scheduler.planner import generate_daily_plan, SlotType
@@ -400,22 +400,44 @@ async def replan_account(
         if not pending:
             continue
 
+        now = _datetime.now()
+        pending_ids = [l.id for l in pending]
+
         plan = generate_daily_plan(
             account_id=account.id,
             day=_date.today(),
-            pending_lead_ids=[l.id for l in pending],
+            pending_lead_ids=pending_ids,
             daily_limit=account.daily_limit,
             timezone_str=account.timezone,
             campaign_weekend_enabled=campaign.weekend_enabled,
         )
 
-        now = _datetime.now()
+        # Schedule only future slots from today's plan.
+        today_scheduled = 0
         for slot in plan:
             if slot.slot_type == SlotType.CONNECTION_REQUEST and slot.lead_id:
                 if slot.scheduled_at <= now:
-                    continue  # Skip past slots — remaining leads will be picked up tomorrow
+                    continue  # already past — skip
                 await repo.update_lead_schedule(slot.lead_id, slot.scheduled_at, LeadStatus.SCHEDULED)
                 total_scheduled += 1
+                today_scheduled += 1
+
+        if today_scheduled == 0:
+            # It's too late in the day for any connection slots — schedule for
+            # tomorrow so leads aren't stuck as PENDING until the next 06:00 run.
+            tomorrow = _date.today() + _timedelta(days=1)
+            tomorrow_plan = generate_daily_plan(
+                account_id=account.id,
+                day=tomorrow,
+                pending_lead_ids=pending_ids,
+                daily_limit=account.daily_limit,
+                timezone_str=account.timezone,
+                campaign_weekend_enabled=campaign.weekend_enabled,
+            )
+            for slot in tomorrow_plan:
+                if slot.slot_type == SlotType.CONNECTION_REQUEST and slot.lead_id:
+                    await repo.update_lead_schedule(slot.lead_id, slot.scheduled_at, LeadStatus.SCHEDULED)
+                    total_scheduled += 1
 
     return {"ok": True, "scheduled": total_scheduled}
 
