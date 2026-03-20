@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import random
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
 import structlog
@@ -28,7 +28,7 @@ def calculate_cooldown_resume(account_timezone: Optional[str] = None) -> datetim
     and cooldown_resume_hour_max.
     """
     settings = get_settings()
-    today = date.today()
+    today = datetime.utcnow().date()  # use UTC date so result is UTC-consistent
 
     next_monday = _next_weekday(today, 0)  # Monday = 0
     resume_hour = random.randint(
@@ -37,6 +37,7 @@ def calculate_cooldown_resume(account_timezone: Optional[str] = None) -> datetim
     )
     resume_minute = random.randint(0, 59)
 
+    # Return UTC naive datetime so is_cooldown_expired (which uses utcnow()) is consistent
     return datetime.combine(next_monday, time(resume_hour, resume_minute))
 
 

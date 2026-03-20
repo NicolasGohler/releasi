@@ -5,7 +5,7 @@ import enum
 import hashlib
 import random
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional, List
 
 import structlog
@@ -72,16 +72,19 @@ def generate_daily_plan(
         try:
             from zoneinfo import ZoneInfo
             tz = ZoneInfo(timezone_str)
+            # Convert work hours from account timezone → UTC naive.
+            # Storing as UTC means the dispatcher (using utcnow()) fires at the
+            # right moment regardless of what timezone the server runs in.
             base_start = datetime(
                 day.year, day.month, day.day,
                 settings.work_start_hour, 0,
                 tzinfo=tz,
-            ).astimezone().replace(tzinfo=None)
+            ).astimezone(timezone.utc).replace(tzinfo=None)
             base_end = datetime(
                 day.year, day.month, day.day,
                 settings.work_end_hour, 0,
                 tzinfo=tz,
-            ).astimezone().replace(tzinfo=None)
+            ).astimezone(timezone.utc).replace(tzinfo=None)
         except Exception:
             base_start = datetime.combine(day, time(settings.work_start_hour, 0))
             base_end = datetime.combine(day, time(settings.work_end_hour, 0))

@@ -117,7 +117,7 @@ async def daily_planning_sweep():
 
                 lead_ids = [l.id for l in pending]
 
-                now = datetime.now()
+                now = datetime.utcnow()
                 plan = generate_daily_plan(
                     account_id=account.id,
                     day=date.today(),
@@ -202,7 +202,7 @@ async def dispatch():
     """
     repo, session = await _get_repo()
     try:
-        now = datetime.now()  # match planner: both use local (CET) naive datetimes
+        now = datetime.utcnow()  # planner stores UTC naive; compare with utcnow()
         accounts = await repo.list_active_accounts()
 
         for account in accounts:

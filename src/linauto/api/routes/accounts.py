@@ -400,7 +400,7 @@ async def replan_account(
         if not pending:
             continue
 
-        now = _datetime.now()
+        now = _datetime.utcnow()
         pending_ids = [l.id for l in pending]
 
         plan = generate_daily_plan(
