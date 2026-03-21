@@ -6,7 +6,7 @@ import asyncio
 import os
 import sys
 
-TARGET = "https://www.linkedin.com/in/roxannebarretto"
+TARGET = "https://www.linkedin.com/in/amin-dosani-a0b81b12"
 ACCOUNT_NAME = "Nicolas Goehler"
 SCREENSHOT_DIR = "/app/data/debug_screenshots"
 DRY_RUN = "--dry-run" in sys.argv  # Pass --dry-run to skip the actual send

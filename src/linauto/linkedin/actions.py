@@ -493,6 +493,25 @@ class LinkedInActions:
         # 7. Click Send (check if button is enabled first)
         if send_btn:
             if await send_btn.is_disabled():
+                # Check if disabled because LinkedIn requires email verification
+                email_field = await self._try_locator(
+                    self.page.locator('input[placeholder*="email" i], input[type="email"]'),
+                    timeout_ms=500,
+                )
+                if not email_field:
+                    # Also check for the explanatory text
+                    email_field = await self._try_locator(
+                        self.page.locator('text=enter their email'),
+                        timeout_ms=500,
+                    )
+                if email_field:
+                    logger.info("action.email_verification_required", url=profile_url)
+                    await self._debug_screenshot("email_required")
+                    return ActionResult(
+                        ActionStatus.SKIPPED,
+                        reason="email_required",
+                        details={"url": profile_url},
+                    )
                 logger.info("action.send_button_disabled", url=profile_url)
                 await self._debug_screenshot("send_btn_disabled")
                 return ActionResult(
