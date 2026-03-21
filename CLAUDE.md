@@ -35,6 +35,26 @@ docker run -d --name linauto --restart unless-stopped \
   linauto_linauto:latest
 ```
 
+## Testing & Diagnostics on LinkedIn (CRITICAL)
+
+When running any diagnostic script, test, or one-off action against LinkedIn:
+
+1. **Always use the account's proxy** — never hit LinkedIn from the server IP. Use `LinkedInBrowser` (which configures the proxy automatically) or manually pass the proxy. A request from a Helsinki server IP when the account normally browses from a US residential IP is a strong suspension signal.
+
+2. **One browser context at a time** — never open multiple simultaneous browser contexts for the same account. LinkedIn sees concurrent sessions from different IPs (or even the same IP) as credential sharing and may invalidate the cookie. Close each context before opening the next.
+
+3. **Reuse the account's persistent browser profile** — use `LinkedInBrowser.launch()` with the account's stored credentials, not raw Playwright. This preserves cookies, localStorage, and fingerprint consistency.
+
+4. **No rapid-fire page loads** — add delays (`asyncio.sleep(2-3)`) between navigations. Multiple pages loaded in <1 second looks like scraping.
+
+5. **Always close the browser** — use `try/finally` to ensure `browser.close()` is called. Abandoned browser processes hold the cookie and may cause conflicts with the BrowserPool.
+
+6. **Prefer `--dry-run`** — diagnostic scripts should default to read-only observation (screenshots, DOM inspection) and only perform actions (clicking Send, etc.) when explicitly opted in.
+
+7. **Never send bare HTTP requests with `li_at`** — always use a full browser context. LinkedIn treats bare cookie requests from non-browser user agents as stolen-cookie tests and invalidates the session.
+
+8. **Run diagnostics inside the container** — `docker exec linauto python3 /app/scripts/diag_connect.py`. This ensures the correct Python environment, access to browser profiles, and proper proxy routing.
+
 ## Overview
 Dripify alternative. Automates LinkedIn connection requests and follow-up messages with safety-first design (warmup ramps, cooldowns, rate limits, stealth browsing).
 
