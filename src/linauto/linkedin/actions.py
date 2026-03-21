@@ -405,6 +405,17 @@ class LinkedInActions:
         # Modal takes 2-3 seconds to appear (LinkedIn renders it asynchronously).
         await self.delay.micro_delay(1.5, 3.0)
 
+        # Secondary fallback: if the modal didn't open after hover+click (anchor
+        # click can be silently intercepted without raising an exception), retry
+        # with JS el.click() which bypasses pointer-event interception entirely.
+        modal_check = await self._try_locator(
+            self.page.locator('[role="dialog"]'), timeout_ms=500
+        )
+        if not modal_check:
+            logger.info("action.connect_modal_missing_retrying_js", url=profile_url)
+            await connect_btn.evaluate("el => el.click()")
+            await self.delay.micro_delay(2.0, 3.0)
+
         # 6. Handle the "Add a note to your invitation?" modal
         if message:
             add_note_btn = await self._find_element(selectors.ADD_NOTE_BUTTON, timeout_ms=3000)
