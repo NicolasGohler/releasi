@@ -29,6 +29,20 @@ interface LeadsTableProps {
 // Sentinel value meaning "all active (exclude removed)"
 const ALL_ACTIVE = "__all_active__";
 
+const ERROR_LABELS: Record<string, string> = {
+  email_required: "Email verification required — LinkedIn requires their email to connect",
+  send_button_disabled: "Send button was disabled by LinkedIn",
+  no_connect_button: "No Connect button found on profile",
+  pending_request: "Connection request already pending",
+  preload_navigation_failed: "Failed to load invitation page",
+  no_vanity_name: "Could not extract profile identifier",
+  weekly_invitation_limit: "Weekly invitation limit reached",
+};
+
+function formatErrorMessage(msg: string): string {
+  return ERROR_LABELS[msg] ?? msg.replace(/_/g, " ");
+}
+
 export function LeadsTable({ campaignId, timezone }: LeadsTableProps) {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
@@ -144,7 +158,7 @@ export function LeadsTable({ campaignId, timezone }: LeadsTableProps) {
                         <TooltipContent side="top" className="max-w-xs">
                           <p className="text-xs">
                             {lead.error_message
-                              ? lead.error_message
+                              ? formatErrorMessage(lead.error_message)
                               : `Scheduled for ${new Date(lead.scheduled_at! + "Z").toLocaleString(undefined, { timeZone: timezone ?? undefined, dateStyle: "medium", timeStyle: "short" })}`}
                           </p>
                         </TooltipContent>
