@@ -47,6 +47,7 @@ export interface Campaign {
   assigned_lists: { id: string; name: string; total_leads: number }[];
   account_status: string | null;
   account_paused_until: string | null;
+  account_timezone: string | null;
   created_at: string;
   updated_at: string;
 }

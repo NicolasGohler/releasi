@@ -3,9 +3,10 @@
 import type { ActionLog } from "@/lib/types";
 import { StatusBadge } from "@/components/status-badge";
 
-function formatTime(iso: string) {
-  const d = new Date(iso);
+function formatTime(iso: string, tz?: string | null) {
+  const d = new Date(iso.endsWith("Z") ? iso : iso + "Z");
   return d.toLocaleString("en-US", {
+    timeZone: tz ?? undefined,
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -19,7 +20,7 @@ function formatActionType(type: string) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-export function ActivityTimeline({ logs }: { logs: ActionLog[] }) {
+export function ActivityTimeline({ logs, timezone }: { logs: ActionLog[]; timezone?: string | null }) {
   if (logs.length === 0) {
     return (
       <p className="text-sm text-muted-foreground py-8 text-center">
@@ -47,7 +48,7 @@ export function ActivityTimeline({ logs }: { logs: ActionLog[] }) {
             )}
           </div>
           <span className="text-xs text-muted-foreground whitespace-nowrap">
-            {formatTime(log.created_at)}
+            {formatTime(log.created_at, timezone)}
           </span>
         </div>
       ))}

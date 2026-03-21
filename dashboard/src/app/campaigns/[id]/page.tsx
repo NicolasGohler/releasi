@@ -233,7 +233,8 @@ export default function CampaignDetailPage({
           <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3">
             <p className="text-sm text-amber-400">
               Account <span className="font-medium">{account.name}</span> is paused due to weekly limit — resumes{" "}
-              {new Date(account.paused_until).toLocaleString(undefined, {
+              {new Date(account.paused_until.endsWith("Z") ? account.paused_until : account.paused_until + "Z").toLocaleString(undefined, {
+                timeZone: account.timezone ?? undefined,
                 weekday: "short",
                 month: "short",
                 day: "numeric",
@@ -514,7 +515,7 @@ export default function CampaignDetailPage({
           </TabsContent>
 
           <TabsContent value="activity" className="mt-4">
-            <ActivityTimeline logs={campaignActivity} />
+            <ActivityTimeline logs={campaignActivity} timezone={account?.timezone} />
           </TabsContent>
         </Tabs>
       </div>

@@ -94,7 +94,7 @@ export default function LeadListsPage() {
                     <span>{ll.campaign_count} campaigns</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Created {new Date(ll.created_at).toLocaleDateString()}
+                    Created {new Date(ll.created_at.endsWith("Z") ? ll.created_at : ll.created_at + "Z").toLocaleDateString()}
                   </p>
                   <Button
                     size="sm"

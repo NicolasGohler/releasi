@@ -77,6 +77,7 @@ class CampaignOut(BaseModel):
     assigned_lists: List[Dict[str, Any]] = []
     account_status: Optional[str] = None
     account_paused_until: Optional[datetime] = None
+    account_timezone: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

@@ -156,7 +156,7 @@ export function LeadsTable({ campaignId, timezone }: LeadsTableProps) {
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
                   {lead.connection_requested_at
-                    ? new Date(lead.connection_requested_at).toLocaleDateString()
+                    ? new Date(lead.connection_requested_at.endsWith("Z") ? lead.connection_requested_at : lead.connection_requested_at + "Z").toLocaleDateString(undefined, { timeZone: timezone ?? undefined })
                     : "—"}
                 </TableCell>
               </TableRow>

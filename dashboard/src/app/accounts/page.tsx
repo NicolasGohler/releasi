@@ -133,7 +133,7 @@ export default function AccountsPage() {
                   </div>
                   {a.paused_until && (
                     <p className="text-xs text-amber-400">
-                      Paused until {new Date(a.paused_until).toLocaleString()}
+                      Paused until {new Date(a.paused_until.endsWith("Z") ? a.paused_until : a.paused_until + "Z").toLocaleString(undefined, { timeZone: a.timezone ?? undefined })}
                     </p>
                   )}
                 </CardContent>

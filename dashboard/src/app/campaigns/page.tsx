@@ -102,7 +102,8 @@ export default function CampaignsPage() {
                     ) : c.account_paused_until && new Date(c.account_paused_until) > new Date() ? (
                       <p className="text-xs text-amber-400">
                         Paused — resumes{" "}
-                        {new Date(c.account_paused_until).toLocaleString(undefined, {
+                        {new Date(c.account_paused_until.endsWith("Z") ? c.account_paused_until : c.account_paused_until + "Z").toLocaleString(undefined, {
+                          timeZone: c.account_timezone ?? undefined,
                           weekday: "short",
                           month: "short",
                           day: "numeric",
