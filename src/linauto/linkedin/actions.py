@@ -164,6 +164,47 @@ class LinkedInActions:
         except Exception as e:
             logger.warning("debug.dump_failed", error=str(e))
 
+    # ── Vanity name extraction ─────────────────────────────────────────────
+
+    async def _extract_vanity_name(self, connect_btn, profile_url: str) -> Optional[str]:
+        """Extract the vanity name for the preload custom-invite URL.
+
+        Tries in order:
+          1. The Connect anchor's href (/preload/custom-invite/?vanityName=...)
+          2. The current page URL (/in/<vanity>/)
+        """
+        # Try anchor href first (most reliable)
+        try:
+            href = await connect_btn.get_attribute("href")
+            if href and "vanityName=" in href:
+                from urllib.parse import urlparse, parse_qs
+                qs = parse_qs(urlparse(href).query)
+                vanity = qs.get("vanityName", [None])[0]
+                if vanity:
+                    logger.info("action.vanity_from_anchor", vanity=vanity)
+                    return vanity
+        except Exception:
+            pass
+
+        # Fallback: extract from profile URL
+        url = self.page.url
+        # Handle both /in/name/ and /in/name
+        if "/in/" in url:
+            parts = url.split("/in/")[1].rstrip("/").split("?")[0].split("#")[0]
+            if parts:
+                logger.info("action.vanity_from_url", vanity=parts)
+                return parts
+
+        # Also try the original profile_url argument
+        if "/in/" in profile_url:
+            parts = profile_url.split("/in/")[1].rstrip("/").split("?")[0].split("#")[0]
+            if parts:
+                logger.info("action.vanity_from_original_url", vanity=parts)
+                return parts
+
+        logger.error("action.vanity_extraction_failed", url=profile_url)
+        return None
+
     # ── Connect button finding: the critical path ─────────────────────────
 
     async def _find_connect_button(self, profile_url: str):
@@ -380,7 +421,7 @@ class LinkedInActions:
         if pending:
             return ActionResult(ActionStatus.SKIPPED, reason="pending_request")
 
-        # 4. Find Connect button (multi-strategy)
+        # 4. Find Connect button/anchor to confirm profile is connectable
         connect_btn = await self._find_connect_button(profile_url)
         if not connect_btn:
             # Use ERROR (not SKIPPED) so the lead re-enters retry logic tomorrow.
@@ -391,33 +432,33 @@ class LinkedInActions:
                 details={"url": profile_url},
             )
 
-        # 5. Click Connect
-        # Use scrollIntoView({block:'center'}) instead of scroll_into_view_if_needed()
-        # to keep the element away from the sticky nav bar (which covers the top
-        # ~60px of the viewport). Centering the element ensures Playwright's
-        # hover+click lands on the element, not the nav bar.
-        await connect_btn.evaluate("el => el.scrollIntoView({block: 'center', inline: 'nearest'})")
-        await self.delay.micro_delay(0.3, 0.6)
+        # 5. Navigate to the preload custom-invite page instead of clicking the
+        #    Connect anchor directly. The anchor click relies on LinkedIn's SPA
+        #    router to open a modal, which fails when stylesheets are blocked
+        #    (resource blocking). Navigating to the preload URL directly gives us
+        #    a full page with the Send button, which works reliably.
+        vanity_name = await self._extract_vanity_name(connect_btn, profile_url)
+        if not vanity_name:
+            return ActionResult(
+                ActionStatus.ERROR,
+                reason="no_vanity_name",
+                details={"url": profile_url},
+            )
+
+        preload_url = f"https://www.linkedin.com/preload/custom-invite/?vanityName={vanity_name}"
+        logger.info("action.navigating_to_preload", url=preload_url)
         try:
-            await self._hover_and_click(connect_btn)
-        except Exception:
-            logger.info("action.connect_click_intercepted_using_js", url=profile_url)
-            await connect_btn.evaluate("el => el.click()")
-        # Modal takes 2-3 seconds to appear (LinkedIn renders it asynchronously).
+            await self.page.goto(preload_url, wait_until="domcontentloaded", timeout=15000)
+        except Exception as e:
+            logger.error("action.preload_navigation_failed", url=preload_url, error=str(e))
+            return ActionResult(
+                ActionStatus.ERROR,
+                reason="preload_navigation_failed",
+                details={"url": profile_url},
+            )
         await self.delay.micro_delay(1.5, 3.0)
 
-        # Secondary fallback: if the modal didn't open (hover+click can be silently
-        # swallowed by the nav bar even after centering), retry with JS el.click()
-        # which bypasses pointer-event interception entirely.
-        modal_check = await self._try_locator(
-            self.page.locator('[role="dialog"]'), timeout_ms=500
-        )
-        if not modal_check:
-            logger.info("action.connect_modal_missing_retrying_js", url=profile_url)
-            await connect_btn.evaluate("el => el.click()")
-            await self.delay.micro_delay(2.0, 3.0)
-
-        # 6. Handle the "Add a note to your invitation?" modal
+        # 6. Handle the custom-invite page
         if message:
             add_note_btn = await self._find_element(selectors.ADD_NOTE_BUTTON, timeout_ms=3000)
             if add_note_btn:
@@ -444,9 +485,8 @@ class LinkedInActions:
             if not send_btn:
                 send_btn = await self._find_element(selectors.SEND_INVITATION_BUTTON, timeout_ms=3000)
             if not send_btn:
-                # Role-based fallback: look for Send button in the modal dialog
                 send_btn = await self._try_locator(
-                    self.page.locator('[role="dialog"]').get_by_role("button", name=re.compile(r"Send", re.IGNORECASE)),
+                    self.page.get_by_role("button", name=re.compile(r"Send", re.IGNORECASE)),
                     timeout_ms=2000,
                 )
 

@@ -29,7 +29,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
-import { fetchAccountActivity } from "@/lib/api";
+import { fetchAccountActivity, replanAccount } from "@/lib/api";
 
 export default function CampaignDetailPage({
   params,
@@ -133,7 +133,14 @@ export default function CampaignDetailPage({
       return;
     }
     updateCampaign.mutate(data, {
-      onSuccess: () => toast.success("Campaign settings saved"),
+      onSuccess: () => {
+        toast.success("Campaign settings saved");
+        if (campaign?.account_id) {
+          replanAccount(campaign.account_id).then(() =>
+            toast.success("Schedule regenerated (1 lead queued immediately)")
+          ).catch(() => {});
+        }
+      },
       onError: (err) => toast.error(err.message),
     });
   }
