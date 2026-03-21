@@ -414,6 +414,7 @@ async def replan_account(
 
         # Schedule only future slots from today's plan.
         today_scheduled = 0
+        first_lead_id = None  # track for immediate dispatch
         for slot in plan:
             if slot.slot_type == SlotType.CONNECTION_REQUEST and slot.lead_id:
                 if slot.scheduled_at <= now:
@@ -421,6 +422,8 @@ async def replan_account(
                 await repo.update_lead_schedule(slot.lead_id, slot.scheduled_at, LeadStatus.SCHEDULED)
                 total_scheduled += 1
                 today_scheduled += 1
+                if first_lead_id is None:
+                    first_lead_id = slot.lead_id
 
         if today_scheduled == 0:
             # It's too late in the day for any connection slots — schedule for
@@ -438,6 +441,14 @@ async def replan_account(
                 if slot.slot_type == SlotType.CONNECTION_REQUEST and slot.lead_id:
                     await repo.update_lead_schedule(slot.lead_id, slot.scheduled_at, LeadStatus.SCHEDULED)
                     total_scheduled += 1
+                    if first_lead_id is None:
+                        first_lead_id = slot.lead_id
+
+        # Always queue one lead immediately so the next dispatcher cycle (≤5 min)
+        # fires a real request, letting you spot issues fast after a settings change.
+        if first_lead_id:
+            immediate_time = now + _timedelta(seconds=30)
+            await repo.update_lead_schedule(first_lead_id, immediate_time, LeadStatus.SCHEDULED)
 
     return {"ok": True, "scheduled": total_scheduled}
 

@@ -392,11 +392,12 @@ class LinkedInActions:
             )
 
         # 5. Click Connect
-        # Scroll into view first to avoid sticky nav bar interception, then
-        # hover+click. If pointer events are intercepted (nav bar overlay),
-        # fall back to JS click — same pattern as the More dropdown button.
-        await connect_btn.scroll_into_view_if_needed()
-        await self.delay.micro_delay(0.2, 0.5)
+        # Use scrollIntoView({block:'center'}) instead of scroll_into_view_if_needed()
+        # to keep the element away from the sticky nav bar (which covers the top
+        # ~60px of the viewport). Centering the element ensures Playwright's
+        # hover+click lands on the element, not the nav bar.
+        await connect_btn.evaluate("el => el.scrollIntoView({block: 'center', inline: 'nearest'})")
+        await self.delay.micro_delay(0.3, 0.6)
         try:
             await self._hover_and_click(connect_btn)
         except Exception:
@@ -405,9 +406,9 @@ class LinkedInActions:
         # Modal takes 2-3 seconds to appear (LinkedIn renders it asynchronously).
         await self.delay.micro_delay(1.5, 3.0)
 
-        # Secondary fallback: if the modal didn't open after hover+click (anchor
-        # click can be silently intercepted without raising an exception), retry
-        # with JS el.click() which bypasses pointer-event interception entirely.
+        # Secondary fallback: if the modal didn't open (hover+click can be silently
+        # swallowed by the nav bar even after centering), retry with JS el.click()
+        # which bypasses pointer-event interception entirely.
         modal_check = await self._try_locator(
             self.page.locator('[role="dialog"]'), timeout_ms=500
         )
