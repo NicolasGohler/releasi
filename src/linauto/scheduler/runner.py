@@ -474,7 +474,7 @@ async def dispatch():
                     if stop_account:
                         break
             finally:
-                pool.release(account.id)
+                await pool.release_idle(account.id)
 
     except Exception as e:
         logger.error("dispatch.failed", error=str(e))
@@ -789,7 +789,7 @@ async def check_acceptances():
                             logger.error("followup.immediate_failed", url=lead.linkedin_url, error=str(e))
 
             finally:
-                pool.release(account.id)
+                await pool.release_idle(account.id)
 
     except Exception as e:
         logger.error("acceptance.check_failed", error=str(e))
@@ -903,7 +903,7 @@ async def dispatch_followups():
                         if fu_result.get("fatal"):
                             break
             finally:
-                pool.release(account.id)
+                await pool.release_idle(account.id)
 
     except Exception as e:
         logger.error("followup_dispatch.failed", error=str(e))
@@ -1058,7 +1058,7 @@ async def keep_alive():
                 finally:
                     await page.close()
             finally:
-                pool.release(account.id)
+                await pool.release_idle(account.id)
 
     except Exception as e:
         logger.error("keepalive.failed", error=str(e))

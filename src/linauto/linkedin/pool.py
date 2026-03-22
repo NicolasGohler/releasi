@@ -117,6 +117,24 @@ class BrowserPool:
         logger.debug("pool.acquired", account=account.name)
         return slot.context
 
+    async def release_idle(self, account_id: str) -> None:
+        """Navigate to about:blank to stop background JS, then release slot.
+
+        LinkedIn's JavaScript makes continuous background requests (notification
+        polling, WebSocket, feed updates) even when idle.  Navigating to
+        about:blank before releasing stops all network activity and saves
+        proxy bandwidth (~1-2 GB/day for a persistent context).
+        """
+        slot = self._slots.get(account_id)
+        if slot and slot.context:
+            try:
+                pages = slot.context.pages
+                if pages:
+                    await pages[0].goto("about:blank", timeout=5000)
+            except Exception:
+                pass  # Best-effort; don't block release
+        self.release(account_id)
+
     def release(self, account_id: str) -> None:
         """Mark a slot as no longer in use and release the per-slot lock."""
         slot = self._slots.get(account_id)
