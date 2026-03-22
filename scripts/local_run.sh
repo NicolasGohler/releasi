@@ -18,6 +18,7 @@ LOCAL_BROWSER_DATA="data/browser_data"
 PID_FILE=".local_run.pid"
 CONTAINER="linauto"
 ACCOUNT_ID="REDACTED"  # Nicolas Goehler
+PROXY_COUNTRY="ca"  # Restore this after local run
 
 sync_from_server() {
     echo "==> Stopping server container..."
@@ -49,10 +50,10 @@ sync_to_server() {
     python3 -c "
 import sqlite3
 c = sqlite3.connect('$LOCAL_DB')
-c.execute(\"UPDATE accounts SET proxy_country = 'us' WHERE id = '$ACCOUNT_ID'\")
+c.execute(\"UPDATE accounts SET proxy_country = '$PROXY_COUNTRY' WHERE id = '$ACCOUNT_ID'\")
 c.commit()
 c.close()
-print('  proxy_country restored to us')
+print('  proxy_country restored to $PROXY_COUNTRY')
 "
     echo "==> Copying DB back to server..."
     scp "$LOCAL_DB" "$SERVER:$REMOTE_DB"
