@@ -647,6 +647,66 @@ def execute_once(
 
 # ── Scheduler daemon ──────────────────────────────────────────────────────
 
+@app.command("local-login")
+def local_login(
+    account_name: str = typer.Option(..., "--account", "-a", help="Account name (e.g., 'Nicolas Goehler')"),
+):
+    """
+    Open a headed browser window to log in to LinkedIn locally.
+
+    Launches a visible Chromium window — log in normally, then the session
+    is saved automatically. Use this instead of manually pasting cookies.
+    Run this before starting the local scheduler.
+    """
+    async def _local_login():
+        from linauto.linkedin.local_login import LocalLoginSession
+        from sqlalchemy import select as sa_select
+
+        repo, session = await _get_repo()
+        try:
+            from linauto.db.models import Account
+            result = await session.execute(
+                sa_select(Account).where(Account.name == account_name)
+            )
+            account = result.scalar_one_or_none()
+            if not account:
+                console.print(f"[red]Account '{account_name}' not found.[/red]")
+                raise typer.Exit(1)
+
+            console.print(f"\n[bold]Opening browser for:[/bold] {account.name}")
+            console.print("[dim]A Chromium window will open — log in to LinkedIn normally.[/dim]")
+            console.print("[dim]This window will close automatically once login is detected.[/dim]\n")
+
+            login = LocalLoginSession()
+            result_data = await login.run(
+                account_id=account.id,
+                account_name=account.name,
+                proxy_country=account.proxy_country,
+            )
+
+            if result_data["error"] == "timeout":
+                console.print("[red]✗ Timed out waiting for login (10 minutes). Try again.[/red]")
+                raise typer.Exit(1)
+
+            if not result_data["li_at"]:
+                console.print("[red]✗ Login not detected — no li_at cookie found.[/red]")
+                raise typer.Exit(1)
+
+            # Save cookie + mark account active
+            await repo.update_account(account, li_at_cookie=result_data["li_at"], status="active")
+            await session.commit()
+
+            console.print("[green]✓ Login successful![/green]")
+            console.print(f"[green]✓ Session saved to:[/green] {result_data['profile_dir']}")
+            console.print(f"[green]✓ Cookie updated in DB[/green]")
+            console.print("\n[bold]You can now run:[/bold] ./scripts/local_run.sh start")
+
+        finally:
+            await _cleanup(session)
+
+    _run(_local_login())
+
+
 @app.command("run")
 def run():
     """Start the scheduler daemon (runs unattended until interrupted)."""
