@@ -22,7 +22,7 @@ PROXY_COUNTRY="ca"  # Restore this after local run
 
 sync_from_server() {
     echo "==> Stopping server container..."
-    ssh "$SERVER" "docker stop $CONTAINER 2>/dev/null || true"
+    ssh "$SERVER" "docker stop $CONTAINER 2>/dev/null || true; docker rm $CONTAINER 2>/dev/null || true"
 
     echo "==> Copying DB from server..."
     mkdir -p data
@@ -63,7 +63,19 @@ print('  proxy_country restored to $PROXY_COUNTRY')
         "$SERVER:$REMOTE_BROWSER_DATA/$ACCOUNT_ID/"
 
     echo "==> Starting server container..."
-    ssh "$SERVER" "docker start $CONTAINER"
+    # Use docker run if container was removed, docker start if it still exists
+    ssh "$SERVER" "docker start $CONTAINER 2>/dev/null || \
+        (cd /root/linauto && docker run -d --name $CONTAINER --restart unless-stopped \
+        -v /root/linauto/data:/app/data \
+        -v /root/linauto/config/settings.yaml:/app/config/settings.yaml:ro \
+        -v /root/linauto/src:/app/src \
+        -p 8000:8000 -p 6080:6080 \
+        -e LINAUTO_API_ENABLED=true \
+        -e LINAUTO_API_KEY=REDACTED \
+        -e 'LINAUTO_CORS_ORIGINS=[\"*\"]' \
+        -e LINAUTO_LOG_LEVEL=INFO -e TZ=Europe/Berlin \
+        --memory=3g --cpus=1.5 \
+        linauto_linauto:latest)"
     echo "==> Done. Server is running with updated DB."
 }
 
