@@ -402,11 +402,31 @@ class LinkedInActions:
             if skip_reason:
                 return ActionResult(ActionStatus.SKIPPED, reason=skip_reason)
 
-        # 2. Check if already connected
-        already_connected = await self._find_element(
-            selectors.ALREADY_CONNECTED_INDICATORS, timeout_ms=2000
-        )
-        if already_connected:
+        # 2. Check if already connected.
+        #
+        # Primary: JS scan of all short text nodes in <main> for "1st" — immune
+        # to obfuscated class names, Unicode bullet variants, and split elements.
+        # Secondary: CSS selectors as fallback (faster when they do match).
+        is_first_degree = await self.page.evaluate("""() => {
+            const main = document.querySelector('main');
+            if (!main) return false;
+            const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT);
+            let node;
+            while ((node = walker.nextNode())) {
+                const t = node.textContent.trim();
+                // Match short strings like "· 1st", "• 1st", "1st" near separators
+                if (t.length < 15 && /1st/.test(t)) return true;
+            }
+            return false;
+        }""")
+        if not is_first_degree:
+            css_match = await self._find_element(
+                selectors.ALREADY_CONNECTED_INDICATORS, timeout_ms=1000
+            )
+            if css_match:
+                is_first_degree = True
+        if is_first_degree:
+            logger.info("action.already_connected_1st_degree", url=profile_url)
             return ActionResult(ActionStatus.SKIPPED, reason="already_connected")
 
         # 3. Check if request is pending (try both CSS and role-based)
@@ -424,21 +444,32 @@ class LinkedInActions:
         # 4. Find Connect button/anchor to confirm profile is connectable
         connect_btn = await self._find_connect_button(profile_url)
         if not connect_btn:
-            # Before giving up, check for a Message button — a profile showing
-            # Message as the primary action with no Connect means we're already
-            # connected. The "· 1st" indicator at step 2 should catch this, but
-            # LinkedIn occasionally renders the degree text differently; this is
-            # a reliable fallback that doesn't depend on text matching.
-            message_btn = await self._try_locator(
-                self.page.locator("main").get_by_role("link", name="Message"),
+            # Last-resort already-connected check: Message present + Follow absent
+            # + Connect absent → 1st-degree connection.
+            #
+            # Why all three conditions matter:
+            #   - Creator profiles show Follow + Message (not connected)
+            #   - Open profiles may show Message without Follow (but JS step 2
+            #     should have caught genuine 1st-degree already)
+            #   - Only 1st-degree shows Message with no Follow and no Connect
+            #
+            # This is deliberately conservative — if Follow is present we fall
+            # through to ERROR so the lead retries tomorrow rather than being
+            # permanently marked connected incorrectly.
+            has_message = await self._try_locator(
+                self.page.locator("main").get_by_role("button", name=re.compile(r"^Message$", re.IGNORECASE)),
                 timeout_ms=1500,
             )
-            if not message_btn:
-                message_btn = await self._find_element(
-                    selectors.MESSAGE_BUTTON, timeout_ms=1500
-                )
-            if message_btn:
-                logger.info("action.already_connected_via_message_btn", url=profile_url)
+            if not has_message:
+                has_message = await self._find_element(selectors.MESSAGE_BUTTON, timeout_ms=1000)
+
+            has_follow = await self._try_locator(
+                self.page.locator("main").get_by_role("button", name=re.compile(r"^Follow$", re.IGNORECASE)),
+                timeout_ms=500,
+            )
+
+            if has_message and not has_follow:
+                logger.info("action.already_connected_msg_no_follow", url=profile_url)
                 return ActionResult(ActionStatus.SKIPPED, reason="already_connected")
 
             # Use ERROR (not SKIPPED) so the lead re-enters retry logic tomorrow.
