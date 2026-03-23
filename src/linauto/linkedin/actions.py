@@ -424,6 +424,23 @@ class LinkedInActions:
         # 4. Find Connect button/anchor to confirm profile is connectable
         connect_btn = await self._find_connect_button(profile_url)
         if not connect_btn:
+            # Before giving up, check for a Message button — a profile showing
+            # Message as the primary action with no Connect means we're already
+            # connected. The "· 1st" indicator at step 2 should catch this, but
+            # LinkedIn occasionally renders the degree text differently; this is
+            # a reliable fallback that doesn't depend on text matching.
+            message_btn = await self._try_locator(
+                self.page.locator("main").get_by_role("link", name="Message"),
+                timeout_ms=1500,
+            )
+            if not message_btn:
+                message_btn = await self._find_element(
+                    selectors.MESSAGE_BUTTON, timeout_ms=1500
+                )
+            if message_btn:
+                logger.info("action.already_connected_via_message_btn", url=profile_url)
+                return ActionResult(ActionStatus.SKIPPED, reason="already_connected")
+
             # Use ERROR (not SKIPPED) so the lead re-enters retry logic tomorrow.
             # SKIPPED is permanent; a missing button is often a transient DOM issue.
             return ActionResult(
