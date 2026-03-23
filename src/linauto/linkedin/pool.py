@@ -12,7 +12,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
-import httpx
 import structlog
 from playwright.async_api import BrowserContext
 
@@ -188,37 +187,11 @@ class BrowserPool:
     async def _create_slot(self, account: Account) -> PoolSlot:
         """Launch a new browser and register it as a pool slot.
 
-        Performs a fast HTTP pre-check before launching Chromium — if the
-        cookie is already expired we fail immediately (~1s) instead of
-        spending 15+ seconds inside validate_session().
+        No HTTP pre-check — check_cookie_health() already validates at
+        scheduler startup (routed through the account's proxy).  A bare
+        httpx request from the server IP is a session-invalidation trigger
+        and must never be sent.
         """
-        # Fast HTTP pre-check: no proxy, no browser, ~1-2s
-        if account.li_at_cookie:
-            try:
-                login_patterns = ["/login", "/uas/login", "/signup", "/checkpoint/"]
-                headers = {
-                    "Cookie": f"li_at={account.li_at_cookie}",
-                    "User-Agent": account.user_agent or "Mozilla/5.0",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                }
-                async with httpx.AsyncClient(
-                    headers=headers,
-                    follow_redirects=True,
-                    timeout=5.0,
-                ) as client:
-                    resp = await client.get("https://www.linkedin.com/feed/")
-                final_url = str(resp.url)
-                if any(p in final_url for p in login_patterns):
-                    raise RuntimeError(
-                        f"Session invalid (redirected to login) for account {account.name}"
-                    )
-                logger.debug("pool.http_precheck_passed", account=account.name)
-            except RuntimeError:
-                raise
-            except Exception as e:
-                # Network error / timeout — proceed with browser launch anyway
-                logger.warning("pool.http_precheck_error", account=account.name, error=str(e))
-
         browser = LinkedInBrowser(pool_managed=True)
         context = await browser.launch(
             account_id=account.id,
@@ -228,8 +201,7 @@ class BrowserPool:
             proxy_country=account.proxy_country,
             timezone=account.timezone,
         )
-        # Skip validate_session() — the HTTP pre-check already confirmed the
-        # cookie is valid. validate_session() navigates to linkedin.com/feed
+        # validate_session() is skipped — check_cookie_health() already ran.
         # which is slow (15s) and breaks when the proxy blocks LinkedIn.
 
         slot = PoolSlot(
