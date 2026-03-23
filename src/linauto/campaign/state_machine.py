@@ -15,6 +15,7 @@ VALID_TRANSITIONS = {
         LeadStatus.SKIPPED,
         LeadStatus.ERROR,
         LeadStatus.REMOVED,
+        LeadStatus.CONNECTED,  # Already a 1st-degree connection — skip the request step
     ],
     LeadStatus.SCHEDULED: [
         LeadStatus.CONNECTION_REQUESTED,
@@ -22,6 +23,7 @@ VALID_TRANSITIONS = {
         LeadStatus.ERROR,
         LeadStatus.LIMIT_PAUSED,
         LeadStatus.REMOVED,
+        LeadStatus.CONNECTED,  # Already a 1st-degree connection — skip the request step
     ],
     LeadStatus.CONNECTION_REQUESTED: [
         LeadStatus.CONNECTED,

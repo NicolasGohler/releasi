@@ -105,6 +105,11 @@ CAPTCHA_INDICATORS = [
 # ── Connection status on profile ──────────────────────────────────────────
 
 ALREADY_CONNECTED_INDICATORS = [
+    # New LinkedIn layout (2025+): degree shown as plain text "· 1st" or "• 1st"
+    # inside the profile header. Classes are obfuscated hashes — match by text only.
+    'main :text("· 1st")',
+    'main :text("• 1st")',
+    # Legacy selectors (kept as fallback)
     '.distance-badge:has-text("1st")',
     'span.dist-value:has-text("1st")',
     'span:has-text("1st degree connection")',

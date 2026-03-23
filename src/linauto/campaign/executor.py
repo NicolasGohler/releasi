@@ -153,10 +153,28 @@ class CampaignExecutor:
                 )
 
             elif action_result.status == ActionStatus.SKIPPED:
-                validate_transition(lead.status, LeadStatus.SKIPPED)
-                await self.repo.update_lead(
-                    lead, status=LeadStatus.SKIPPED, error_message=action_result.reason
-                )
+                if action_result.reason == "already_connected":
+                    # Already a 1st-degree connection — mark CONNECTED, not SKIPPED.
+                    # Don't count as a new send; just update the DB to reflect reality.
+                    validate_transition(lead.status, LeadStatus.CONNECTED)
+                    await self.repo.update_lead(
+                        lead,
+                        status=LeadStatus.CONNECTED,
+                        connection_accepted_at=datetime.utcnow(),
+                    )
+                    await self.repo.log_action(
+                        account_id=account.id,
+                        campaign_id=campaign.id,
+                        lead_id=lead.id,
+                        action_type=ActionType.CONNECTION_REQUEST,
+                        status=ActionLogStatus.SUCCESS,
+                        details={"reason": "already_connected"},
+                    )
+                else:
+                    validate_transition(lead.status, LeadStatus.SKIPPED)
+                    await self.repo.update_lead(
+                        lead, status=LeadStatus.SKIPPED, error_message=action_result.reason
+                    )
                 result["skipped"] = True
 
             else:  # ERROR
