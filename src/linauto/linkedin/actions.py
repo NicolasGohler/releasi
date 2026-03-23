@@ -432,33 +432,39 @@ class LinkedInActions:
                 details={"url": profile_url},
             )
 
-        # 5. Navigate to the preload custom-invite page instead of clicking the
-        #    Connect anchor directly. The anchor click relies on LinkedIn's SPA
-        #    router to open a modal, which fails when stylesheets are blocked
-        #    (resource blocking). Navigating to the preload URL directly gives us
-        #    a full page with the Send button, which works reliably.
-        vanity_name = await self._extract_vanity_name(connect_btn, profile_url)
-        if not vanity_name:
-            return ActionResult(
-                ActionStatus.ERROR,
-                reason="no_vanity_name",
-                details={"url": profile_url},
-            )
+        # 5. Click Connect.
+        #
+        # The Connect button is now an <a> with href="/preload/custom-invite/?vanityName=..."
+        # We MUST NOT navigate to that URL directly — LinkedIn redirects it to /login
+        # unless the full SPA session state is present (CSRF tokens, etc.), causing
+        # ERR_TOO_MANY_REDIRECTS which corrupts the browser context for the rest of the cycle.
+        #
+        # Instead: neutralize the href on anchor elements so the browser cannot navigate
+        # even if LinkedIn's JS doesn't call e.preventDefault(), then fire el.click().
+        # LinkedIn's click handler opens the invite modal overlay on the current page.
+        await connect_btn.scroll_into_view_if_needed()
+        await self.delay.micro_delay(0.3, 0.7)
+        await connect_btn.evaluate("""el => {
+            if (el.tagName === 'A') { el.setAttribute('href', 'javascript:void(0)'); }
+            el.click();
+        }""")
+        logger.info("action.connect_clicked", url=profile_url)
+        # Modal renders asynchronously — wait for it
+        await self.delay.micro_delay(2.0, 3.5)
 
-        preload_url = f"https://www.linkedin.com/preload/custom-invite/?vanityName={vanity_name}"
-        logger.info("action.navigating_to_preload", url=preload_url)
-        try:
-            await self.page.goto(preload_url, wait_until="domcontentloaded", timeout=15000)
-        except Exception as e:
-            logger.error("action.preload_navigation_failed", url=preload_url, error=str(e))
-            return ActionResult(
-                ActionStatus.ERROR,
-                reason="preload_navigation_failed",
-                details={"url": profile_url},
-            )
-        await self.delay.micro_delay(1.5, 3.0)
+        # If modal not visible yet, retry once with a dispatched MouseEvent
+        # (different low-level path from el.click(), catches edge cases)
+        dialog_check = await self._try_locator(
+            self.page.locator('[role="dialog"]'), timeout_ms=1000
+        )
+        if not dialog_check:
+            logger.info("action.connect_modal_retry", url=profile_url)
+            await connect_btn.evaluate("""el => {
+                el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+            }""")
+            await self.delay.micro_delay(2.0, 3.0)
 
-        # 6. Handle the custom-invite page
+        # 6. Handle the invite modal
         if message:
             add_note_btn = await self._find_element(selectors.ADD_NOTE_BUTTON, timeout_ms=3000)
             if add_note_btn:
