@@ -50,6 +50,7 @@ class LeadStatus(str, enum.Enum):
     FOLLOWUP_SENT = "followup_sent"
     COMPLETED = "completed"
     SKIPPED = "skipped"
+    INVALID = "invalid"
     ERROR = "error"
     LIMIT_PAUSED = "limit_paused"
     WITHDRAWN = "withdrawn"

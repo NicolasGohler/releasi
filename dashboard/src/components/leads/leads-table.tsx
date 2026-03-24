@@ -37,6 +37,7 @@ const ERROR_LABELS: Record<string, string> = {
   preload_navigation_failed: "Failed to load invitation page",
   no_vanity_name: "Could not extract profile identifier",
   weekly_invitation_limit: "Weekly invitation limit reached",
+  profile_not_found: "Profile no longer exists (deleted or URL changed)",
 };
 
 function formatErrorMessage(msg: string): string {
@@ -65,6 +66,7 @@ export function LeadsTable({ campaignId, timezone }: LeadsTableProps) {
     "connected",
     "error",
     "skipped",
+    "invalid",
     "removed",
   ];
 

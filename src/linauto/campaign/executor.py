@@ -152,6 +152,14 @@ class CampaignExecutor:
                     details={"reason": action_result.status.value},
                 )
 
+            elif action_result.status == ActionStatus.INVALID:
+                # Lead data is permanently bad (404, deleted profile) — never retry.
+                validate_transition(lead.status, LeadStatus.INVALID)
+                await self.repo.update_lead(
+                    lead, status=LeadStatus.INVALID, error_message=action_result.reason
+                )
+                result["skipped"] = True  # counts as skipped for dispatcher backfill
+
             elif action_result.status == ActionStatus.SKIPPED:
                 if action_result.reason == "already_connected":
                     # Already a 1st-degree connection — mark CONNECTED, not SKIPPED.

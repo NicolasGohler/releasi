@@ -26,6 +26,7 @@ SCREENSHOT_DIR = Path("data/debug_screenshots")
 class ActionStatus(str, enum.Enum):
     SUCCESS = "success"
     SKIPPED = "skipped"
+    INVALID = "invalid"   # Lead data is permanently bad (404, deleted profile)
     LIMIT_REACHED = "limit_reached"
     CAPTCHA = "captcha"
     SESSION_EXPIRED = "session_expired"
@@ -391,6 +392,22 @@ class LinkedInActions:
             return ActionResult(ActionStatus.ERROR, reason=f"Navigation failed: {nav.error}")
         if not nav.session_valid:
             return ActionResult(ActionStatus.SESSION_EXPIRED)
+
+        # 1.25 Check for LinkedIn 404 page.
+        # LinkedIn returns HTTP 200 for deleted/renamed profiles so navigation
+        # succeeds, but the page body shows "This page doesn't exist".
+        # These leads are permanently unactionable — mark INVALID, not ERROR.
+        page_title = await self.page.title()
+        if "Page Not Found" in page_title or "doesn't exist" in page_title.lower():
+            logger.info("action.profile_not_found", url=profile_url)
+            return ActionResult(ActionStatus.INVALID, reason="profile_not_found")
+        # Also check the body text for the 404 message (title varies by locale)
+        not_found_el = await self._try_locator(
+            self.page.locator("text=This page doesn't exist").first, timeout_ms=500
+        )
+        if not_found_el:
+            logger.info("action.profile_not_found", url=profile_url)
+            return ActionResult(ActionStatus.INVALID, reason="profile_not_found")
 
         # 1.5 Simulate reading the profile before connecting (human-like behaviour)
         try:

@@ -13,6 +13,7 @@ VALID_TRANSITIONS = {
     LeadStatus.PENDING: [
         LeadStatus.SCHEDULED,
         LeadStatus.SKIPPED,
+        LeadStatus.INVALID,
         LeadStatus.ERROR,
         LeadStatus.REMOVED,
         LeadStatus.CONNECTED,  # Already a 1st-degree connection — skip the request step
@@ -20,6 +21,7 @@ VALID_TRANSITIONS = {
     LeadStatus.SCHEDULED: [
         LeadStatus.CONNECTION_REQUESTED,
         LeadStatus.SKIPPED,
+        LeadStatus.INVALID,
         LeadStatus.ERROR,
         LeadStatus.LIMIT_PAUSED,
         LeadStatus.REMOVED,
@@ -49,6 +51,9 @@ VALID_TRANSITIONS = {
     ],
     LeadStatus.SKIPPED: [
         LeadStatus.REMOVED,
+    ],
+    LeadStatus.INVALID: [
+        LeadStatus.REMOVED,  # Only valid exit: manual removal
     ],
     LeadStatus.COMPLETED: [
         LeadStatus.REMOVED,
