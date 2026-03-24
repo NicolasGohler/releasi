@@ -44,14 +44,19 @@ CONNECT_BUTTON_MORE_DROPDOWN = [
 
 # Connect option inside the More dropdown menu
 CONNECT_IN_DROPDOWN = [
-    # Dropdown items use role="menuitem" or are inside artdeco-dropdown__content
-    '[role="menuitem"]:has-text("Connect")',
-    # LinkedIn sometimes uses role="button" instead of menuitem inside dropdowns
-    '.artdeco-dropdown__content [role="button"]:has-text("Connect")',
-    '.artdeco-dropdown__content li:has-text("Connect")',
-    '.artdeco-dropdown__content span:text-is("Connect")',
+    # Href-based: Connect anchor in dropdown now uses same preload URL as primary button.
+    # Most reliable — immune to text changes and class obfuscation.
+    '.artdeco-dropdown__content a[href*="custom-invite"]',
+    '.artdeco-dropdown__content a[href*="preload"]',
+    # aria-label case-insensitive (covers "Invite X to connect")
     '.artdeco-dropdown__content [aria-label*="connect" i]',
     '.artdeco-dropdown__content [data-control-name*="connect" i]',
+    # Text-based: ":has-text" is case-sensitive in Playwright, so match "onnect"
+    # to catch both "Connect" and "Invite X to connect" (lowercase c).
+    '[role="menuitem"]:has-text("onnect")',
+    '.artdeco-dropdown__content [role="button"]:has-text("onnect")',
+    '.artdeco-dropdown__content li:has-text("onnect")',
+    '.artdeco-dropdown__content span:text-is("Connect")',
 ]
 
 # ── Connection request modal ──────────────────────────────────────────────
@@ -117,7 +122,11 @@ ALREADY_CONNECTED_INDICATORS = [
 
 PENDING_CONNECTION_INDICATORS = [
     'button:has-text("Pending")',
-    'button[aria-label*="Pending"]',
+    'button[aria-label*="Pending" i]',
+    # LinkedIn sometimes wraps the Pending state in an anchor too
+    'a[aria-label*="pending" i]',
+    # Or as a span inside the profile actions area
+    '.pvs-profile-actions :has-text("Pending")',
 ]
 
 # ── Profile action buttons (used for page-load wait) ─────────────────────

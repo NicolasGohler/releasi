@@ -109,15 +109,18 @@ class LinkedInActions:
         return None
 
     async def _find_dropdown_item_by_js(self, text: str) -> Optional[Locator]:
-        """Find a dropdown menu item by visible text using JavaScript."""
+        """Find a dropdown menu item by visible text using JavaScript.
+        Uses case-insensitive substring match to handle variants like
+        'Connect' vs 'Invite X to connect'."""
         idx = await self.page.evaluate("""(text) => {
+            const lower = text.toLowerCase();
             const candidates = Array.from(document.querySelectorAll(
                 '[role="menuitem"], [role="button"], .artdeco-dropdown__item, li'
             ));
             return candidates.findIndex(el => {
                 const style = window.getComputedStyle(el);
                 if (style.display === 'none' || style.visibility === 'hidden') return false;
-                return el.innerText.trim() === text;
+                return el.innerText.trim().toLowerCase().includes(lower);
             });
         }""", text)
         if idx >= 0:
@@ -313,6 +316,11 @@ class LinkedInActions:
         except PlaywrightTimeout:
             pass  # dropdown may use a different container class — continue anyway
 
+        # Extra settle delay: dropdown items render lazily inside the container.
+        # Container becoming visible does not mean all items are in the DOM yet.
+        # 400ms covers the typical async render window without adding noticeable delay.
+        await asyncio.sleep(0.4)
+
         # Find Connect in the dropdown
         connect_btn = None
 
@@ -431,7 +439,7 @@ class LinkedInActions:
 
         # 3. Check if request is pending (try both CSS and role-based)
         pending = await self._find_element(
-            selectors.PENDING_CONNECTION_INDICATORS, timeout_ms=2000
+            selectors.PENDING_CONNECTION_INDICATORS, timeout_ms=3000
         )
         if not pending:
             pending = await self._try_locator(
