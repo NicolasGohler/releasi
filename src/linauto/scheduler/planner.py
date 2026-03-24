@@ -218,6 +218,12 @@ def _generate_session_slots(
             (count - 1) * intra_max for count in actions_distribution
         ]
 
+        # Front-load sessions into the first 65% of the work window so the
+        # remaining 35% acts as a buffer for backfilled leads (skips,
+        # already-connected profiles, etc.).
+        total_window = (work_end - work_start).total_seconds()
+        dispatch_cutoff = work_start + timedelta(seconds=total_window * 0.65)
+
         # Place sessions with inter-session gaps
         cursor = work_start
         session_starts = []
@@ -226,8 +232,8 @@ def _generate_session_slots(
             jitter = timedelta(seconds=rng.uniform(0, 300))  # 0-5 min jitter
             start = cursor + jitter
 
-            # Don't go past work_end
-            if start >= work_end:
+            # Don't go past the dispatch cutoff (front-load buffer)
+            if start >= dispatch_cutoff:
                 break
 
             session_starts.append(start)

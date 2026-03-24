@@ -3,9 +3,13 @@
 # local IP (no proxy). Syncs DB from/to the server before and after.
 #
 # Usage:
-#   ./scripts/local_run.sh start   # Sync DB from server, start scheduler
-#   ./scripts/local_run.sh stop    # Stop scheduler, sync DB back to server
-#   ./scripts/local_run.sh sync    # Just sync DB back to server (if you ctrl-C'd)
+#   linauto local-login --account "Nicolas Goehler"   # First time or after cookie expires
+#   ./scripts/local_run.sh start                       # Sync DB from server, start scheduler
+#   ./scripts/local_run.sh stop                        # Stop scheduler, sync DB back to server
+#   ./scripts/local_run.sh sync                        # Just sync DB back to server (if you ctrl-C'd)
+#
+# NOTE: Run local-login BEFORE start. The start script preserves your local
+# cookie even after syncing the DB from the server.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -24,14 +28,45 @@ sync_from_server() {
     echo "==> Stopping server container..."
     ssh "$SERVER" "docker stop $CONTAINER 2>/dev/null || true; docker rm $CONTAINER 2>/dev/null || true"
 
+    # Preserve local cookie before overwriting with server DB (e.g. after local-login)
+    LOCAL_COOKIE_FILE=$(mktemp)
+    python3 -c "
+import sqlite3, sys
+try:
+    c = sqlite3.connect('$LOCAL_DB')
+    row = c.execute(\"SELECT li_at_cookie, status FROM accounts WHERE id='$ACCOUNT_ID'\").fetchone()
+    print(row[0] if row and row[0] else '', end='')
+except: print('', end='')
+" > "$LOCAL_COOKIE_FILE" 2>/dev/null || true
+    SAVED_COOKIE=$(cat "$LOCAL_COOKIE_FILE")
+    rm -f "$LOCAL_COOKIE_FILE"
+
     echo "==> Copying DB from server..."
     mkdir -p data
     scp "$SERVER:$REMOTE_DB" "$LOCAL_DB"
 
-    echo "==> Syncing browser profile (rsync)..."
+    # Restore local cookie if local-login was run (i.e. local cookie differs from server's)
+    if [ -n "$SAVED_COOKIE" ]; then
+        python3 -c "
+import sqlite3
+c = sqlite3.connect('$LOCAL_DB')
+c.execute(\"UPDATE accounts SET li_at_cookie=?, status='ACTIVE' WHERE id='$ACCOUNT_ID'\", ('$SAVED_COOKIE',))
+c.commit()
+c.close()
+print('  Local cookie preserved (from local-login)')
+"
+    fi
+
+    # Only sync browser profile from server if no local profile exists yet.
+    # If local-login already created a profile, keep it — don't overwrite.
     mkdir -p "$LOCAL_BROWSER_DATA"
-    rsync -az "$SERVER:$REMOTE_BROWSER_DATA/$ACCOUNT_ID/" \
-        "$LOCAL_BROWSER_DATA/$ACCOUNT_ID/"
+    if [ ! -d "$LOCAL_BROWSER_DATA/$ACCOUNT_ID" ] || [ -z "$(ls -A "$LOCAL_BROWSER_DATA/$ACCOUNT_ID" 2>/dev/null)" ]; then
+        echo "==> Syncing browser profile from server..."
+        rsync -az "$SERVER:$REMOTE_BROWSER_DATA/$ACCOUNT_ID/" \
+            "$LOCAL_BROWSER_DATA/$ACCOUNT_ID/"
+    else
+        echo "==> Using existing local browser profile (from local-login)."
+    fi
 
     echo "==> Clearing proxy_country in local DB (use local IP)..."
     python3 -c "
