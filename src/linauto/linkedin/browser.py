@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import re
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -13,11 +15,45 @@ from linauto.linkedin.selectors import FEED_URL, LOGIN_URL_PATTERNS, NAV_AVATAR
 
 logger = structlog.get_logger()
 
-# User agents must match the actual Playwright Chromium binary version.
-# Playwright 1.58.0 ships Chrome 145 — mismatching causes navigator.userAgentData
-# to diverge from navigator.userAgent, which is a strong bot fingerprint.
-# To update: run `chromium --version` inside the container and set to that major version.
-_CHROMIUM_MAJOR = 145
+
+def _detect_chromium_major() -> int:
+    """
+    Auto-detect the major version of the Playwright Chromium binary.
+
+    Searches the ms-playwright cache for a chrome/chromium executable and
+    runs `--version` to get the real version. Falls back to 145 if detection
+    fails so the server default is preserved.
+
+    This ensures navigator.userAgent and navigator.userAgentData stay in sync
+    across environments (local Mac uses 140, server container uses 145).
+    """
+    search_dirs = [
+        Path.home() / ".cache" / "ms-playwright",          # Linux / server
+        Path.home() / "Library" / "Caches" / "ms-playwright",  # macOS
+    ]
+    candidates = []
+    for base in search_dirs:
+        if base.exists():
+            candidates += list(base.glob("chromium-*/chrome-linux64/chrome"))
+            candidates += list(base.glob("chromium-*/chrome-linux/chrome"))
+            candidates += list(base.glob("chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium"))
+    for binary in candidates:
+        try:
+            out = subprocess.check_output(
+                [str(binary), "--version"], stderr=subprocess.DEVNULL, timeout=5
+            ).decode()
+            m = re.search(r"(\d+)\.", out)
+            if m:
+                major = int(m.group(1))
+                logger.info("browser.chromium_version_detected", major=major, binary=str(binary))
+                return major
+        except Exception:
+            continue
+    logger.warning("browser.chromium_version_detection_failed", fallback=145)
+    return 145
+
+
+_CHROMIUM_MAJOR = _detect_chromium_major()
 _USER_AGENTS = [
     f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CHROMIUM_MAJOR}.0.0.0 Safari/537.36",
     f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CHROMIUM_MAJOR}.0.0.0 Safari/537.36",
