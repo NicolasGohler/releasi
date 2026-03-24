@@ -47,6 +47,27 @@ class LinkedInNavigator:
                 return False
         return True
 
+    async def _is_authwall_showing(self) -> bool:
+        """
+        Detect LinkedIn's authwall overlay (session expired without URL redirect).
+
+        LinkedIn sometimes renders the authwall on top of a profile URL instead of
+        redirecting to /login. The URL stays at linkedin.com/in/... so _check_session
+        passes, but the page body is actually the login/join wall.
+
+        Checks for distinctive authwall elements that are never present on a real
+        logged-in profile page.
+        """
+        try:
+            count = await self.page.locator(
+                'button.join-form__form-body-submit-button, '
+                '.authwall-join-form__form-toggle--bottom, '
+                'button.authwall-sign-in-form__form-toggle--bottom'
+            ).count()
+            return count > 0
+        except Exception:
+            return False
+
     async def _wait_for_profile_rendered(self, timeout_ms: int = 10000):
         """Wait until LinkedIn profile action buttons are visible (page fully rendered)."""
         from playwright.async_api import TimeoutError as PlaywrightTimeout
@@ -94,6 +115,15 @@ class LinkedInNavigator:
 
             # Wait for profile to be fully rendered by JS
             await self._wait_for_profile_rendered()
+
+            # Secondary session check: LinkedIn may overlay the authwall on the
+            # profile URL without redirecting (soft session expiry). The URL check
+            # above passes but the page body is a login wall.
+            if await self._is_authwall_showing():
+                logger.warning("navigator.authwall_overlay_detected", target=profile_url)
+                return NavigationResult(
+                    success=True, url=self.page.url, session_valid=False
+                )
 
             return NavigationResult(
                 success=True, url=self.page.url, session_valid=session_valid
