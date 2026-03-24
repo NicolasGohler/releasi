@@ -311,10 +311,11 @@ async def dispatch():
                     if not due_leads:
                         continue
 
-                    # Calculate target for this dispatch cycle
-                    target = len(due_leads)
-                    if remaining is not None:
-                        target = min(target, remaining)
+                    # Target = how many *successful* sends we want this cycle.
+                    # Use the remaining daily budget, not len(due_leads), so
+                    # skipped/errored leads don't silently reduce the day's total.
+                    # Backfills will keep the queue topped up until the target is met.
+                    target = remaining if remaining is not None else len(due_leads)
 
                     from linauto.campaign.executor import CampaignExecutor
                     executor = CampaignExecutor(repo, browser_context=pool_context)
@@ -323,8 +324,8 @@ async def dispatch():
                     attempts = 0
                     consecutive_session_errors = 0   # non-network failures → cookie suspect
                     consecutive_network_errors = 0   # timeouts/proxy → network suspect
-                    max_attempts = target * 3  # Safety cap: don't try more than 3x target
-                    lead_queue = list(due_leads[:target])
+                    max_attempts = target * 4  # Safety cap: allow skips+errors without loop
+                    lead_queue = list(due_leads)  # Start with all due leads; backfills extend
                     stop_account = False
 
                     while lead_queue and successful_sends < target and attempts < max_attempts:
@@ -390,10 +391,24 @@ async def dispatch():
                             consecutive_network_errors = 0
                             await repo.add_proxy_mb(account.id, 2.0)  # ~2 MB per connection request
                         elif result.get("skipped"):
-                            # Profile had no Connect button (already connected, restricted, etc.)
-                            # This is normal and should never count against session health.
+                            # Profile was skipped (already connected, email required, etc.).
+                            # Never counts against session health. Backfill with a pending
+                            # lead so the daily target can still be reached.
                             consecutive_session_errors = 0
                             consecutive_network_errors = 0
+                            _backfill = await repo.get_pending_leads(campaign.id, limit=1)
+                            if _backfill:
+                                _bl = _backfill[0]
+                                await repo.update_lead(
+                                    _bl, status=LeadStatus.SCHEDULED,
+                                    scheduled_at=datetime.utcnow(),
+                                )
+                                lead_queue.append(_bl)
+                                logger.info(
+                                    "dispatch.backfill_lead",
+                                    campaign=campaign.name,
+                                    new_lead=_bl.linkedin_url,
+                                )
                         elif result.get("network_error"):
                             # Proxy/timeout failure — don't penalise the session
                             consecutive_network_errors += 1
