@@ -83,6 +83,12 @@ class LocalLoginSession:
             if not li_at:
                 return {"li_at": None, "profile_dir": None, "error": "timeout"}
 
+            # Give the user time to accept any cookie consent popups before
+            # we extract cookies and close the browser.
+            logger.info("local_login.waiting_for_consent", account=account_name)
+            print("\nLogin detected — accept any cookie popups now. Closing in 10 seconds...")
+            await asyncio.sleep(10)
+
             # Extract all cookies before closing
             all_cookies = await self._context.cookies(["https://www.linkedin.com"])
             logger.info(
