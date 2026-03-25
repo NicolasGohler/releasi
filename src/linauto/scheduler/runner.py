@@ -28,6 +28,10 @@ from linauto.notifications.slack import notify as slack_notify
 
 logger = structlog.get_logger()
 
+# Per-account session tracking: when the last dispatch session ended (UTC naive).
+# Prevents rapid-fire dispatching across 5-min cycles — enforces inter-session gap.
+_last_session_end: dict = {}
+
 import re as _re
 
 
@@ -224,6 +228,22 @@ async def dispatch():
             if account.paused_until and not is_cooldown_expired(account.paused_until):
                 continue
 
+            # Enforce minimum inter-session gap to prevent rapid-fire bursts.
+            # After any session that sent ≥1 lead, we wait at least
+            # inter_session_delay[0] seconds before starting the next session.
+            _min_gap = get_settings().inter_session_delay[0]  # e.g. 2700s = 45 min
+            _last_end = _last_session_end.get(account.id)
+            if _last_end is not None:
+                _elapsed = (now - _last_end).total_seconds()
+                if _elapsed < _min_gap:
+                    logger.debug(
+                        "dispatch.inter_session_gap_enforced",
+                        account=account.name,
+                        elapsed_min=round(_elapsed / 60, 1),
+                        gap_min=round(_min_gap / 60, 1),
+                    )
+                    continue
+
             # Check daily limits
             sent_today_count = await repo.get_daily_requests_sent(account.id)
             can_send, remaining = await rate_limits.can_send_today(
@@ -326,10 +346,15 @@ async def dispatch():
                         continue
 
                     # Target = how many *successful* sends we want this cycle.
-                    # Use the remaining daily budget, not len(due_leads), so
-                    # skipped/errored leads don't silently reduce the day's total.
-                    # Backfills will keep the queue topped up until the target is met.
-                    target = remaining if remaining is not None else len(due_leads)
+                    # Cap to actions_per_session[1] so one dispatch cycle never
+                    # sends more than one session's worth of leads — this prevents
+                    # the "10+ connections in 10 minutes" burst when restarting
+                    # mid-day with many slots clustered near now.
+                    _max_per_session = get_settings().actions_per_session[1]
+                    target = min(
+                        remaining if remaining is not None else len(due_leads),
+                        _max_per_session,
+                    )
 
                     from linauto.campaign.executor import CampaignExecutor
                     executor = CampaignExecutor(repo, browser_context=pool_context)
@@ -494,8 +519,11 @@ async def dispatch():
                                 )
 
                     if successful_sends > 0:
-                        # At least one lead went through — session is confirmed healthy
+                        # At least one lead went through — session is confirmed healthy.
+                        # Record session end time so the inter-session gap is enforced
+                        # before the next dispatch cycle processes this account.
                         pool.confirm_session(account.id)
+                        _last_session_end[account.id] = datetime.utcnow()
                         day_sent = sent_today_count + successful_sends
                         day_target = target + sent_today_count  # target was remaining at cycle start
                         logger.info(
