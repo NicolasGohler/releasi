@@ -110,8 +110,8 @@ export const pauseCampaign = (id: string) =>
 export const resetCampaignLeads = (id: string) =>
   apiFetch<{ reset_count: number }>(`/campaigns/${id}/reset-leads`, { method: "POST" });
 
-export const fetchCampaignStats = (id: string, days = 30) =>
-  apiFetch<CampaignStats>(`/campaigns/${id}/stats?days=${days}`);
+export const fetchCampaignStats = (id: string, days = 30, granularity: "day" | "hour" = "day") =>
+  apiFetch<CampaignStats>(`/campaigns/${id}/stats?days=${days}&granularity=${granularity}`);
 
 // ── Leads ─────────────────────────────────────────────────────────────────
 

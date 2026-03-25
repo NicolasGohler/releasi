@@ -3,9 +3,9 @@
 import { use, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { CampaignActivityChart } from "@/components/stats/campaign-chart";
 import {
   useCampaign,
-  useCampaignStats,
   useAccount,
   useUpdateCampaign,
   useActivateCampaign,
@@ -21,7 +21,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/status-badge";
 import { StatCard } from "@/components/stats/stat-card";
-import { DailyChart } from "@/components/stats/daily-chart";
 import { LeadsTable } from "@/components/leads/leads-table";
 import { CSVUpload } from "@/components/leads/csv-upload";
 import { ActivityTimeline } from "@/components/activity-timeline";
@@ -42,7 +41,6 @@ export default function CampaignDetailPage({
   const { data: account } = useAccount(campaign?.account_id ?? "", {
     enabled: !!campaign?.account_id,
   });
-  const { data: campaignStats } = useCampaignStats(id);
   const activate = useActivateCampaign();
   const pause = usePauseCampaign();
   const resetLeads = useResetLeads();
@@ -218,15 +216,17 @@ export default function CampaignDetailPage({
       </div>
 
       <div className="space-y-6">
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        {/* Summary strip — always visible above tabs */}
+        <div className="grid grid-cols-3 gap-3 md:grid-cols-6">
           <StatCard label="Total Leads" value={totalLeads} />
           <StatCard label="Pending" value={pending} />
           <StatCard label="Sent" value={sent} />
+          <StatCard label="Connected" value={connected} />
           <StatCard
-            label="Connected"
-            value={connected}
-            sub={totalLeads > 0 ? `${Math.round((connected / totalLeads) * 100)}% rate` : undefined}
+            label="Accept Rate"
+            value={sent > 0 ? `${Math.round((connected / (sent + connected)) * 100)}%` : "—"}
           />
+          <StatCard label="Errors" value={errors} />
         </div>
 
         {account?.paused_until && new Date(account.paused_until) > new Date() && (
@@ -254,42 +254,10 @@ export default function CampaignDetailPage({
             <TabsTrigger value="activity">Activity</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="stats" className="mt-4 space-y-4">
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-              <StatCard label="Total Sent" value={campaignStats?.summary.total_sent ?? 0} />
-              <StatCard
-                label="Accepted"
-                value={campaignStats?.summary.total_accepted ?? 0}
-                sub={
-                  campaignStats?.summary.acceptance_rate != null
-                    ? `${campaignStats.summary.acceptance_rate}% rate`
-                    : undefined
-                }
-              />
-              <StatCard
-                label="Avg Time to Accept"
-                value={
-                  campaignStats?.summary.avg_time_to_accept_hours != null
-                    ? `${campaignStats.summary.avg_time_to_accept_hours}h`
-                    : "—"
-                }
-              />
-              <StatCard label="Errors" value={errors} />
-            </div>
+          <TabsContent value="stats" className="mt-4">
             <Card>
-              <CardHeader>
-                <CardTitle>Daily Activity (30 days)</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <DailyChart
-                  data={(campaignStats?.daily ?? []).map((d) => ({
-                    date: d.date,
-                    connection_requests_sent: d.sent,
-                    connections_accepted: d.accepted,
-                    followup_messages_sent: 0,
-                    errors: d.errors,
-                  }))}
-                />
+              <CardContent className="pt-6">
+                <CampaignActivityChart campaignId={id} totalLeads={totalLeads} />
               </CardContent>
             </Card>
           </TabsContent>

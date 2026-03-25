@@ -110,10 +110,10 @@ export function usePauseCampaign() {
   });
 }
 
-export function useCampaignStats(id: string, days = 30) {
+export function useCampaignStats(id: string, days = 30, granularity: "day" | "hour" = "day") {
   return useQuery({
-    queryKey: ["campaign-stats", id, days],
-    queryFn: () => api.fetchCampaignStats(id, days),
+    queryKey: ["campaign-stats", id, days, granularity],
+    queryFn: () => api.fetchCampaignStats(id, days, granularity),
     enabled: !!id,
   });
 }

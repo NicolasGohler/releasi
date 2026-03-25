@@ -492,62 +492,101 @@ class Repository:
     # ── Campaign Stats ─────────────────────────────────────────────────
 
     async def get_campaign_daily_stats(
-        self, campaign_id: str, start_date: date, end_date: date
+        self, campaign_id: str, start_date: Optional[date], end_date: date,
+        granularity: str = "day",
     ) -> list:
-        """Aggregate daily stats per campaign from ActionLog."""
-        from sqlalchemy import cast, Date as SADate, case
-        result = await self.session.execute(
+        """Aggregate stats per campaign from ActionLog + accepted from leads."""
+        from sqlalchemy import cast, Date as SADate, case, text
+
+        # ── Sent + errors from action_log ──────────────────────────────────
+        if granularity == "hour":
+            # SQLite: bucket by hour string
+            bucket_expr = func.strftime("%Y-%m-%dT%H:00", ActionLog.created_at).label("bucket")
+        else:
+            bucket_expr = cast(ActionLog.created_at, SADate).label("bucket")
+
+        sent_q = (
             select(
-                cast(ActionLog.created_at, SADate).label("date"),
+                bucket_expr,
                 func.sum(case(
                     (ActionLog.action_type == ActionType.CONNECTION_REQUEST, 1),
                     else_=0,
                 )).label("sent"),
                 func.sum(case(
-                    (
-                        (ActionLog.action_type == ActionType.CHECK_ACCEPTANCE)
-                        & (ActionLog.status == ActionLogStatus.SUCCESS),
-                        1
-                    ),
-                    else_=0,
-                )).label("accepted"),
-                func.sum(case(
                     (ActionLog.action_type == ActionType.ERROR, 1),
                     else_=0,
                 )).label("errors"),
             )
-            .where(
-                ActionLog.campaign_id == campaign_id,
-                cast(ActionLog.created_at, SADate) >= start_date,
-                cast(ActionLog.created_at, SADate) <= end_date,
-            )
-            .group_by(cast(ActionLog.created_at, SADate))
-            .order_by(cast(ActionLog.created_at, SADate))
+            .where(ActionLog.campaign_id == campaign_id)
+            .group_by(text("bucket"))
+            .order_by(text("bucket"))
         )
+        if start_date:
+            sent_q = sent_q.where(cast(ActionLog.created_at, SADate) >= start_date)
+        sent_q = sent_q.where(cast(ActionLog.created_at, SADate) <= end_date)
+
+        sent_rows = (await self.session.execute(sent_q)).all()
+
+        # ── Accepted from leads (connection_accepted_at is authoritative) ─
+        if granularity == "hour":
+            acc_bucket = func.strftime("%Y-%m-%dT%H:00", Lead.connection_accepted_at).label("bucket")
+        else:
+            acc_bucket = cast(Lead.connection_accepted_at, SADate).label("bucket")
+
+        acc_q = (
+            select(acc_bucket, func.count().label("accepted"))
+            .where(
+                Lead.campaign_id == campaign_id,
+                Lead.connection_accepted_at.isnot(None),
+            )
+            .group_by(text("bucket"))
+        )
+        if start_date:
+            acc_q = acc_q.where(cast(Lead.connection_accepted_at, SADate) >= start_date)
+        acc_q = acc_q.where(cast(Lead.connection_accepted_at, SADate) <= end_date)
+
+        acc_map: dict = {row.bucket: row.accepted for row in (await self.session.execute(acc_q)).all()}
+
         return [
-            {"date": str(row.date), "sent": row.sent, "accepted": row.accepted, "errors": row.errors}
-            for row in result.all()
+            {
+                "date": str(row.bucket),
+                "sent": row.sent,
+                "accepted": acc_map.get(str(row.bucket), 0),
+                "errors": row.errors,
+            }
+            for row in sent_rows
         ]
 
     async def get_campaign_acceptance_stats(self, campaign_id: str) -> dict:
         """Get acceptance rate and average time-to-accept for a campaign."""
-        result = await self.session.execute(
+        # total_sent: count successful CONNECTION_REQUEST actions (more reliable than
+        # connection_requested_at which was not always populated in older runs)
+        sent_result = await self.session.execute(
+            select(func.count())
+            .where(
+                ActionLog.campaign_id == campaign_id,
+                ActionLog.action_type == ActionType.CONNECTION_REQUEST,
+                ActionLog.status == ActionLogStatus.SUCCESS,
+            )
+        )
+        total_sent = sent_result.scalar() or 0
+
+        # total_accepted: leads with connection_accepted_at set (authoritative)
+        acc_result = await self.session.execute(
             select(Lead)
             .where(
                 Lead.campaign_id == campaign_id,
-                Lead.connection_requested_at.isnot(None),
+                Lead.connection_accepted_at.isnot(None),
             )
         )
-        all_leads = result.scalars().all()
-        total_sent = len(all_leads)
-        accepted = [l for l in all_leads if l.connection_accepted_at]
-        total_accepted = len(accepted)
+        accepted_leads = acc_result.scalars().all()
+        total_accepted = len(accepted_leads)
 
         avg_hours = None
-        if accepted:
+        if accepted_leads:
             deltas = [
                 (l.connection_accepted_at - l.connection_requested_at).total_seconds() / 3600
-                for l in accepted
+                for l in accepted_leads
                 if l.connection_accepted_at and l.connection_requested_at
             ]
             avg_hours = round(sum(deltas) / len(deltas), 1) if deltas else None

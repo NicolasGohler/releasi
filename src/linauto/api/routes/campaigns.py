@@ -138,13 +138,14 @@ async def unarchive_campaign(campaign_id: str, repo: Repository = Depends(get_re
 @router.get("/campaigns/{campaign_id}/stats", response_model=CampaignStatsResponse)
 async def campaign_stats(
     campaign_id: str,
-    days: int = Query(30, le=90),
+    days: int = Query(30, ge=0, le=3650),
+    granularity: str = Query("day", regex="^(day|hour)$"),
     repo: Repository = Depends(get_repo),
 ):
     campaign = await repo.get_campaign(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    start = date.today() - timedelta(days=days)
-    daily = await repo.get_campaign_daily_stats(campaign_id, start, date.today())
+    start = (date.today() - timedelta(days=days)) if days > 0 else None
+    daily = await repo.get_campaign_daily_stats(campaign_id, start, date.today(), granularity)
     summary = await repo.get_campaign_acceptance_stats(campaign_id)
     return {"daily": daily, "summary": summary}

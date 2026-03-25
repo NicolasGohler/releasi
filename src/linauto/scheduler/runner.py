@@ -128,16 +128,16 @@ async def daily_planning_sweep():
                 )
 
                 # Assign scheduled_at to leads for connection_request slots.
-                # Safety guard: never schedule a slot whose time has already passed.
-                # This shouldn't normally happen at 06:00, but protects against
-                # late job runs or clock skew.
+                # If a slot's time is already past (e.g. planner ran late in the day
+                # or on local startup mid-morning), schedule it for now so the
+                # dispatcher picks it up in the next cycle rather than silently
+                # dropping it and under-delivering for the day.
                 scheduled_count = 0
                 for slot in plan:
                     if slot.slot_type == SlotType.CONNECTION_REQUEST and slot.lead_id:
-                        if slot.scheduled_at <= now:
-                            continue
+                        slot_time = slot.scheduled_at if slot.scheduled_at > now else now
                         await repo.update_lead_schedule(
-                            slot.lead_id, slot.scheduled_at, LeadStatus.SCHEDULED
+                            slot.lead_id, slot_time, LeadStatus.SCHEDULED
                         )
                         scheduled_count += 1
 
@@ -391,9 +391,11 @@ async def dispatch():
                             consecutive_network_errors = 0
                             await repo.add_proxy_mb(account.id, 2.0)  # ~2 MB per connection request
                         elif result.get("skipped"):
-                            # Profile was skipped (already connected, email required, etc.).
-                            # Never counts against session health. Backfill with a pending
-                            # lead so the daily target can still be reached.
+                            # Profile was skipped (already connected, already accepted,
+                            # email required, etc.). Never counts against session health.
+                            # Backfill with a pending lead so the daily target can still
+                            # be reached — only CONNECTION_REQUESTED sends count toward
+                            # the target, so every skip needs a replacement.
                             consecutive_session_errors = 0
                             consecutive_network_errors = 0
                             _backfill = await repo.get_pending_leads(campaign.id, limit=1)
@@ -408,6 +410,7 @@ async def dispatch():
                                     "dispatch.backfill_lead",
                                     campaign=campaign.name,
                                     new_lead=_bl.linkedin_url,
+                                    reason=result.get("reason", "skipped"),
                                 )
                         elif result.get("network_error"):
                             # Proxy/timeout failure — don't penalise the session
@@ -479,11 +482,15 @@ async def dispatch():
                     if successful_sends > 0:
                         # At least one lead went through — session is confirmed healthy
                         pool.confirm_session(account.id)
+                        day_sent = sent_today_count + successful_sends
+                        day_target = target + sent_today_count  # target was remaining at cycle start
                         logger.info(
-                            "dispatch.campaign_done",
+                            "dispatch.cycle_complete",
                             campaign=campaign.name,
-                            successful=successful_sends,
-                            target=target,
+                            cycle_sent=successful_sends,
+                            day_sent=day_sent,
+                            day_target=day_target,
+                            day_remaining=max(0, day_target - day_sent),
                         )
 
                     if stop_account:
@@ -1164,13 +1171,16 @@ async def start_scheduler():
         replace_existing=True,
     )
 
-    # Dispatcher every 5 minutes with ±75s jitter to avoid predictable cadence
+    # Dispatcher every 5 minutes with ±75s jitter to avoid predictable cadence.
+    # misfire_grace_time=600: if the previous run was still going (processing leads),
+    # APScheduler waits and runs when free without logging a spurious "missed" warning.
     scheduler.add_job(
         dispatch,
         IntervalTrigger(minutes=5, jitter=75),
         id="dispatcher",
         name="Action Dispatcher",
         replace_existing=True,
+        misfire_grace_time=600,
     )
 
     # Acceptance checker once daily
@@ -1198,6 +1208,7 @@ async def start_scheduler():
         id="followup_dispatcher",
         name="Follow-up Dispatcher",
         replace_existing=True,
+        misfire_grace_time=600,
     )
 
     # Session keep-alive — once per day, morning window (8:00 ±90 min).

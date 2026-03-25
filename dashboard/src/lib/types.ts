@@ -14,8 +14,15 @@ export interface Account {
   updated_at: string;
 }
 
+export interface CampaignStatDaily {
+  date: string;
+  sent: number;
+  accepted: number;
+  errors: number;
+}
+
 export interface CampaignStats {
-  daily: { date: string; sent: number; accepted: number; errors: number }[];
+  daily: CampaignStatDaily[];
   summary: {
     total_sent: number;
     total_accepted: number;
