@@ -379,6 +379,8 @@ async def replan_account(
     from sqlalchemy import update as _sql_update
     from linauto.db.models import Lead, LeadStatus, ActionType, ActionLogStatus
     from linauto.scheduler.planner import generate_daily_plan, SlotType
+    import structlog as _structlog
+    logger = _structlog.get_logger()
 
     account = await repo.get_account(account_id)
     if not account:
@@ -403,6 +405,19 @@ async def replan_account(
         now = _datetime.utcnow()
         pending_ids = [l.id for l in pending]
 
+        sent_today = await repo.get_daily_requests_sent(account.id)
+        remaining_budget = max(0, account.daily_limit - sent_today)
+
+        if remaining_budget == 0:
+            logger.info(
+                "replan.budget_exhausted",
+                account=account.name,
+                campaign=campaign.name,
+                daily_limit=account.daily_limit,
+                sent_today=sent_today,
+            )
+            continue
+
         plan = generate_daily_plan(
             account_id=account.id,
             day=_date.today(),
@@ -410,6 +425,8 @@ async def replan_account(
             daily_limit=account.daily_limit,
             timezone_str=account.timezone,
             campaign_weekend_enabled=campaign.weekend_enabled,
+            effective_start=now + _timedelta(minutes=2),
+            remaining_budget=remaining_budget,
         )
 
         # Schedule only future slots from today's plan.

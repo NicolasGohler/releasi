@@ -118,6 +118,18 @@ async def daily_planning_sweep():
                 lead_ids = [l.id for l in pending]
 
                 now = datetime.utcnow()
+                sent_today = await repo.get_daily_requests_sent(account.id)
+                remaining_budget = max(0, account.daily_limit - sent_today)
+
+                if remaining_budget == 0:
+                    logger.info(
+                        "planner.budget_exhausted_skip",
+                        account=account.name,
+                        daily_limit=account.daily_limit,
+                        sent_today=sent_today,
+                    )
+                    continue
+
                 plan = generate_daily_plan(
                     account_id=account.id,
                     day=date.today(),
@@ -125,6 +137,8 @@ async def daily_planning_sweep():
                     daily_limit=account.daily_limit,
                     timezone_str=account.timezone,
                     campaign_weekend_enabled=campaign.weekend_enabled,
+                    effective_start=now + timedelta(minutes=2),
+                    remaining_budget=remaining_budget,
                 )
 
                 # Assign scheduled_at to leads for connection_request slots.

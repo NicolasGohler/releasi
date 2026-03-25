@@ -43,6 +43,8 @@ def generate_daily_plan(
     timezone_str: Optional[str] = None,
     is_weekend: Optional[bool] = None,
     campaign_weekend_enabled: bool = False,
+    effective_start: Optional[datetime] = None,
+    remaining_budget: Optional[int] = None,
 ) -> List[ScheduledSlot]:
     """
     Generate a daily plan with clustered timing.
@@ -95,9 +97,25 @@ def generate_daily_plan(
     work_start = base_start + timedelta(minutes=start_offset)
     work_end = base_end + timedelta(minutes=end_offset)
 
-    # Ensure at least 4 hours of work window
-    if (work_end - work_start).total_seconds() < 4 * 3600:
+    # On mid-day restart, clamp work_start forward so slots are never in the past.
+    if effective_start is not None and effective_start > work_start:
+        work_start = effective_start
+
+    # Only apply 4-hour minimum on the canonical (unmodified) work window.
+    # When effective_start has already compressed the window, don't inflate
+    # work_end past the actual end of the business day.
+    if effective_start is None and (work_end - work_start).total_seconds() < 4 * 3600:
         work_end = work_start + timedelta(hours=4)
+
+    # No time left in today's window — caller falls back to tomorrow.
+    if work_start >= work_end:
+        logger.info(
+            "planner.window_exhausted",
+            account_id=account_id,
+            date=day.isoformat(),
+            work_end_utc=work_end.strftime("%H:%M UTC"),
+        )
+        return []
 
     # Weekend handling: if campaign allows weekends, treat as weekday
     if is_weekend and not campaign_weekend_enabled:
@@ -109,9 +127,16 @@ def generate_daily_plan(
     if not pending_lead_ids:
         return _generate_noise_only_plan(rng, work_start, work_end, settings)
 
-    # Daily target = daily_limit with ±20% variation (e.g. 20 → 16-24)
-    variation = max(1, int(daily_limit * 0.20))
-    daily_target = rng.randint(daily_limit - variation, daily_limit + variation)
+    # Cap daily_limit by remaining budget when resuming mid-day.
+    effective_limit = daily_limit
+    if remaining_budget is not None:
+        effective_limit = min(daily_limit, max(0, remaining_budget))
+    if effective_limit <= 0:
+        return _generate_noise_only_plan(rng, work_start, work_end, settings)
+
+    # Daily target = effective_limit with ±20% variation (e.g. 20 → 16-24)
+    variation = max(1, int(effective_limit * 0.20))
+    daily_target = rng.randint(effective_limit - variation, effective_limit + variation)
     daily_target = max(1, daily_target)
 
     # Cap by available leads
@@ -143,6 +168,19 @@ def generate_daily_plan(
 
     slots.sort(key=lambda s: s.scheduled_at)
 
+    if timezone_str:
+        try:
+            from zoneinfo import ZoneInfo
+            _tz = ZoneInfo(timezone_str)
+            _ws_label = work_start.replace(tzinfo=timezone.utc).astimezone(_tz).strftime("%H:%M %Z")
+            _we_label = work_end.replace(tzinfo=timezone.utc).astimezone(_tz).strftime("%H:%M %Z")
+        except Exception:
+            _ws_label = work_start.strftime("%H:%M UTC")
+            _we_label = work_end.strftime("%H:%M UTC")
+    else:
+        _ws_label = work_start.strftime("%H:%M UTC")
+        _we_label = work_end.strftime("%H:%M UTC")
+
     logger.info(
         "planner.daily_plan_generated",
         account_id=account_id,
@@ -150,8 +188,9 @@ def generate_daily_plan(
         total_slots=len(slots),
         connection_requests=sum(1 for s in slots if s.slot_type == SlotType.CONNECTION_REQUEST),
         noise_slots=sum(1 for s in slots if s.slot_type != SlotType.CONNECTION_REQUEST),
-        work_start=work_start.strftime("%H:%M"),
-        work_end=work_end.strftime("%H:%M"),
+        work_start=_ws_label,
+        work_end=_we_label,
+        remaining_budget=remaining_budget,
     )
 
     return slots
