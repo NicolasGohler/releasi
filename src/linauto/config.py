@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     intra_session_delay: list[int] = Field(default=[120, 480])   # seconds between actions in same session
     inter_session_delay: list[int] = Field(default=[2700, 7200]) # seconds between sessions (45min-2hr)
 
-    # Limits (used during warmup only; post-warmup: no artificial cap)
+    # Per-account limits (set on Account model; these are fallback defaults)
     default_daily_limit: int = 20
     default_weekly_limit: int = 80
 
