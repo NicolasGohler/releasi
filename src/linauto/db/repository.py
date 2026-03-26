@@ -119,6 +119,18 @@ class Repository:
         )
         return result.scalars().all()
 
+    async def get_latest_future_scheduled_at(self, campaign_id: str) -> Optional[datetime]:
+        """Return the latest scheduled_at among SCHEDULED leads still in the future."""
+        now = datetime.utcnow()
+        result = await self.session.execute(
+            select(func.max(Lead.scheduled_at)).where(
+                Lead.campaign_id == campaign_id,
+                Lead.status == LeadStatus.SCHEDULED,
+                Lead.scheduled_at > now,
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def get_followup_due_leads(
         self, campaign_id: str, before: datetime
     ) -> Sequence[Lead]:

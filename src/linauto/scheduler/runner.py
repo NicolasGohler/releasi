@@ -364,8 +364,9 @@ async def dispatch():
                     consecutive_session_errors = 0   # non-network failures → cookie suspect
                     consecutive_network_errors = 0   # timeouts/proxy → network suspect
                     max_attempts = target * 4  # Safety cap: allow skips+errors without loop
-                    lead_queue = list(due_leads)  # Start with all due leads; backfills extend
+                    lead_queue = list(due_leads)  # Fixed queue — no mid-session injections
                     stop_account = False
+                    backfill_count = 0  # Skipped/errored leads needing future rescheduling
 
                     while lead_queue and successful_sends < target and attempts < max_attempts:
                         attempts += 1
@@ -432,25 +433,11 @@ async def dispatch():
                         elif result.get("skipped"):
                             # Profile was skipped (already connected, already accepted,
                             # email required, etc.). Never counts against session health.
-                            # Backfill with a pending lead so the daily target can still
-                            # be reached — only CONNECTION_REQUESTED sends count toward
-                            # the target, so every skip needs a replacement.
+                            # Don't inject a replacement into this session — schedule it
+                            # after the current day's last slot to avoid rapid-fire sends.
                             consecutive_session_errors = 0
                             consecutive_network_errors = 0
-                            _backfill = await repo.get_pending_leads(campaign.id, limit=1)
-                            if _backfill:
-                                _bl = _backfill[0]
-                                await repo.update_lead(
-                                    _bl, status=LeadStatus.SCHEDULED,
-                                    scheduled_at=datetime.utcnow(),
-                                )
-                                lead_queue.append(_bl)
-                                logger.info(
-                                    "dispatch.backfill_lead",
-                                    campaign=campaign.name,
-                                    new_lead=_bl.linkedin_url,
-                                    reason=result.get("reason", "skipped"),
-                                )
+                            backfill_count += 1
                         elif result.get("network_error"):
                             # Proxy/timeout failure — don't penalise the session
                             consecutive_network_errors += 1
@@ -505,18 +492,41 @@ async def dispatch():
                                 stop_account = True
                                 break
 
-                            # Lead was skipped/errored — backfill from pending pool
-                            backfill = await repo.get_pending_leads(campaign.id, limit=1)
-                            if backfill:
-                                bl = backfill[0]
-                                # Transition to SCHEDULED so executor can mark CONNECTION_REQUESTED
-                                await repo.update_lead(bl, status=LeadStatus.SCHEDULED, scheduled_at=datetime.utcnow())
-                                lead_queue.append(bl)
-                                logger.info(
-                                    "dispatch.backfill_lead",
-                                    campaign=campaign.name,
-                                    new_lead=bl.linkedin_url,
-                                )
+                            # Lead errored — schedule a replacement later in the day
+                            backfill_count += 1
+
+                    # Post-session: schedule backfills for any skipped/errored leads.
+                    # Anchor the first backfill after the last future scheduled slot +
+                    # one inter-session gap, then space each subsequent backfill by
+                    # intra_session_delay[0] — so they form a natural future session
+                    # instead of firing immediately.
+                    if backfill_count > 0 and not stop_account:
+                        _settings = get_settings()
+                        _inter_gap = _settings.inter_session_delay[0]   # seconds (e.g. 2700 = 45 min)
+                        _intra_gap = _settings.intra_session_delay[0]   # seconds (e.g. 120 = 2 min)
+                        _latest_slot = await repo.get_latest_future_scheduled_at(campaign.id)
+                        _now_utc = datetime.utcnow()
+                        _anchor = max(_latest_slot or _now_utc, _now_utc) + timedelta(seconds=_inter_gap)
+                        _scheduled = 0
+                        for _i in range(backfill_count):
+                            _pending = await repo.get_pending_leads(campaign.id, limit=1)
+                            if not _pending:
+                                break
+                            _bl = _pending[0]
+                            _slot_time = _anchor + timedelta(seconds=_i * _intra_gap)
+                            await repo.update_lead(
+                                _bl,
+                                status=LeadStatus.SCHEDULED,
+                                scheduled_at=_slot_time,
+                            )
+                            _scheduled += 1
+                        if _scheduled:
+                            logger.info(
+                                "dispatch.backfills_scheduled",
+                                campaign=campaign.name,
+                                count=_scheduled,
+                                first_slot=_anchor.strftime("%H:%M UTC"),
+                            )
 
                     if successful_sends > 0:
                         # At least one lead went through — session is confirmed healthy.
