@@ -7,6 +7,11 @@
 - **Live DB**: `/app/data/linauto.db` inside container
 - **Query DB**: `docker exec linauto python3 -c "import sqlite3; ..."` (no sqlite3 binary in container)
 
+## Critical Rules (AI assistant must follow)
+- **Never activate or resume a campaign** unless the user explicitly asks. Campaigns may be paused intentionally. Activating them uninvited can fire connection requests the user hasn't approved.
+- **Never reset lead statuses** (ERROR → PENDING, SCHEDULED → PENDING, etc.) unless the user explicitly asks.
+- **Never send bare HTTP requests with `li_at`** — always use a full browser context (see Testing & Diagnostics below).
+
 ## Deploying code changes
 `src/` is volume-mounted from `/root/linauto/src` — but **Python caches imported modules in `sys.modules`**. A `git pull` updates files on disk but the running process keeps old code. **Always restart the container after pulling**:
 

@@ -92,10 +92,48 @@ async def update_campaign(
 
 @router.post("/campaigns/{campaign_id}/activate", response_model=CampaignOut)
 async def activate_campaign(campaign_id: str, repo: Repository = Depends(get_repo)):
+    from datetime import datetime as _datetime, timedelta as _timedelta
+    from linauto.db.models import LeadStatus
+    from linauto.scheduler.planner import generate_daily_plan, SlotType
+
     campaign = await repo.get_campaign(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+
     campaign = await repo.update_campaign(campaign, status=CampaignStatus.ACTIVE)
+
+    # Trigger a fresh plan on resume so leads are scheduled immediately
+    # rather than waiting until 06:00 the next morning.
+    account = await repo.get_account(campaign.account_id)
+    if account and not (account.paused_until and account.paused_until > _datetime.utcnow()):
+        # Reset any stale scheduled leads back to pending first
+        await repo.reset_stale_scheduled_leads(campaign.id)
+
+        now = _datetime.utcnow()
+        sent_today = await repo.get_daily_requests_sent(account.id)
+        future_scheduled = await repo.count_future_scheduled_leads(campaign.id)
+        remaining_budget = max(0, account.daily_limit - sent_today - future_scheduled)
+
+        if remaining_budget > 0:
+            pending = await repo.get_pending_leads(campaign.id)
+            if pending:
+                plan = generate_daily_plan(
+                    account_id=account.id,
+                    day=now.date(),
+                    pending_lead_ids=[l.id for l in pending],
+                    daily_limit=account.daily_limit,
+                    timezone_str=account.timezone,
+                    campaign_weekend_enabled=campaign.weekend_enabled,
+                    effective_start=now + _timedelta(minutes=2),
+                    remaining_budget=remaining_budget,
+                )
+                for slot in plan:
+                    if slot.slot_type == SlotType.CONNECTION_REQUEST and slot.lead_id:
+                        if slot.scheduled_at > now:
+                            await repo.update_lead_schedule(
+                                slot.lead_id, slot.scheduled_at, LeadStatus.SCHEDULED
+                            )
+
     return await _enrich_campaign(repo, campaign)
 
 

@@ -154,9 +154,15 @@ def generate_daily_plan(
     # Distribute actions across sessions
     actions_distribution = _distribute_actions(rng, target, num_sessions, settings)
 
+    # When effective_start is provided we are mid-day — drop the 65% front-load
+    # buffer so sessions can fill the full remaining window. Otherwise a compressed
+    # 2-3 hour window would leave most leads unscheduled.
+    use_buffer = effective_start is None
+
     # Generate time slots for sessions
     slots = _generate_session_slots(
-        rng, work_start, work_end, actions_distribution, settings
+        rng, work_start, work_end, actions_distribution, settings,
+        use_buffer=use_buffer,
     )
 
     # Assign lead IDs to connection_request slots
@@ -232,8 +238,18 @@ def _generate_session_slots(
     work_end: datetime,
     actions_distribution: List[int],
     settings,
+    use_buffer: bool = True,
 ) -> List[ScheduledSlot]:
-    """Generate timed slots for sessions with noise between them."""
+    """Generate timed slots for sessions with noise between them.
+
+    use_buffer=True (default, full-day plan): sessions are front-loaded into
+    the first 65% of the window, leaving the remaining 35% as a buffer for
+    backfilled leads.
+
+    use_buffer=False (mid-day / compressed window): sessions fill the full
+    remaining window with proportionally scaled inter-session gaps so the
+    daily target can still be reached in a shorter time.
+    """
     slots = []
     num_sessions = len(actions_distribution)
 
@@ -257,11 +273,19 @@ def _generate_session_slots(
             (count - 1) * intra_max for count in actions_distribution
         ]
 
-        # Front-load sessions into the first 65% of the work window so the
-        # remaining 35% acts as a buffer for backfilled leads (skips,
-        # already-connected profiles, etc.).
-        total_window = (work_end - work_start).total_seconds()
-        dispatch_cutoff = work_start + timedelta(seconds=total_window * 0.65)
+        if use_buffer:
+            # Full-day plan: front-load sessions into first 65% so the
+            # remaining 35% acts as a buffer for backfills.
+            dispatch_cutoff = work_start + timedelta(seconds=total_window * 0.65)
+        else:
+            # Mid-day / compressed window: use the full remaining window.
+            # Scale inter-session gaps proportionally — a 7-hour day uses
+            # the configured gaps; shorter windows use smaller gaps so more
+            # sessions fit and the daily target is met.
+            dispatch_cutoff = work_end
+            scale = min(1.0, total_window / (7 * 3600))
+            inter_gap_min = max(900, int(inter_gap_min * scale))   # floor: 15 min
+            inter_gap_max = max(1800, int(inter_gap_max * scale))  # floor: 30 min
 
         # Place sessions with inter-session gaps
         cursor = work_start
@@ -271,7 +295,7 @@ def _generate_session_slots(
             jitter = timedelta(seconds=rng.uniform(0, 300))  # 0-5 min jitter
             start = cursor + jitter
 
-            # Don't go past the dispatch cutoff (front-load buffer)
+            # Don't go past the cutoff
             if start >= dispatch_cutoff:
                 break
 
