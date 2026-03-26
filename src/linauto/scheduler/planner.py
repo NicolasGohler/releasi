@@ -146,8 +146,17 @@ def generate_daily_plan(
     if target == 0:
         return _generate_noise_only_plan(rng, work_start, work_end, settings)
 
-    # Generate session clusters
+    # Generate session clusters.
+    # Ensure enough sessions to hold the target given the per-session cap.
+    # e.g. target=45, actions_per_session[1]=6 → need at least ceil(45/6)=8 sessions.
+    max_per_session = settings.actions_per_session[1]
+    min_sessions_for_target = max(1, -(-target // max_per_session))  # ceil division
     num_sessions = rng.randint(settings.sessions_per_day[0], settings.sessions_per_day[1])
+    # Expand up to the configured max if needed, but never beyond it
+    num_sessions = min(
+        max(num_sessions, min_sessions_for_target),
+        settings.sessions_per_day[1],
+    )
     # Don't have more sessions than actions
     num_sessions = min(num_sessions, target)
 
@@ -215,19 +224,17 @@ def _distribute_actions(
     actions_per = []
     remaining = total
     for i in range(num_sessions):
-        if i == num_sessions - 1:
-            # Last session gets whatever is left
-            actions_per.append(remaining)
-        else:
-            max_this = min(
-                settings.actions_per_session[1],
-                remaining - (num_sessions - i - 1),  # leave at least 1 per remaining session
-            )
-            min_this = max(1, settings.actions_per_session[0])
-            min_this = min(min_this, max_this)
-            count = rng.randint(min_this, max_this)
-            actions_per.append(count)
-            remaining -= count
+        max_this = min(
+            settings.actions_per_session[1],
+            remaining - (num_sessions - i - 1),  # leave at least 1 per remaining session
+        )
+        min_this = max(1, settings.actions_per_session[0])
+        min_this = min(min_this, max_this)
+        count = rng.randint(min_this, max_this)
+        actions_per.append(count)
+        remaining -= count
+        if remaining <= 0:
+            break
 
     return actions_per
 
