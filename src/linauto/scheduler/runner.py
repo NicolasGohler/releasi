@@ -115,15 +115,32 @@ async def daily_planning_sweep():
 
             campaigns = await repo.get_active_campaigns(account.id)
             for campaign in campaigns:
+                now = datetime.utcnow()
+
+                # Reset any stale past-scheduled leads back to PENDING.
+                # This cleans up slots from previous days or missed windows
+                # (e.g. multiple restarts, container downtime) so they
+                # re-enter the pending pool rather than silently accumulating.
+                stale = await repo.reset_stale_scheduled_leads(campaign.id)
+                if stale:
+                    logger.info(
+                        "planner.stale_reset",
+                        campaign=campaign.name,
+                        count=stale,
+                    )
+
                 pending = await repo.get_pending_leads(campaign.id)
                 if not pending:
                     continue
 
                 lead_ids = [l.id for l in pending]
 
-                now = datetime.utcnow()
                 sent_today = await repo.get_daily_requests_sent(account.id)
-                remaining_budget = max(0, account.daily_limit - sent_today)
+                # Subtract leads already scheduled in the future — they count
+                # against today's budget and must not be double-scheduled on
+                # restarts or mid-day replanning calls.
+                future_scheduled = await repo.count_future_scheduled_leads(campaign.id)
+                remaining_budget = max(0, account.daily_limit - sent_today - future_scheduled)
 
                 if remaining_budget == 0:
                     logger.info(
@@ -131,6 +148,7 @@ async def daily_planning_sweep():
                         account=account.name,
                         daily_limit=account.daily_limit,
                         sent_today=sent_today,
+                        future_scheduled=future_scheduled,
                     )
                     continue
 
@@ -500,15 +518,30 @@ async def dispatch():
                     # one inter-session gap, then space each subsequent backfill by
                     # intra_session_delay[0] — so they form a natural future session
                     # instead of firing immediately.
+                    # Cap by remaining daily budget to prevent over-scheduling.
                     if backfill_count > 0 and not stop_account:
                         _settings = get_settings()
                         _inter_gap = _settings.inter_session_delay[0]   # seconds (e.g. 2700 = 45 min)
                         _intra_gap = _settings.intra_session_delay[0]   # seconds (e.g. 120 = 2 min)
+                        _sent_today = await repo.get_daily_requests_sent(account.id)
+                        _future_scheduled = await repo.count_future_scheduled_leads(campaign.id)
+                        _available = max(0, account.daily_limit - _sent_today - _future_scheduled)
+                        _actual_backfills = min(backfill_count, _available)
+                        if _actual_backfills < backfill_count:
+                            logger.info(
+                                "dispatch.backfills_budget_capped",
+                                campaign=campaign.name,
+                                requested=backfill_count,
+                                scheduled=_actual_backfills,
+                                daily_limit=account.daily_limit,
+                                sent_today=_sent_today,
+                                future_scheduled=_future_scheduled,
+                            )
                         _latest_slot = await repo.get_latest_future_scheduled_at(campaign.id)
                         _now_utc = datetime.utcnow()
                         _anchor = max(_latest_slot or _now_utc, _now_utc) + timedelta(seconds=_inter_gap)
                         _scheduled = 0
-                        for _i in range(backfill_count):
+                        for _i in range(_actual_backfills):
                             _pending = await repo.get_pending_leads(campaign.id, limit=1)
                             if not _pending:
                                 break

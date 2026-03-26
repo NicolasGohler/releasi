@@ -119,6 +119,40 @@ class Repository:
         )
         return result.scalars().all()
 
+    async def count_future_scheduled_leads(self, campaign_id: str) -> int:
+        """Count SCHEDULED leads whose scheduled_at is still in the future."""
+        now = datetime.utcnow()
+        result = await self.session.execute(
+            select(func.count()).where(
+                Lead.campaign_id == campaign_id,
+                Lead.status == LeadStatus.SCHEDULED,
+                Lead.scheduled_at > now,
+            )
+        )
+        return result.scalar_one()
+
+    async def reset_stale_scheduled_leads(self, campaign_id: str) -> int:
+        """Reset SCHEDULED leads with a past scheduled_at back to PENDING.
+
+        Called at the start of each planning sweep so that leads from a
+        missed/skipped window (container restart, previous day) re-enter
+        the pending pool and are cleanly re-planned rather than silently
+        accumulating as a backlog of overdue SCHEDULED rows.
+        Returns the number of leads reset.
+        """
+        now = datetime.utcnow()
+        result = await self.session.execute(
+            update(Lead)
+            .where(
+                Lead.campaign_id == campaign_id,
+                Lead.status == LeadStatus.SCHEDULED,
+                Lead.scheduled_at < now,
+            )
+            .values(status=LeadStatus.PENDING, scheduled_at=None)
+        )
+        await self.session.commit()
+        return result.rowcount
+
     async def get_latest_future_scheduled_at(self, campaign_id: str) -> Optional[datetime]:
         """Return the latest scheduled_at among SCHEDULED leads still in the future."""
         now = datetime.utcnow()
