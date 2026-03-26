@@ -1011,9 +1011,15 @@ async def check_cookie_health():
             if not account.li_at_cookie:
                 continue
 
-            # Build proxy URL for this account (same as browser does)
-            proxy_url = None
-            if account.proxy_country:
+            # Skip accounts that are temporarily paused (rate-limit, manual pause, etc.)
+            # No point checking cookie health for accounts that can't dispatch anyway.
+            if account.paused_until and account.paused_until > datetime.utcnow():
+                logger.debug("cookie_health.skipped_paused", account=account.name)
+                continue
+
+            # Build proxy URL — prefer direct proxy_url, fall back to country-based builder
+            proxy_url = account.proxy_url
+            if not proxy_url and account.proxy_country:
                 from linauto.linkedin.browser import _build_proxy_url
                 try:
                     proxy_url = _build_proxy_url(account.id, account.proxy_country)

@@ -409,6 +409,21 @@ class LinkedInActions:
             logger.info("action.profile_not_found", url=profile_url)
             return ActionResult(ActionStatus.INVALID, reason="profile_not_found")
 
+        # 1.4 Check for authwall / page-level error overlay.
+        # These appear without a URL redirect, so the URL-based session check passes
+        # but all profile action buttons are absent or replaced by sign-in elements.
+        authwall = await self._find_element(selectors.AUTHWALL_INDICATORS, timeout_ms=800)
+        if authwall:
+            logger.warning("action.authwall_detected", url=profile_url)
+            await self._debug_screenshot("authwall_detected")
+            return ActionResult(ActionStatus.SESSION_EXPIRED, reason="authwall_overlay")
+
+        page_error = await self._find_element(selectors.PROFILE_ERROR_PAGE_INDICATORS, timeout_ms=800)
+        if page_error:
+            logger.warning("action.profile_error_page", url=profile_url)
+            await self._debug_screenshot("profile_error_page")
+            return ActionResult(ActionStatus.ERROR, reason="profile_error_page", details={"url": profile_url})
+
         # 1.5 Simulate reading the profile before connecting (human-like behaviour)
         try:
             await asyncio.sleep(random.uniform(0.5, 1.5))
@@ -610,6 +625,7 @@ class LinkedInActions:
                     reason="weekly_invitation_limit",
                     details={"url": profile_url},
                 )
+            await self._dump_buttons_debug()
             await self._debug_screenshot("send_btn_missing")
             return ActionResult(
                 ActionStatus.ERROR,

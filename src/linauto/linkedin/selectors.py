@@ -98,6 +98,28 @@ RATE_LIMIT_MODAL = [
     '[role="alertdialog"]:has-text("invitation limit")',
 ]
 
+# ── Authwall / session overlay ────────────────────────────────────────────
+# Shown when LinkedIn overlays a sign-in prompt WITHOUT redirecting the URL.
+# Detecting this early prevents misreading it as a missing-button error.
+AUTHWALL_INDICATORS = [
+    # Dialog-modal sign-in prompt overlaying profile content
+    '[role="dialog"] button:has-text("Sign in")',
+    '[role="dialog"] a:has-text("Sign in")',
+    # LinkedIn join-wall container (data-* attributes survive class obfuscation)
+    '[data-test-id="join-wall"]',
+    '.join-wall',
+    '[data-view-name="join-wall-headline"]',
+]
+
+# LinkedIn error page rendered inside the logged-in shell (nav stays, content fails).
+# "Try again" button with no profile action buttons = page-level error, not session expiry.
+PROFILE_ERROR_PAGE_INDICATORS = [
+    'button:has-text("Try again")',
+    'main :text("Something went wrong")',
+    'main :text("Page not available")',
+    'main :text("temporarily unavailable")',
+]
+
 # ── CAPTCHA ───────────────────────────────────────────────────────────────
 
 CAPTCHA_INDICATORS = [
