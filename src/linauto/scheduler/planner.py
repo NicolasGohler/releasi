@@ -136,7 +136,7 @@ def generate_daily_plan(
 
     # Daily target = effective_limit with ±20% variation (e.g. 20 → 16-24)
     variation = max(1, int(effective_limit * 0.20))
-    daily_target = rng.randint(effective_limit - variation, effective_limit + variation)
+    daily_target = rng.randint(effective_limit - variation, effective_limit)
     daily_target = max(1, daily_target)
 
     # Cap by available leads

@@ -159,7 +159,7 @@ async def daily_planning_sweep():
                     daily_limit=account.daily_limit,
                     timezone_str=account.timezone,
                     campaign_weekend_enabled=campaign.weekend_enabled,
-                    effective_start=now + timedelta(minutes=2),
+                    effective_start=None,
                     remaining_budget=remaining_budget,
                 )
 
@@ -537,9 +537,7 @@ async def dispatch():
                                 sent_today=_sent_today,
                                 future_scheduled=_future_scheduled,
                             )
-                        _latest_slot = await repo.get_latest_future_scheduled_at(campaign.id)
-                        _now_utc = datetime.utcnow()
-                        _anchor = max(_latest_slot or _now_utc, _now_utc) + timedelta(seconds=_inter_gap)
+                        _anchor = datetime.utcnow() + timedelta(seconds=_inter_gap)
                         _scheduled = 0
                         for _i in range(_actual_backfills):
                             _pending = await repo.get_pending_leads(campaign.id, limit=1)
