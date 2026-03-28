@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -17,10 +18,19 @@ export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="fixed left-0 top-0 z-40 h-screen w-56 border-r border-border bg-card">
-      <div className="flex h-14 items-center border-b border-border px-4">
-        <Link href="/campaigns" className="text-lg font-semibold tracking-tight">
-          linauto
+    <aside className="fixed left-0 top-0 z-40 h-screen w-56 border-r border-sidebar-border bg-sidebar">
+      <div className="flex h-14 items-center border-b border-sidebar-border px-4">
+        <Link href="/campaigns" className="flex items-center gap-2.5">
+          <Image
+            src="/logo.png"
+            alt="Releasi"
+            width={28}
+            height={28}
+            className="rounded-sm"
+          />
+          <span className="font-brand text-xl font-medium tracking-wide text-sidebar-foreground">
+            releasi
+          </span>
         </Link>
       </div>
       <nav className="flex flex-col gap-1 p-3">
@@ -34,8 +44,8 @@ export function Sidebar() {
               className={cn(
                 "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
                 active
-                  ? "bg-accent text-accent-foreground"
-                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  : "text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
               )}
             >
               <Icon className="h-4 w-4" />
