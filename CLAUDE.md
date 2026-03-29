@@ -125,14 +125,16 @@ src/linauto/
 - `src/linauto/campaign/importer.py` — CSV import. Handles `name`/`full_name` columns (splits into first/last) and `project`/`project_name` columns (maps to company). Add new column aliases to `_COLUMN_MAP` or `_FULL_NAME_COLUMNS` here.
 
 ## Scheduler Jobs (6 total)
+All times are **in the account's configured timezone** (e.g. `America/New_York` for Montreal). Jobs that need per-account timing fire hourly and skip accounts that are outside their window or have already run today.
+
 | Job | Schedule | Purpose |
 |-----|----------|---------|
-| `daily_planner` | 06:00 daily | Assign scheduled_at to pending leads |
+| `daily_planner` | Hourly; plans once per local day before work window | Assign scheduled_at to pending leads |
 | `dispatcher` | Every 5 min | Execute due connection requests |
-| `acceptance_checker` | 10:00 daily | Detect accepted connections via invitation manager diff |
-| `cooldown_checker` | 00:00 daily | Resume paused accounts |
+| `acceptance_checker` | Hourly; fires at `acceptance_check_hour` local time (default 10 AM) | Detect accepted connections via invitation manager diff |
+| `cooldown_checker` | 04:00 UTC daily | Resume paused accounts |
 | `followup_dispatcher` | Every 30 min | Send follow-up messages |
-| `keepalive` | 08:00 ±90min daily | Organic morning LinkedIn session |
+| `keepalive` | Hourly; fires once in 7–10 AM local window | Organic morning LinkedIn session |
 
 ## Anti-Detection Layer
 
@@ -193,7 +195,7 @@ src/linauto/
 - Cost: ~1–2 MB/day (1 invitation manager page + a few profile visits) vs. old approach (~240 MB/day).
 
 ### Morning Warm-Up (`runner.py` → `keep_alive`)
-- Runs once daily in the 6:30–9:30 AM window (CronTrigger jitter=5400s).
+- Runs once per local day in the account's 7–10 AM window (hourly job with per-account time check).
 - Step 1: Feed scroll 15–35 seconds (most natural morning action).
 - Step 2: One additional page — notifications, network, or messaging (random weighted).
 - Detects session expiry via URL redirect check, not HTTP pre-check.
@@ -208,20 +210,6 @@ src/linauto/
 - `domcontentloaded` fires immediately on a /login redirect → expired session detected in <2s instead of a 30s timeout that masks the root cause.
 - Profile content rendering is handled separately by `_wait_for_profile_rendered()` after session is confirmed valid.
 
-### Proxy Bandwidth Budget (1 account, 40 leads/day)
-After all optimizations (resource blocking, DB pre-check, validation cooldown, invitation manager diff):
-
-| Component | MB/day |
-|-----------|--------|
-| Connection requests (actual work, 40 leads × 2 pages × ~1 MB) | ~80 |
-| Dispatch feed pre-check (max 6× per 30-min cooldown window) | ~6 |
-| Acceptance checker (1 invitation manager page + new acceptances) | ~2–10 |
-| Morning keep-alive (2 pages) | ~3 |
-| **Total** | **~90–100 MB/day → ~3 GB/month** |
-
-The ~3 GB/month floor is essentially irreducible — it's the cost of actually navigating to 40 LinkedIn profiles per day. Any further reduction would require LinkedIn API access.
-
-**What NOT to do to reduce bandwidth further**: do not increase `_VALIDATION_COOLDOWN` beyond 30 min or reduce the acceptance_check to less than daily — you'd miss accepted connections and delay follow-ups.
 
 ### Playwright Proxy Credentials
 - **Always use separate `username`/`password` fields** — Playwright/Chromium silently ignores credentials embedded in the server URL string (`http://user:pass@host:port`). The browser code in `browser.py` parses the URL and splits them out; do not revert this.

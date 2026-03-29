@@ -277,34 +277,67 @@ export default function CampaignDetailPage({
                   <p className="text-sm text-muted-foreground">No lists assigned to this campaign.</p>
                 ) : (
                   <div className="space-y-2">
-                    {(campaign.assigned_lists ?? []).map((ll) => (
-                      <div
-                        key={ll.id}
-                        className="flex items-center justify-between rounded-md bg-muted px-3 py-2"
-                      >
-                        <div>
-                          <span className="text-sm font-medium">{ll.name}</span>
-                          <span className="text-xs text-muted-foreground ml-2">{ll.total_leads} leads</span>
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={unassign.isPending}
-                          onClick={() =>
-                            unassign.mutate(
-                              { listId: ll.id, campaignId: id },
-                              {
-                                onSuccess: (data) =>
-                                  toast.success(`Unassigned — ${data.leads_removed} leads removed`),
-                                onError: (err) => toast.error(err.message),
-                              }
-                            )
-                          }
+                    {(campaign.assigned_lists ?? []).map((ll) => {
+                      const counts = ll.status_counts ?? {};
+                      const total = Object.values(counts).reduce((a: number, b: number) => a + b, 0);
+                      const accepted = (counts["connected"] ?? 0) + (counts["completed"] ?? 0) + (counts["followup_sent"] ?? 0);
+                      const sent = counts["connection_requested"] ?? 0;
+                      const pending = (counts["pending"] ?? 0) + (counts["scheduled"] ?? 0);
+                      const other = total - pending - sent - accepted;
+                      const acceptedPct = total > 0 ? Math.round((accepted / total) * 100) : 0;
+                      const sentPct = total > 0 ? Math.round((sent / total) * 100) : 0;
+                      const otherPct = total > 0 ? Math.round((other / total) * 100) : 0;
+                      const processedPct = acceptedPct + sentPct + otherPct;
+                      return (
+                        <div
+                          key={ll.id}
+                          className="rounded-md bg-muted px-3 py-2 space-y-2"
                         >
-                          Unassign
-                        </Button>
-                      </div>
-                    ))}
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <span className="text-sm font-medium">{ll.name}</span>
+                              <span className="text-xs text-muted-foreground ml-2">{ll.total_leads} leads</span>
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={unassign.isPending}
+                              onClick={() =>
+                                unassign.mutate(
+                                  { listId: ll.id, campaignId: id },
+                                  {
+                                    onSuccess: (data) =>
+                                      toast.success(`Unassigned — ${data.leads_removed} leads removed`),
+                                    onError: (err) => toast.error(err.message),
+                                  }
+                                )
+                              }
+                            >
+                              Unassign
+                            </Button>
+                          </div>
+                          {total > 0 && (
+                            <div className="space-y-1">
+                              <div className="flex justify-between text-xs text-muted-foreground">
+                                <span>{accepted + sent + other} / {total} processed</span>
+                                <span>{processedPct}%</span>
+                              </div>
+                              <div className="flex h-1.5 w-full rounded-full bg-background overflow-hidden">
+                                {acceptedPct > 0 && (
+                                  <div className="h-full bg-emerald-500 transition-all" style={{ width: `${acceptedPct}%` }} />
+                                )}
+                                {sentPct > 0 && (
+                                  <div className="h-full bg-blue-500 transition-all" style={{ width: `${sentPct}%` }} />
+                                )}
+                                {otherPct > 0 && (
+                                  <div className="h-full bg-zinc-500 transition-all" style={{ width: `${otherPct}%` }} />
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
 

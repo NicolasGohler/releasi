@@ -480,7 +480,18 @@ async def account_activity(
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
     logs = await repo.list_action_log(account_id=account_id, limit=limit)
-    return [ActionLogOut.model_validate(l) for l in logs]
+    lead_ids = [l.lead_id for l in logs if l.lead_id]
+    leads_map = await repo.get_leads_by_ids(lead_ids)
+    result = []
+    for l in logs:
+        out = ActionLogOut.model_validate(l)
+        if l.lead_id and l.lead_id in leads_map:
+            lead = leads_map[l.lead_id]
+            out.lead_first_name = lead.first_name
+            out.lead_last_name = lead.last_name
+            out.lead_url = lead.linkedin_url
+        result.append(out)
+    return result
 
 
 @router.get("/accounts/{account_id}/stats", response_model=List[DailyStatOut])

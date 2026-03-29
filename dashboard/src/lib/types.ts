@@ -51,7 +51,7 @@ export interface Campaign {
   csv_filename: string | null;
   total_leads: number;
   status_counts: Record<string, number> | null;
-  assigned_lists: { id: string; name: string; total_leads: number }[];
+  assigned_lists: { id: string; name: string; total_leads: number; status_counts: Record<string, number> | null }[];
   account_status: string | null;
   account_paused_until: string | null;
   account_timezone: string | null;
@@ -110,6 +110,9 @@ export interface ActionLog {
   status: string;
   details: Record<string, unknown> | null;
   created_at: string;
+  lead_first_name: string | null;
+  lead_last_name: string | null;
+  lead_url: string | null;
 }
 
 export interface DailyStat {

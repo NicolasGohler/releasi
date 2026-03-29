@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import random
 import signal
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone as _dt_tz
 from typing import Optional
 
 import structlog
@@ -31,6 +31,24 @@ logger = structlog.get_logger()
 # Per-account session tracking: when the last dispatch session ended (UTC naive).
 # Prevents rapid-fire dispatching across 5-min cycles — enforces inter-session gap.
 _last_session_end: dict = {}
+
+# Per-account "ran today" trackers for once-daily jobs.
+# Key: account_id, Value: date in the account's local timezone.
+# Reset on container restart (intentional — re-run keeps things fresh).
+_keepalive_ran: dict = {}      # keep_alive: only once per local day, morning window
+_acceptance_checked: dict = {} # check_acceptances: only once per local day
+
+
+def _acct_local_now(account):
+    """Return current datetime in the account's timezone (aware), or UTC if unset/invalid."""
+    tz_str = account.timezone
+    if tz_str:
+        try:
+            from zoneinfo import ZoneInfo
+            return datetime.now(ZoneInfo(tz_str))
+        except Exception:
+            pass
+    return datetime.now(_dt_tz.utc)
 
 import re as _re
 
@@ -98,8 +116,15 @@ async def daily_planning_sweep():
     """
     Generate today's plan for all active accounts/campaigns.
 
-    Runs daily at 06:00. Assigns scheduled_at to pending leads
-    based on clustered timing.
+    Runs hourly (IntervalTrigger). Per-account logic:
+    - Uses the account's local date (not server date) so a Tokyo account
+      plans for the correct calendar day even when the server is in Berlin.
+    - Skips if leads are already scheduled for today (future_scheduled > 0)
+      and the work window has already started — the dispatcher and backfill
+      logic handle the rest from that point.
+    - Passes effective_start=now when called after the account's work window
+      start (e.g. container restart mid-day) so the planner spreads remaining
+      slots across the rest of the day rather than bursting them all at once.
     """
     repo, session = await _get_repo()
     try:
@@ -113,14 +138,16 @@ async def daily_planning_sweep():
                 )
                 continue
 
+            # Compute account's local "today" so the plan is always anchored to
+            # the correct calendar date regardless of the server's timezone.
+            acct_now_aware = _acct_local_now(account)
+            acct_today = acct_now_aware.date()
+
             campaigns = await repo.get_active_campaigns(account.id)
             for campaign in campaigns:
                 now = datetime.utcnow()
 
                 # Reset any stale past-scheduled leads back to PENDING.
-                # This cleans up slots from previous days or missed windows
-                # (e.g. multiple restarts, container downtime) so they
-                # re-enter the pending pool rather than silently accumulating.
                 stale = await repo.reset_stale_scheduled_leads(campaign.id)
                 if stale:
                     logger.info(
@@ -152,28 +179,45 @@ async def daily_planning_sweep():
                     )
                     continue
 
+                # Determine the UTC start of today's work window for this account.
+                _settings = get_settings()
+                _ws_utc = None
+                try:
+                    from zoneinfo import ZoneInfo
+                    _acct_tz = ZoneInfo(account.timezone or "UTC")
+                    _ws_utc = datetime(
+                        acct_today.year, acct_today.month, acct_today.day,
+                        _settings.work_start_hour, 0, tzinfo=_acct_tz,
+                    ).astimezone(_dt_tz.utc).replace(tzinfo=None)
+                except Exception:
+                    pass
+
+                # If leads are already scheduled and the work window has started,
+                # don't re-plan — the dispatcher and backfill handle everything.
+                if future_scheduled > 0 and _ws_utc is not None and now >= _ws_utc:
+                    continue
+
+                # effective_start: None before the work window (standard morning plan,
+                # sessions distributed across the full window); now_utc after the
+                # window has started (container restart, spread remaining slots forward).
+                effective_start = now if (_ws_utc is not None and now > _ws_utc) else None
+
                 plan = generate_daily_plan(
                     account_id=account.id,
-                    day=date.today(),
+                    day=acct_today,
                     pending_lead_ids=lead_ids,
                     daily_limit=account.daily_limit,
                     timezone_str=account.timezone,
                     campaign_weekend_enabled=campaign.weekend_enabled,
-                    effective_start=None,
+                    effective_start=effective_start,
                     remaining_budget=remaining_budget,
                 )
 
-                # Assign scheduled_at to leads for connection_request slots.
-                # If a slot's time is already past (e.g. planner ran late in the day
-                # or on local startup mid-morning), schedule it for now so the
-                # dispatcher picks it up in the next cycle rather than silently
-                # dropping it and under-delivering for the day.
                 scheduled_count = 0
                 for slot in plan:
                     if slot.slot_type == SlotType.CONNECTION_REQUEST and slot.lead_id:
-                        slot_time = slot.scheduled_at if slot.scheduled_at > now else now
                         await repo.update_lead_schedule(
-                            slot.lead_id, slot_time, LeadStatus.SCHEDULED
+                            slot.lead_id, slot.scheduled_at, LeadStatus.SCHEDULED
                         )
                         scheduled_count += 1
 
@@ -272,18 +316,6 @@ async def dispatch():
 
             if not can_send:
                 logger.info("dispatch.daily_limit_reached", account=account.name)
-                continue
-
-            # Bandwidth guard — stop before opening any browser pages
-            bw_used = await repo.get_daily_proxy_mb(account.id)
-            bw_limit = get_settings().daily_bandwidth_limit_mb
-            if bw_used >= bw_limit:
-                logger.warning(
-                    "dispatch.bandwidth_limit_reached",
-                    account=account.name,
-                    used_mb=round(bw_used, 1),
-                    limit_mb=bw_limit,
-                )
                 continue
 
             # Quick DB pre-check: skip browser entirely if no leads are due.
@@ -538,6 +570,33 @@ async def dispatch():
                                 future_scheduled=_future_scheduled,
                             )
                         _anchor = datetime.utcnow() + timedelta(seconds=_inter_gap)
+                        # Clamp backfill anchor to account's work window so leads are never
+                        # scheduled overnight. If anchor falls before today's window, push
+                        # to window start. If after today's window, push to tomorrow's start.
+                        if account.timezone:
+                            try:
+                                from zoneinfo import ZoneInfo
+                                _bkf_tz = ZoneInfo(account.timezone)
+                                _bkf_settings = get_settings()
+                                _bkf_day = _anchor.date()
+                                _ws = datetime(
+                                    _bkf_day.year, _bkf_day.month, _bkf_day.day,
+                                    _bkf_settings.work_start_hour, 0, tzinfo=_bkf_tz,
+                                ).astimezone(_dt_tz.utc).replace(tzinfo=None)
+                                _we = datetime(
+                                    _bkf_day.year, _bkf_day.month, _bkf_day.day,
+                                    _bkf_settings.work_end_hour, 0, tzinfo=_bkf_tz,
+                                ).astimezone(_dt_tz.utc).replace(tzinfo=None)
+                                if _anchor < _ws:
+                                    _anchor = _ws
+                                elif _anchor >= _we:
+                                    _tmrw = _bkf_day + timedelta(days=1)
+                                    _anchor = datetime(
+                                        _tmrw.year, _tmrw.month, _tmrw.day,
+                                        _bkf_settings.work_start_hour, 0, tzinfo=_bkf_tz,
+                                    ).astimezone(_dt_tz.utc).replace(tzinfo=None)
+                            except Exception:
+                                pass  # keep original anchor if timezone logic fails
                         _scheduled = 0
                         for _i in range(_actual_backfills):
                             _pending = await repo.get_pending_leads(campaign.id, limit=1)
@@ -630,12 +689,12 @@ async def check_acceptances():
     """
     Check for accepted connection requests using invitation manager diff.
 
-    Runs once daily. Loads the invitation manager page ONCE, extracts all
-    pending sent invitation URLs, diffs against DB leads with CONNECTION_REQUESTED
-    status. Leads that have "disappeared" from the invitation list are visited
-    individually to confirm whether they accepted (→ CONNECTED) or declined/expired
-    (→ WITHDRAWN). This replaces the old approach of visiting up to 30 profiles
-    every 3 hours.
+    Runs hourly (IntervalTrigger). Per-account logic: only fires once per local day
+    at the configured acceptance_check_hour (interpreted in the account's timezone).
+    Loads the invitation manager page ONCE, extracts all pending sent invitation URLs,
+    diffs against DB leads with CONNECTION_REQUESTED status. Leads that have
+    "disappeared" from the invitation list are visited individually to confirm whether
+    they accepted (→ CONNECTED) or declined/expired (→ WITHDRAWN).
     """
     from linauto.linkedin.actions import LinkedInActions
     from linauto.safety.delays import DelayGenerator
@@ -646,6 +705,15 @@ async def check_acceptances():
         for account in accounts:
             # Skip paused accounts
             if account.paused_until and not is_cooldown_expired(account.paused_until):
+                continue
+
+            # Only run at the configured hour in the account's local timezone.
+            acct_now = _acct_local_now(account)
+            acct_today = acct_now.date()
+            check_hour = get_settings().acceptance_check_hour
+            if acct_now.hour != check_hour:
+                continue
+            if _acceptance_checked.get(account.id) == acct_today:
                 continue
 
             # Collect all CONNECTION_REQUESTED leads across all active campaigns
@@ -661,17 +729,6 @@ async def check_acceptances():
             if not needs_browser:
                 continue
 
-            # Bandwidth guard
-            bw_used = await repo.get_daily_proxy_mb(account.id)
-            bw_limit = get_settings().daily_bandwidth_limit_mb
-            if bw_used >= bw_limit:
-                logger.warning(
-                    "acceptance.bandwidth_limit_reached",
-                    account=account.name,
-                    used_mb=round(bw_used, 1),
-                    limit_mb=bw_limit,
-                )
-                continue
 
             pool = get_browser_pool()
             pool_context = None
@@ -893,6 +950,9 @@ async def check_acceptances():
                         except Exception as e:
                             logger.error("followup.immediate_failed", url=lead.linkedin_url, error=str(e))
 
+                # Mark as checked for today so subsequent hourly runs skip this account
+                _acceptance_checked[account.id] = acct_today
+
             finally:
                 await pool.release_idle(account.id)
 
@@ -930,17 +990,6 @@ async def dispatch_followups():
             if not has_due:
                 continue
 
-            # Bandwidth guard
-            bw_used = await repo.get_daily_proxy_mb(account.id)
-            bw_limit = get_settings().daily_bandwidth_limit_mb
-            if bw_used >= bw_limit:
-                logger.warning(
-                    "followup_dispatch.bandwidth_limit_reached",
-                    account=account.name,
-                    used_mb=round(bw_used, 1),
-                    limit_mb=bw_limit,
-                )
-                continue
 
             pool = get_browser_pool()
             pool_context = None
@@ -1091,8 +1140,10 @@ async def keep_alive():
     """
     Daily organic morning session — simulates a user opening LinkedIn in the morning.
 
-    Runs once per day at 8:00 ±90 min. Does a multi-step browsing sequence
-    (feed scroll + one additional page) to look like natural morning usage.
+    Runs hourly (IntervalTrigger). Per-account logic: only fires once per local day
+    during the account's 7–10 AM window. The exact trigger time varies by ≤1 hour
+    depending on when the hourly job happens to land in that window.
+
     Session expiry is detected reactively by the dispatcher (3 consecutive errors),
     not by this job. This job's purpose is organic-looking activity, not health checking.
     Skips accounts whose browser is currently in use by the dispatcher.
@@ -1109,21 +1160,20 @@ async def keep_alive():
             if not account.li_at_cookie:
                 continue
 
+            # Only run during the account's 7–10 AM morning window.
+            acct_now = _acct_local_now(account)
+            if not (7 <= acct_now.hour < 10):
+                continue
+
+            # Only once per local day — prevents running again if the job fires
+            # multiple times within the same window (e.g. near the boundary).
+            acct_today = acct_now.date()
+            if _keepalive_ran.get(account.id) == acct_today:
+                continue
+
             # Skip if browser is busy with another job — try next cycle
             if pool.is_busy(account.id):
                 logger.debug("keepalive.skipped_busy", account=account.name)
-                continue
-
-            # Bandwidth guard
-            bw_used = await repo.get_daily_proxy_mb(account.id)
-            bw_limit = get_settings().daily_bandwidth_limit_mb
-            if bw_used >= bw_limit:
-                logger.warning(
-                    "keepalive.bandwidth_limit_reached",
-                    account=account.name,
-                    used_mb=round(bw_used, 1),
-                    limit_mb=bw_limit,
-                )
                 continue
 
             try:
@@ -1162,6 +1212,7 @@ async def keep_alive():
                         await page.mouse.wheel(0, random.randint(200, 500))
                         await asyncio.sleep(random.uniform(2, 5))
                         await repo.add_proxy_mb(account.id, 3.0)  # feed scroll + second page
+                        _keepalive_ran[account.id] = acct_today
                         logger.info("keepalive.morning_done", account=account.name, second_page=second_name)
 
                 except Exception as e:
@@ -1249,12 +1300,17 @@ async def start_scheduler():
     await _start_api_server()
 
     settings = get_settings()
-    scheduler = AsyncIOScheduler()
+    # Scheduler runs in UTC. Jobs that need per-account timezone awareness (planner,
+    # keepalive, acceptance checker) fire hourly and decide internally whether to act
+    # for each account based on that account's local time. This scales to any timezone
+    # without hardcoded offsets — a Tokyo account and a Montreal account are both
+    # handled correctly by the same job.
+    scheduler = AsyncIOScheduler(timezone='UTC')
 
-    # Daily planning sweep at 06:00
+    # Daily planning sweep — fires hourly; per-account logic handles local date/time.
     scheduler.add_job(
         daily_planning_sweep,
-        CronTrigger(hour=6, minute=0),
+        IntervalTrigger(hours=1),
         id="daily_planner",
         name="Daily Planning Sweep",
         replace_existing=True,
@@ -1272,19 +1328,20 @@ async def start_scheduler():
         misfire_grace_time=600,
     )
 
-    # Acceptance checker once daily
+    # Acceptance checker — fires hourly; per-account logic checks if it's
+    # acceptance_check_hour in the account's local timezone (once per local day).
     scheduler.add_job(
         check_acceptances,
-        CronTrigger(hour=settings.acceptance_check_hour),
+        IntervalTrigger(hours=1),
         id="acceptance_checker",
         name="Daily Acceptance Checker",
         replace_existing=True,
     )
 
-    # Cooldown checker daily at midnight
+    # Cooldown checker daily at midnight EDT (04:00 UTC)
     scheduler.add_job(
         check_cooldowns,
-        CronTrigger(hour=0, minute=0),
+        CronTrigger(hour=4, minute=0),
         id="cooldown_checker",
         name="Cooldown Checker",
         replace_existing=True,
@@ -1300,22 +1357,20 @@ async def start_scheduler():
         misfire_grace_time=600,
     )
 
-    # Session keep-alive — once per day, morning window (8:00 ±90 min).
-    # Not a health check: LinkedIn sessions last months on their own.
-    # This is purely organic-looking morning activity, not a ping.
-    # Expiry is detected reactively by the dispatcher (3 consecutive errors).
+    # Session keep-alive — fires hourly; per-account logic checks if it's within
+    # the 7–10 AM window in the account's local timezone (once per local day).
     scheduler.add_job(
         keep_alive,
-        CronTrigger(hour=8, minute=0, jitter=5400),  # 6:30–9:30 AM window
+        IntervalTrigger(hours=1),
         id="keepalive",
         name="Morning Session Warm-Up",
         replace_existing=True,
     )
 
-    # Daily summary Slack notification at 20:00 (±5 min jitter)
+    # Daily summary Slack notification at 21:00 EDT (01:00 UTC, ±5 min jitter)
     scheduler.add_job(
         daily_summary,
-        CronTrigger(hour=20, minute=0, jitter=300),
+        CronTrigger(hour=1, minute=0, jitter=300),
         id="daily_summary",
         name="Daily Slack Summary",
         replace_existing=True,

@@ -203,6 +203,10 @@ class ActionLogOut(BaseModel):
     status: str
     details: Optional[Dict[str, Any]] = None
     created_at: datetime
+    # Enriched lead fields (populated by the activity endpoint)
+    lead_first_name: Optional[str] = None
+    lead_last_name: Optional[str] = None
+    lead_url: Optional[str] = None
 
     class Config:
         from_attributes = True

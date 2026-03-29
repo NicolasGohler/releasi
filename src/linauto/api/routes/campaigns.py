@@ -32,7 +32,8 @@ async def _enrich_campaign(repo: Repository, campaign) -> CampaignOut:
     for link in links:
         ll = await repo.get_lead_list(link.lead_list_id)
         if ll:
-            assigned.append({"id": ll.id, "name": ll.name, "total_leads": ll.total_leads})
+            sc = await repo.get_list_status_counts_for_campaign(ll.id, campaign.id)
+            assigned.append({"id": ll.id, "name": ll.name, "total_leads": ll.total_leads, "status_counts": sc})
     out.assigned_lists = assigned
     return out
 

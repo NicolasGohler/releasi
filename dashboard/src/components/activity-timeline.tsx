@@ -29,29 +29,93 @@ export function ActivityTimeline({ logs, timezone }: { logs: ActionLog[]; timezo
     );
   }
 
+  // Collapse all CHECK_ACCEPTANCE entries into a single summary row
+  const acceptanceEntries = logs.filter((l) => l.action_type === "CHECK_ACCEPTANCE");
+  const acceptanceCount = acceptanceEntries.length;
+  const latestAcceptance = acceptanceEntries[0]; // logs are newest-first
+
+  const displayLogs: Array<ActionLog | { _type: "acceptance_summary"; count: number; entry: ActionLog }> = [];
+  let acceptanceSummarized = false;
+
+  for (const log of logs) {
+    if (log.action_type === "CHECK_ACCEPTANCE") {
+      if (!acceptanceSummarized) {
+        displayLogs.push({ _type: "acceptance_summary", count: acceptanceCount, entry: latestAcceptance });
+        acceptanceSummarized = true;
+      }
+      // Skip remaining individual acceptance entries
+    } else {
+      displayLogs.push(log);
+    }
+  }
+
   return (
     <div className="space-y-3">
-      {logs.map((log) => (
-        <div
-          key={log.id}
-          className="flex items-start gap-3 rounded-md border border-border p-3 text-sm"
-        >
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="font-medium">{formatActionType(log.action_type)}</span>
-              <StatusBadge status={log.status} />
+      {displayLogs.map((item, idx) => {
+        // Collapsed acceptance summary row
+        if ("_type" in item && item._type === "acceptance_summary") {
+          return (
+            <div
+              key="acceptance-summary"
+              className="flex items-start gap-3 rounded-md border border-border p-3 text-sm"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">Check Acceptance</span>
+                  <StatusBadge status="SUCCESS" />
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {item.count} connection{item.count !== 1 ? "s" : ""} accepted
+                </p>
+              </div>
+              <span className="text-xs text-muted-foreground whitespace-nowrap">
+                {formatTime(item.entry.created_at, timezone)}
+              </span>
             </div>
-            {log.details && (
-              <p className="text-xs text-muted-foreground mt-1 truncate">
-                {JSON.stringify(log.details)}
-              </p>
-            )}
+          );
+        }
+
+        const log = item as ActionLog;
+        const isConnectionRequest = log.action_type === "CONNECTION_REQUEST";
+        const leadName =
+          log.lead_first_name || log.lead_last_name
+            ? [log.lead_first_name, log.lead_last_name].filter(Boolean).join(" ")
+            : null;
+
+        return (
+          <div
+            key={log.id}
+            className="flex items-start gap-3 rounded-md border border-border p-3 text-sm"
+          >
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-medium">{formatActionType(log.action_type)}</span>
+                {isConnectionRequest && leadName && log.lead_url ? (
+                  <a
+                    href={log.lead_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-500 hover:underline truncate"
+                  >
+                    {leadName}
+                  </a>
+                ) : isConnectionRequest && leadName ? (
+                  <span className="text-muted-foreground truncate">{leadName}</span>
+                ) : null}
+                <StatusBadge status={log.status} />
+              </div>
+              {!isConnectionRequest && log.details && (
+                <p className="text-xs text-muted-foreground mt-1 truncate">
+                  {JSON.stringify(log.details)}
+                </p>
+              )}
+            </div>
+            <span className="text-xs text-muted-foreground whitespace-nowrap">
+              {formatTime(log.created_at, timezone)}
+            </span>
           </div>
-          <span className="text-xs text-muted-foreground whitespace-nowrap">
-            {formatTime(log.created_at, timezone)}
-          </span>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -226,6 +226,30 @@ class Repository:
         )
         return {row[0].value: row[1] for row in result.all()}
 
+    async def get_list_status_counts_for_campaign(
+        self, lead_list_id: str, campaign_id: str
+    ) -> dict[str, int]:
+        """Get lead counts grouped by status for a specific list within a campaign."""
+        result = await self.session.execute(
+            select(Lead.status, func.count())
+            .where(
+                Lead.lead_list_id == lead_list_id,
+                Lead.campaign_id == campaign_id,
+                Lead.status != LeadStatus.REMOVED,
+            )
+            .group_by(Lead.status)
+        )
+        return {row[0].value: row[1] for row in result.all()}
+
+    async def get_leads_by_ids(self, lead_ids: list) -> dict:
+        """Batch-fetch leads by id. Returns {lead_id: Lead}."""
+        if not lead_ids:
+            return {}
+        result = await self.session.execute(
+            select(Lead).where(Lead.id.in_(lead_ids))
+        )
+        return {l.id: l for l in result.scalars().all()}
+
     # ── Action Log ─────────────────────────────────────────────────────────
 
     async def log_action(
