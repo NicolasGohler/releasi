@@ -30,7 +30,7 @@ export function ActivityTimeline({ logs, timezone }: { logs: ActionLog[]; timezo
   }
 
   // Collapse all CHECK_ACCEPTANCE entries into a single summary row
-  const acceptanceEntries = logs.filter((l) => l.action_type === "CHECK_ACCEPTANCE");
+  const acceptanceEntries = logs.filter((l) => l.action_type.toUpperCase() === "CHECK_ACCEPTANCE");
   const acceptanceCount = acceptanceEntries.length;
   const latestAcceptance = acceptanceEntries[0]; // logs are newest-first
 
@@ -38,7 +38,7 @@ export function ActivityTimeline({ logs, timezone }: { logs: ActionLog[]; timezo
   let acceptanceSummarized = false;
 
   for (const log of logs) {
-    if (log.action_type === "CHECK_ACCEPTANCE") {
+    if (log.action_type.toUpperCase() === "CHECK_ACCEPTANCE") {
       if (!acceptanceSummarized) {
         displayLogs.push({ _type: "acceptance_summary", count: acceptanceCount, entry: latestAcceptance });
         acceptanceSummarized = true;
@@ -76,7 +76,7 @@ export function ActivityTimeline({ logs, timezone }: { logs: ActionLog[]; timezo
         }
 
         const log = item as ActionLog;
-        const isConnectionRequest = log.action_type === "CONNECTION_REQUEST";
+        const isConnectionRequest = log.action_type.toUpperCase() === "CONNECTION_REQUEST";
         const leadName =
           log.lead_first_name || log.lead_last_name
             ? [log.lead_first_name, log.lead_last_name].filter(Boolean).join(" ")
