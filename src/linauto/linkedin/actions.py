@@ -442,34 +442,25 @@ class LinkedInActions:
             if skip_reason:
                 return ActionResult(ActionStatus.SKIPPED, reason=skip_reason)
 
-        # 2. Check if already connected.
-        #
-        # Primary: JS scan of all short text nodes in <main> for "1st" — immune
-        # to obfuscated class names, Unicode bullet variants, and split elements.
-        # Secondary: CSS selectors as fallback (faster when they do match).
-        is_first_degree = await self.page.evaluate("""() => {
+        # 2. Negative-signal check: "2nd" / "3rd" degree badge means
+        #    definitively NOT a 1st-degree connection. Check this first so
+        #    later steps can't produce a false-positive "already_connected".
+        is_non_first = await self.page.evaluate(r"""() => {
             const main = document.querySelector('main');
             if (!main) return false;
-            const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT);
+            // Scan the profile header (first <section>) for 2nd/3rd badge
+            const header = main.querySelector('section') || main;
+            const walker = document.createTreeWalker(header, NodeFilter.SHOW_TEXT);
             let node;
             while ((node = walker.nextNode())) {
                 const t = node.textContent.trim();
-                // Match short strings like "· 1st", "• 1st", "1st" near separators
-                if (t.length < 15 && /1st/.test(t)) return true;
+                if (t.length < 15 && /\b(2nd|3rd)\b/.test(t)) return true;
             }
             return false;
         }""")
-        if not is_first_degree:
-            css_match = await self._find_element(
-                selectors.ALREADY_CONNECTED_INDICATORS, timeout_ms=1000
-            )
-            if css_match:
-                is_first_degree = True
-        if is_first_degree:
-            logger.info("action.already_connected_1st_degree", url=profile_url)
-            return ActionResult(ActionStatus.SKIPPED, reason="already_connected")
 
-        # 3. Check if request is pending (try both CSS and role-based)
+        # 3. Check if request is pending — must run BEFORE the 1st-degree
+        #    check so a pending request is never misclassified as connected.
         pending = await self._find_element(
             selectors.PENDING_CONNECTION_INDICATORS, timeout_ms=3000
         )
@@ -481,7 +472,42 @@ class LinkedInActions:
         if pending:
             return ActionResult(ActionStatus.SKIPPED, reason="pending_request")
 
-        # 4. Find Connect button/anchor to confirm profile is connectable
+        # 4. Check if already connected (1st-degree).
+        #
+        # Only runs when neither a 2nd/3rd badge nor a Pending button was
+        # found — both of which are definitive proof the lead is NOT a
+        # 1st-degree connection.
+        #
+        # Primary: JS scan of the profile header section (first <section>)
+        # for short text containing "\b1st\b". Restricted to the header to
+        # avoid false positives from body content like "1st Team All-American".
+        # Secondary: CSS selectors as fallback.
+        is_first_degree = False
+        if not is_non_first:
+            is_first_degree = await self.page.evaluate(r"""() => {
+                const main = document.querySelector('main');
+                if (!main) return false;
+                // Only scan the profile header section, not the full page body
+                const header = main.querySelector('section') || main;
+                const walker = document.createTreeWalker(header, NodeFilter.SHOW_TEXT);
+                let node;
+                while ((node = walker.nextNode())) {
+                    const t = node.textContent.trim();
+                    if (t.length < 15 && /\b1st\b/.test(t)) return true;
+                }
+                return false;
+            }""")
+            if not is_first_degree:
+                css_match = await self._find_element(
+                    selectors.ALREADY_CONNECTED_INDICATORS, timeout_ms=1000
+                )
+                if css_match:
+                    is_first_degree = True
+        if is_first_degree:
+            logger.info("action.already_connected_1st_degree", url=profile_url)
+            return ActionResult(ActionStatus.SKIPPED, reason="already_connected")
+
+        # 5. Find Connect button/anchor to confirm profile is connectable
         connect_btn = await self._find_connect_button(profile_url)
         if not connect_btn:
             # Last-resort already-connected check: Message present + Follow absent
