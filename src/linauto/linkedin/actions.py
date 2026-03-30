@@ -394,14 +394,16 @@ class LinkedInActions:
             return ActionResult(ActionStatus.SESSION_EXPIRED)
 
         # 1.25 Check for LinkedIn 404 page.
-        # LinkedIn returns HTTP 200 for deleted/renamed profiles so navigation
-        # succeeds, but the page body shows "This page doesn't exist".
-        # These leads are permanently unactionable — mark INVALID, not ERROR.
+        # LinkedIn redirects deleted/renamed profiles to /404/ — this is the
+        # most reliable signal. Also check page title and body text as fallback.
+        current_url = self.page.url
+        if "/404" in current_url:
+            logger.info("action.profile_not_found", url=profile_url, redirect_url=current_url)
+            return ActionResult(ActionStatus.INVALID, reason="profile_not_found")
         page_title = await self.page.title()
         if "Page Not Found" in page_title or "doesn't exist" in page_title.lower():
             logger.info("action.profile_not_found", url=profile_url)
             return ActionResult(ActionStatus.INVALID, reason="profile_not_found")
-        # Also check the body text for the 404 message (title varies by locale)
         not_found_el = await self._try_locator(
             self.page.locator("text=This page doesn't exist").first, timeout_ms=500
         )
