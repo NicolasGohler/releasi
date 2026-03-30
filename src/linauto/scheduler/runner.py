@@ -192,9 +192,9 @@ async def daily_planning_sweep():
                 except Exception:
                     pass
 
-                # If leads are already scheduled and the work window has started,
-                # don't re-plan — the dispatcher and backfill handle everything.
-                if future_scheduled > 0 and _ws_utc is not None and now >= _ws_utc:
+                # If leads are already scheduled for today, don't re-plan regardless
+                # of time — the dispatcher and backfill handle everything from here.
+                if future_scheduled > 0:
                     continue
 
                 # effective_start: None before the work window (standard morning plan,
