@@ -301,32 +301,37 @@ def _generate_session_slots(
             # remaining 35% acts as a buffer for backfills.
             dispatch_cutoff = work_start + timedelta(seconds=total_window * 0.65)
         else:
-            # Mid-day / compressed window: use the full remaining window.
-            # Scale inter-session gaps proportionally — a 7-hour day uses
-            # the configured gaps; shorter windows use smaller gaps so more
-            # sessions fit and the daily target is met.
             dispatch_cutoff = work_end
-            scale = min(1.0, total_window / (7 * 3600))
-            inter_gap_min = max(900, int(inter_gap_min * scale))   # floor: 15 min
-            inter_gap_max = max(1800, int(inter_gap_max * scale))  # floor: 30 min
 
-        # Place sessions with inter-session gaps
+        # Compute inter-session gaps that guarantee all sessions fit
+        # within the cutoff. If the configured gaps are too wide, shrink
+        # them proportionally; never go below a 10-min floor.
+        cutoff_secs = (dispatch_cutoff - work_start).total_seconds()
+        total_session_dur = sum(session_durations)
+        available_for_gaps = cutoff_secs - total_session_dur
+        # Budget per gap (between sessions + before first), minus jitter
+        gap_budget = (available_for_gaps / num_sessions) - 300  # 5 min jitter allowance
+        gap_budget = max(600, gap_budget)  # floor: 10 min
+
+        effective_gap_min = min(inter_gap_min, gap_budget * 0.4)
+        effective_gap_max = min(inter_gap_max, gap_budget)
+        effective_gap_min = max(600, effective_gap_min)   # floor: 10 min
+        effective_gap_max = max(effective_gap_min, effective_gap_max)
+
+        # Place sessions with adaptive gaps
         cursor = work_start
         session_starts = []
         for i in range(num_sessions):
-            # Add jitter to start time
-            jitter = timedelta(seconds=rng.uniform(0, 300))  # 0-5 min jitter
+            jitter = timedelta(seconds=rng.uniform(0, min(300, gap_budget * 0.3)))
             start = cursor + jitter
 
-            # Don't go past the cutoff
             if start >= dispatch_cutoff:
                 break
 
             session_starts.append(start)
 
-            # Move cursor past this session + inter-session gap
             session_dur = timedelta(seconds=session_durations[i]) if i < len(session_durations) else timedelta(0)
-            gap = timedelta(seconds=rng.uniform(inter_gap_min, inter_gap_max))
+            gap = timedelta(seconds=rng.uniform(effective_gap_min, effective_gap_max))
             cursor = start + session_dur + gap
 
     # Generate slots for each session
