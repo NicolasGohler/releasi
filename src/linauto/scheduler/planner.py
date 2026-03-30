@@ -134,9 +134,9 @@ def generate_daily_plan(
     if effective_limit <= 0:
         return _generate_noise_only_plan(rng, work_start, work_end, settings)
 
-    # Daily target = effective_limit with ±20% variation (e.g. 20 → 16-24)
-    variation = max(1, int(effective_limit * 0.20))
-    daily_target = rng.randint(effective_limit - variation, effective_limit)
+    # Daily target = effective_limit with ±10% variation (e.g. 40 → 36-44)
+    variation = max(1, int(effective_limit * 0.10))
+    daily_target = rng.randint(effective_limit - variation, effective_limit + variation)
     daily_target = max(1, daily_target)
 
     # Cap by available leads
