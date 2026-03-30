@@ -90,20 +90,32 @@ export function ActivityTimeline({ logs, timezone }: { logs: ActionLog[]; timezo
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-medium">{formatActionType(log.action_type)}</span>
-                {isConnectionRequest && leadName && log.lead_url ? (
-                  <a
-                    href={log.lead_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-500 hover:underline truncate"
-                  >
-                    {leadName}
-                  </a>
-                ) : isConnectionRequest && leadName ? (
-                  <span className="text-muted-foreground truncate">{leadName}</span>
+                {isConnectionRequest && leadName ? (
+                  <>
+                    <span className="text-muted-foreground">-</span>
+                    {log.lead_url ? (
+                      <a
+                        href={log.lead_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-500 hover:underline truncate"
+                      >
+                        {leadName}
+                      </a>
+                    ) : (
+                      <span className="text-muted-foreground truncate">{leadName}</span>
+                    )}
+                  </>
                 ) : null}
                 <StatusBadge status={log.status} />
               </div>
+              {isConnectionRequest && log.details && (
+                <p className="text-xs text-muted-foreground mt-1 truncate">
+                  {(log.details as Record<string, unknown>).reason === "already_connected"
+                    ? "Already connected"
+                    : JSON.stringify(log.details)}
+                </p>
+              )}
               {!isConnectionRequest && log.details && (
                 <p className="text-xs text-muted-foreground mt-1 truncate">
                   {JSON.stringify(log.details)}
