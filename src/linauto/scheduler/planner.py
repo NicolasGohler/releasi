@@ -152,11 +152,8 @@ def generate_daily_plan(
     max_per_session = settings.actions_per_session[1]
     min_sessions_for_target = max(1, -(-target // max_per_session))  # ceil division
     num_sessions = rng.randint(settings.sessions_per_day[0], settings.sessions_per_day[1])
-    # Expand up to the configured max if needed, but never beyond it
-    num_sessions = min(
-        max(num_sessions, min_sessions_for_target),
-        settings.sessions_per_day[1],
-    )
+    # Expand beyond the configured max if the target requires it
+    num_sessions = max(num_sessions, min_sessions_for_target)
     # Don't have more sessions than actions
     num_sessions = min(num_sessions, target)
 
@@ -221,19 +218,38 @@ def _distribute_actions(
     if num_sessions <= 0:
         return []
 
+    max_cap = settings.actions_per_session[1]
+    min_cap = max(1, settings.actions_per_session[0])
+
+    # First pass: randomised distribution
     actions_per = []
     remaining = total
     for i in range(num_sessions):
         max_this = min(
-            settings.actions_per_session[1],
+            max_cap,
             remaining - (num_sessions - i - 1),  # leave at least 1 per remaining session
         )
-        min_this = max(1, settings.actions_per_session[0])
-        min_this = min(min_this, max_this)
+        min_this = min(min_cap, max_this)
         count = rng.randint(min_this, max_this)
         actions_per.append(count)
         remaining -= count
         if remaining <= 0:
+            break
+
+    # Second pass: top up under-filled sessions to hit the target
+    indices = list(range(len(actions_per)))
+    while remaining > 0:
+        rng.shuffle(indices)
+        filled_any = False
+        for i in indices:
+            if remaining <= 0:
+                break
+            if actions_per[i] < max_cap:
+                add = min(remaining, max_cap - actions_per[i])
+                actions_per[i] += add
+                remaining -= add
+                filled_any = True
+        if not filled_any:
             break
 
     return actions_per
