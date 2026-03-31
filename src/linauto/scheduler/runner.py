@@ -221,31 +221,6 @@ async def daily_planning_sweep():
                         )
                         scheduled_count += 1
 
-                if scheduled_count == 0 and lead_ids:
-                    # All generated slots were in the past (edge case: job ran very
-                    # late). Fallback: schedule for tomorrow so leads aren't stuck.
-                    logger.warning(
-                        "planner.all_slots_past_scheduling_tomorrow",
-                        account=account.name,
-                        campaign=campaign.name,
-                    )
-                    tomorrow = date.today() + timedelta(days=1)
-                    fallback_plan = generate_daily_plan(
-                        account_id=account.id,
-                        day=tomorrow,
-                        pending_lead_ids=lead_ids,
-                        daily_limit=account.daily_limit,
-                        timezone_str=account.timezone,
-                        campaign_weekend_enabled=campaign.weekend_enabled,
-                    )
-                    for slot in fallback_plan:
-                        if slot.slot_type == SlotType.CONNECTION_REQUEST and slot.lead_id:
-                            await repo.update_lead_schedule(
-                                slot.lead_id, slot.scheduled_at, LeadStatus.SCHEDULED
-                            )
-                            scheduled_count += 1
-                    plan = fallback_plan
-
                 # Log the plan
                 await repo.log_action(
                     account_id=account.id,
