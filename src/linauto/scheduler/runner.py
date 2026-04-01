@@ -156,6 +156,29 @@ async def daily_planning_sweep():
                         count=stale,
                     )
 
+                # Determine the account's work window boundaries in UTC.
+                _settings = get_settings()
+                _ws_utc = None
+                _we_utc = None
+                try:
+                    from zoneinfo import ZoneInfo
+                    _acct_tz = ZoneInfo(account.timezone or "UTC")
+                    _ws_utc = datetime(
+                        acct_today.year, acct_today.month, acct_today.day,
+                        _settings.work_start_hour, 0, tzinfo=_acct_tz,
+                    ).astimezone(_dt_tz.utc).replace(tzinfo=None)
+                    _we_utc = datetime(
+                        acct_today.year, acct_today.month, acct_today.day,
+                        _settings.work_end_hour, 0, tzinfo=_acct_tz,
+                    ).astimezone(_dt_tz.utc).replace(tzinfo=None)
+                except Exception:
+                    pass
+
+                # Past the work window — stale_reset already ran above, but
+                # don't generate new plans. Tomorrow's morning run handles it.
+                if _we_utc is not None and now > _we_utc:
+                    continue
+
                 pending = await repo.get_pending_leads(campaign.id)
                 if not pending:
                     continue
@@ -163,9 +186,6 @@ async def daily_planning_sweep():
                 lead_ids = [l.id for l in pending]
 
                 sent_today = await repo.get_daily_requests_sent(account.id)
-                # Subtract leads already scheduled in the future — they count
-                # against today's budget and must not be double-scheduled on
-                # restarts or mid-day replanning calls.
                 future_scheduled = await repo.count_future_scheduled_leads(campaign.id)
                 remaining_budget = max(0, account.daily_limit - sent_today - future_scheduled)
 
@@ -178,19 +198,6 @@ async def daily_planning_sweep():
                         future_scheduled=future_scheduled,
                     )
                     continue
-
-                # Determine the UTC start of today's work window for this account.
-                _settings = get_settings()
-                _ws_utc = None
-                try:
-                    from zoneinfo import ZoneInfo
-                    _acct_tz = ZoneInfo(account.timezone or "UTC")
-                    _ws_utc = datetime(
-                        acct_today.year, acct_today.month, acct_today.day,
-                        _settings.work_start_hour, 0, tzinfo=_acct_tz,
-                    ).astimezone(_dt_tz.utc).replace(tzinfo=None)
-                except Exception:
-                    pass
 
                 # If leads are already scheduled for today, don't re-plan regardless
                 # of time — the dispatcher and backfill handle everything from here.
@@ -221,20 +228,19 @@ async def daily_planning_sweep():
                         )
                         scheduled_count += 1
 
-                # Log the plan
-                await repo.log_action(
-                    account_id=account.id,
-                    campaign_id=campaign.id,
-                    action_type=ActionType.DAILY_PLAN_GENERATED,
-                    status=ActionLogStatus.SUCCESS,
-                    details={
-                        "date": date.today().isoformat(),
-                        "total_slots": len(plan),
-                        "connection_requests": sum(
-                            1 for s in plan if s.slot_type == SlotType.CONNECTION_REQUEST
-                        ),
-                    },
-                )
+                # Log the plan (skip empty plans to avoid activity clutter)
+                if scheduled_count > 0:
+                    await repo.log_action(
+                        account_id=account.id,
+                        campaign_id=campaign.id,
+                        action_type=ActionType.DAILY_PLAN_GENERATED,
+                        status=ActionLogStatus.SUCCESS,
+                        details={
+                            "date": acct_today.isoformat(),
+                            "total_slots": len(plan),
+                            "connection_requests": scheduled_count,
+                        },
+                    )
 
                 logger.info(
                     "planner.campaign_planned",
