@@ -19,6 +19,7 @@ class AccountOut(BaseModel):
     proxy_country: Optional[str] = None
     paused_until: Optional[datetime] = None
     withdraw_threshold: Optional[int] = None
+    pending_requests: Optional[int] = None
     avatar_path: Optional[str] = None
     archived: bool = False
     created_at: datetime

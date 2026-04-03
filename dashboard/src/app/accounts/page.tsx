@@ -119,12 +119,14 @@ export default function AccountsPage() {
                       <p>{a.daily_limit}/day</p>
                     </div>
                     <div>
-                      <p className="text-xs text-muted-foreground">Timezone</p>
-                      <p>{a.timezone ?? "—"}</p>
+                      <p className="text-xs text-muted-foreground">Pending Requests</p>
+                      <p className={a.pending_requests != null && a.pending_requests > 1000 ? "text-amber-400" : ""}>
+                        {a.pending_requests ?? "—"}
+                      </p>
                     </div>
                     <div>
-                      <p className="text-xs text-muted-foreground">Weekly Limit</p>
-                      <p>{a.weekly_limit}</p>
+                      <p className="text-xs text-muted-foreground">Timezone</p>
+                      <p>{a.timezone ?? "—"}</p>
                     </div>
                     <div>
                       <p className="text-xs text-muted-foreground">Proxy</p>

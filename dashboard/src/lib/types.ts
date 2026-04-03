@@ -8,6 +8,7 @@ export interface Account {
   proxy_country: string | null;
   paused_until: string | null;
   withdraw_threshold: number | null;
+  pending_requests: number | null;
   avatar_path: string | null;
   archived: boolean;
   created_at: string;

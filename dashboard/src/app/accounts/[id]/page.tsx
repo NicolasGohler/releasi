@@ -190,10 +190,11 @@ export default function AccountDetailPage({
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
           <StatCard label="Sent (30d)" value={totalSent} />
           <StatCard label="Accepted" value={totalAccepted} sub={`${acceptRate}% rate`} />
           <StatCard label="Errors" value={totalErrors} />
+          <StatCard label="Pending Requests" value={account.pending_requests ?? 0} sub={account.pending_requests != null && account.pending_requests > 1000 ? "Over 1K — risk of limits" : undefined} />
           <StatCard label="Daily Target" value={account.daily_limit} />
         </div>
 
@@ -268,7 +269,14 @@ export default function AccountDetailPage({
                   </div>
                 </div>
                 <div>
-                  <label className="text-xs text-muted-foreground">Auto-Withdraw Threshold</label>
+                  <label className="text-xs text-muted-foreground">
+                    Auto-Withdraw Threshold
+                    {account.pending_requests != null && (
+                      <span className={`ml-2 ${account.pending_requests > 1000 ? "text-amber-400" : "text-muted-foreground"}`}>
+                        ({account.pending_requests} pending now)
+                      </span>
+                    )}
+                  </label>
                   <Input
                     type="number"
                     value={editWithdrawThreshold}
@@ -276,7 +284,7 @@ export default function AccountDetailPage({
                     placeholder="e.g. 1500 — withdraws oldest invitations when exceeded"
                   />
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Leave empty to disable. When pending invitations exceed this number, the oldest are automatically withdrawn.
+                    Leave empty to disable. When pending invitations exceed this number, the oldest are automatically withdrawn (10/day during acceptance check).
                   </p>
                 </div>
                 <div>

@@ -364,6 +364,18 @@ class Repository:
         )
         return result.scalar_one()
 
+    async def count_pending_requests_for_account(self, account_id: str) -> int:
+        """Count CONNECTION_REQUESTED leads across all campaigns for an account."""
+        result = await self.session.execute(
+            select(func.count()).select_from(Lead)
+            .join(Campaign, Campaign.id == Lead.campaign_id)
+            .where(
+                Campaign.account_id == account_id,
+                Lead.status == LeadStatus.CONNECTION_REQUESTED,
+            )
+        )
+        return result.scalar_one()
+
     # ── Scheduler helpers ─────────────────────────────────────────────────
 
     async def list_active_accounts(self) -> Sequence[Account]:

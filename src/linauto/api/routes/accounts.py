@@ -22,13 +22,20 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
 public_router = APIRouter()
 
 
+async def _enrich_account(account, repo: Repository) -> AccountOut:
+    """Build AccountOut with computed fields like pending_requests."""
+    out = AccountOut.model_validate(account)
+    out.pending_requests = await repo.count_pending_requests_for_account(account.id)
+    return out
+
+
 @router.get("/accounts", response_model=List[AccountOut])
 async def list_accounts(
     include_archived: bool = Query(False),
     repo: Repository = Depends(get_repo),
 ):
     accounts = await repo.list_accounts(include_archived=include_archived)
-    return [AccountOut.model_validate(a) for a in accounts]
+    return [await _enrich_account(a, repo) for a in accounts]
 
 
 @router.post("/accounts/{account_id}/archive", response_model=AccountOut)
@@ -54,7 +61,7 @@ async def get_account(account_id: str, repo: Repository = Depends(get_repo)):
     account = await repo.get_account(account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    return AccountOut.model_validate(account)
+    return await _enrich_account(account, repo)
 
 
 @router.post("/accounts", response_model=AccountOut, status_code=201)
