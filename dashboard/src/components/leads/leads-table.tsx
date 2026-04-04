@@ -18,8 +18,9 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useLeads } from "@/hooks/use-queries";
+import { useLeads, useDeleteLead, useRestoreLead, useSkipLead, useRequeueLead } from "@/hooks/use-queries";
 import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "sonner";
 
 interface LeadsTableProps {
   campaignId: string;
@@ -48,6 +49,11 @@ export function LeadsTable({ campaignId, timezone }: LeadsTableProps) {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>(ALL_ACTIVE);
+
+  const skipLead = useSkipLead();
+  const requeueLead = useRequeueLead();
+  const deleteLead = useDeleteLead();
+  const restoreLead = useRestoreLead();
 
   const isAllActive = statusFilter === ALL_ACTIVE;
   const { data, isLoading } = useLeads(campaignId, {
@@ -120,12 +126,13 @@ export function LeadsTable({ campaignId, timezone }: LeadsTableProps) {
               <TableHead>Title</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Requested</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {data?.items.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
                   No leads found
                 </TableCell>
               </TableRow>
@@ -174,6 +181,65 @@ export function LeadsTable({ campaignId, timezone }: LeadsTableProps) {
                   {lead.connection_requested_at
                     ? new Date(lead.connection_requested_at.endsWith("Z") ? lead.connection_requested_at : lead.connection_requested_at + "Z").toLocaleDateString(undefined, { timeZone: timezone ?? undefined })
                     : "—"}
+                </TableCell>
+                <TableCell className="text-right">
+                  <div className="flex items-center justify-end gap-1">
+                    {(lead.status === "pending" || lead.status === "scheduled") && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={() => skipLead.mutate(lead.id, {
+                          onSuccess: () => toast.success("Lead skipped"),
+                          onError: (err) => toast.error(err.message),
+                        })}
+                        disabled={skipLead.isPending}
+                      >
+                        Skip
+                      </Button>
+                    )}
+                    {(lead.status === "error" || lead.status === "withdrawn" || lead.status === "skipped") && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={() => requeueLead.mutate(lead.id, {
+                          onSuccess: () => toast.success("Lead re-queued"),
+                          onError: (err) => toast.error(err.message),
+                        })}
+                        disabled={requeueLead.isPending}
+                      >
+                        Re-queue
+                      </Button>
+                    )}
+                    {lead.status === "removed" ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={() => restoreLead.mutate(lead.id, {
+                          onSuccess: () => toast.success("Lead restored"),
+                          onError: (err) => toast.error(err.message),
+                        })}
+                        disabled={restoreLead.isPending}
+                      >
+                        Restore
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs text-muted-foreground hover:text-destructive"
+                        onClick={() => deleteLead.mutate(lead.id, {
+                          onSuccess: () => toast.success("Lead removed"),
+                          onError: (err) => toast.error(err.message),
+                        })}
+                        disabled={deleteLead.isPending}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </div>
                 </TableCell>
               </TableRow>
             ))}

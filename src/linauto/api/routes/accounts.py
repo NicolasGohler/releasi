@@ -13,7 +13,7 @@ from linauto.api.auth import require_api_key
 from linauto.api.deps import get_repo
 from linauto.api.schemas import (
     AccountOut, AccountCreate, AccountUpdate, CookieUpdate,
-    ActionLogOut, DailyStatOut,
+    ActionLogOut, DailyStatOut, ScheduleSlotOut, AccountHealthOut,
 )
 from linauto.db.repository import Repository
 
@@ -475,6 +475,42 @@ async def replan_account(
             await repo.update_lead_schedule(first_lead_id, immediate_time, LeadStatus.SCHEDULED)
 
     return {"ok": True, "scheduled": total_scheduled}
+
+
+@router.get("/accounts/{account_id}/schedule", response_model=List[ScheduleSlotOut])
+async def account_schedule(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    # Compute today's date boundaries in UTC based on account timezone
+    tz = ZoneInfo(account.timezone) if account.timezone else ZoneInfo("UTC")
+    now_local = _dt.now(tz)
+    day_start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end_local = day_start_local.replace(hour=23, minute=59, second=59)
+    day_start_utc = day_start_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+    day_end_utc = day_end_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+
+    slots = await repo.get_todays_schedule(account_id, day_start_utc, day_end_utc)
+    return [ScheduleSlotOut(**s) for s in slots]
+
+
+@router.get("/accounts/{account_id}/health", response_model=AccountHealthOut)
+async def account_health(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    stats = await repo.get_account_health_stats(account_id)
+    return AccountHealthOut(**stats)
 
 
 @router.get("/accounts/{account_id}/activity", response_model=List[ActionLogOut])

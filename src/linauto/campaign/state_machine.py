@@ -50,6 +50,7 @@ VALID_TRANSITIONS = {
         LeadStatus.REMOVED,
     ],
     LeadStatus.SKIPPED: [
+        LeadStatus.PENDING,  # Re-queue: undo a skip
         LeadStatus.REMOVED,
     ],
     LeadStatus.INVALID: [

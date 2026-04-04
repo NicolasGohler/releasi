@@ -6,6 +6,8 @@ import {
   useAccount,
   useAccountStats,
   useAccountActivity,
+  useAccountSchedule,
+  useAccountHealth,
   useUpdateAccount,
   useUpdateCookie,
   useArchiveAccount,
@@ -32,6 +34,8 @@ export default function AccountDetailPage({
   const { data: account, isLoading } = useAccount(id);
   const { data: stats } = useAccountStats(id);
   const { data: activity } = useAccountActivity(id);
+  const { data: schedule } = useAccountSchedule(id);
+  const { data: health } = useAccountHealth(id);
   const updateAccount = useUpdateAccount(id);
   const updateCookie = useUpdateCookie(id);
   const archiveAccount = useArchiveAccount();
@@ -201,6 +205,8 @@ export default function AccountDetailPage({
         <Tabs defaultValue={account.status === "cookie_expired" ? "settings" : "stats"}>
           <TabsList>
             <TabsTrigger value="stats">Stats</TabsTrigger>
+            <TabsTrigger value="schedule">Schedule</TabsTrigger>
+            <TabsTrigger value="health">Health</TabsTrigger>
             <TabsTrigger value="activity">Activity</TabsTrigger>
             <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
@@ -214,6 +220,125 @@ export default function AccountDetailPage({
                 <DailyChart data={stats ?? []} />
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="schedule" className="mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>
+                  Today&apos;s Schedule
+                  {schedule && (
+                    <span className="ml-2 text-sm font-normal text-muted-foreground">
+                      {schedule.filter((s) => s.status === "sent").length} of {schedule.length} executed
+                    </span>
+                  )}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {!schedule || schedule.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-4">No leads scheduled for today.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                          <th className="pb-2 font-medium">Time</th>
+                          <th className="pb-2 font-medium">Lead</th>
+                          <th className="pb-2 font-medium">Campaign</th>
+                          <th className="pb-2 font-medium text-right">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {schedule.map((slot) => (
+                          <tr key={slot.lead_id} className="border-b border-border/50 last:border-0">
+                            <td className="py-2 text-muted-foreground tabular-nums">
+                              {slot.scheduled_at
+                                ? new Date(slot.scheduled_at.endsWith("Z") ? slot.scheduled_at : slot.scheduled_at + "Z").toLocaleTimeString(undefined, {
+                                    timeZone: account.timezone ?? undefined,
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })
+                                : "—"}
+                            </td>
+                            <td className="py-2">
+                              <a
+                                href={slot.linkedin_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-medium hover:underline"
+                              >
+                                {[slot.first_name, slot.last_name].filter(Boolean).join(" ") || "Unknown"}
+                              </a>
+                            </td>
+                            <td className="py-2 text-muted-foreground">{slot.campaign_name}</td>
+                            <td className="py-2 text-right">
+                              <StatusBadge status={slot.status === "sent" ? "connection_requested" : "scheduled"} />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="health" className="mt-4">
+            <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+              <Card>
+                <CardContent className="pt-6">
+                  <p className="text-xs text-muted-foreground">Cookie Status</p>
+                  <div className="mt-1">
+                    <StatusBadge status={account.status} />
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="pt-6">
+                  <p className="text-xs text-muted-foreground">Last Activity</p>
+                  <p className={`mt-1 text-lg font-semibold ${health?.days_since_last_activity != null && health.days_since_last_activity > 1 ? "text-amber-500" : ""}`}>
+                    {health?.last_action_at
+                      ? health.days_since_last_activity === 0
+                        ? "Today"
+                        : health.days_since_last_activity === 1
+                        ? "Yesterday"
+                        : `${health.days_since_last_activity}d ago`
+                      : "Never"}
+                  </p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="pt-6">
+                  <p className="text-xs text-muted-foreground">Error Rate (7d)</p>
+                  <p className={`mt-1 text-lg font-semibold ${
+                    (health?.error_rate_7d ?? 0) > 25 ? "text-red-500" :
+                    (health?.error_rate_7d ?? 0) > 10 ? "text-amber-500" : ""
+                  }`}>
+                    {health ? `${health.error_rate_7d}%` : "—"}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {health ? `${health.errors_7d} of ${health.total_actions_7d} actions` : ""}
+                  </p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="pt-6">
+                  <p className="text-xs text-muted-foreground">Proxy</p>
+                  <p className="mt-1 text-lg font-semibold">
+                    {account.proxy_country?.toUpperCase() || "None"}
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+            {health?.last_error_message && (
+              <Card className="mt-4">
+                <CardContent className="pt-6">
+                  <p className="text-xs text-muted-foreground mb-1">Last Error</p>
+                  <p className="text-sm text-red-400">{health.last_error_message}</p>
+                </CardContent>
+              </Card>
+            )}
           </TabsContent>
 
           <TabsContent value="activity" className="mt-4">

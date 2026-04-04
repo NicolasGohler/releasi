@@ -254,12 +254,66 @@ export default function CampaignDetailPage({
             <TabsTrigger value="activity">Activity</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="stats" className="mt-4">
+          <TabsContent value="stats" className="mt-4 space-y-4">
             <Card>
               <CardContent className="pt-6">
                 <CampaignActivityChart campaignId={id} totalLeads={totalLeads} />
               </CardContent>
             </Card>
+
+            {(campaign.assigned_lists ?? []).length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>List Performance</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                          <th className="pb-2 font-medium">List</th>
+                          <th className="pb-2 font-medium text-right">Leads</th>
+                          <th className="pb-2 font-medium text-right">Sent</th>
+                          <th className="pb-2 font-medium text-right">Connected</th>
+                          <th className="pb-2 font-medium text-right">Accept Rate</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(campaign.assigned_lists ?? []).map((ll) => {
+                          const sc = ll.status_counts ?? {};
+                          const listConnected = (sc["connected"] ?? 0) + (sc["completed"] ?? 0) + (sc["followup_sent"] ?? 0) + (sc["followup_scheduled"] ?? 0);
+                          const listSent = sc["connection_requested"] ?? 0;
+                          const listWithdrawn = sc["withdrawn"] ?? 0;
+                          const listProcessed = listConnected + listSent + listWithdrawn;
+                          const listRate = listProcessed > 0 ? Math.round((listConnected / listProcessed) * 100) : null;
+                          return (
+                            <tr key={ll.id} className="border-b border-border/50 last:border-0">
+                              <td className="py-2 font-medium">{ll.name}</td>
+                              <td className="py-2 text-right text-muted-foreground">{ll.total_leads}</td>
+                              <td className="py-2 text-right text-muted-foreground">{listSent + listConnected + listWithdrawn}</td>
+                              <td className="py-2 text-right text-muted-foreground">{listConnected}</td>
+                              <td className="py-2 text-right">
+                                {listRate !== null ? (
+                                  <span className={
+                                    listRate >= 30 ? "text-emerald-500" :
+                                    listRate >= 15 ? "text-amber-500" :
+                                    "text-red-500"
+                                  }>
+                                    {listRate}%
+                                  </span>
+                                ) : (
+                                  <span className="text-muted-foreground">—</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </TabsContent>
 
           <TabsContent value="leads" className="space-y-4 mt-4">

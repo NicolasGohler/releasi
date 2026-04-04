@@ -9,6 +9,8 @@ import type {
   ActionLog,
   DailyStat,
   ImportResponse,
+  ScheduleSlot,
+  AccountHealth,
 } from "./types";
 
 // API calls go to same origin — Vercel rewrites /api/v1/* to the backend
@@ -78,6 +80,12 @@ export const fetchAccountActivity = (id: string, limit = 50) =>
 
 export const fetchAccountStats = (id: string, days = 30) =>
   apiFetch<DailyStat[]>(`/accounts/${id}/stats?days=${days}`);
+
+export const fetchAccountSchedule = (id: string) =>
+  apiFetch<ScheduleSlot[]>(`/accounts/${id}/schedule`);
+
+export const fetchAccountHealth = (id: string) =>
+  apiFetch<AccountHealth>(`/accounts/${id}/health`);
 
 // ── Campaigns ─────────────────────────────────────────────────────────────
 
@@ -217,6 +225,7 @@ export const fetchGlobalLeads = (params?: {
   page?: number;
   per_page?: number;
   lead_list_id?: string;
+  campaign_id?: string;
   status?: string;
   search?: string;
 }) => {
@@ -224,6 +233,7 @@ export const fetchGlobalLeads = (params?: {
   if (params?.page) sp.set("page", String(params.page));
   if (params?.per_page) sp.set("per_page", String(params.per_page));
   if (params?.lead_list_id) sp.set("lead_list_id", params.lead_list_id);
+  if (params?.campaign_id) sp.set("campaign_id", params.campaign_id);
   if (params?.status) sp.set("status", params.status);
   if (params?.search) sp.set("search", params.search);
   const qs = sp.toString();
@@ -235,6 +245,12 @@ export const deleteLead = (id: string) =>
 
 export const restoreLead = (id: string) =>
   apiFetch<Lead>(`/leads/${id}/restore`, { method: "POST" });
+
+export const skipLead = (id: string) =>
+  apiFetch<Lead>(`/leads/${id}/skip`, { method: "POST" });
+
+export const requeueLead = (id: string) =>
+  apiFetch<Lead>(`/leads/${id}/requeue`, { method: "POST" });
 
 // ── Activity ──────────────────────────────────────────────────────────────
 

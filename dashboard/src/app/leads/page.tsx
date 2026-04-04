@@ -4,8 +4,11 @@ import { useState } from "react";
 import {
   useGlobalLeads,
   useLeadLists,
+  useCampaigns,
   useDeleteLead,
   useRestoreLead,
+  useSkipLead,
+  useRequeueLead,
 } from "@/hooks/use-queries";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
@@ -20,6 +23,7 @@ export default function GlobalLeadsPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [listFilter, setListFilter] = useState<string | undefined>();
+  const [campaignFilter, setCampaignFilter] = useState<string | undefined>();
 
   const { data: leadsData, isLoading } = useGlobalLeads({
     page,
@@ -27,10 +31,14 @@ export default function GlobalLeadsPage() {
     search: search || undefined,
     status: statusFilter,
     lead_list_id: listFilter,
+    campaign_id: campaignFilter,
   });
   const { data: lists } = useLeadLists();
+  const { data: campaigns } = useCampaigns();
   const deleteLead = useDeleteLead();
   const restoreLead = useRestoreLead();
+  const skipLead = useSkipLead();
+  const requeueLead = useRequeueLead();
 
   const totalPages = leadsData
     ? Math.ceil(leadsData.total / leadsData.per_page)
@@ -95,6 +103,21 @@ export default function GlobalLeadsPage() {
             </option>
           ))}
         </select>
+        <select
+          className="rounded-md border border-border bg-background px-3 py-2 text-sm"
+          value={campaignFilter ?? ""}
+          onChange={(e) => {
+            setCampaignFilter(e.target.value || undefined);
+            setPage(1);
+          }}
+        >
+          <option value="">All campaigns</option>
+          {campaigns?.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
       </div>
 
       <Card>
@@ -120,69 +143,94 @@ export default function GlobalLeadsPage() {
                     <tr className="border-b text-left text-muted-foreground">
                       <th className="pb-2 font-medium">Name</th>
                       <th className="pb-2 font-medium">Company</th>
-                      <th className="pb-2 font-medium">Title</th>
+                      <th className="pb-2 font-medium">Campaign</th>
                       <th className="pb-2 font-medium">Status</th>
                       <th className="pb-2 font-medium">LinkedIn</th>
-                      <th className="pb-2 font-medium">Actions</th>
+                      <th className="pb-2 font-medium text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {leadsData.items.map((lead) => (
                       <tr key={lead.id} className="border-b last:border-0">
                         <td className="py-2">
-                          {[lead.first_name, lead.last_name]
-                            .filter(Boolean)
-                            .join(" ") || "—"}
-                        </td>
-                        <td className="py-2">{lead.company ?? "—"}</td>
-                        <td className="py-2">{lead.title ?? "—"}</td>
-                        <td className="py-2">
-                          <StatusBadge status={lead.status} />
-                        </td>
-                        <td className="py-2">
                           <a
                             href={lead.linkedin_url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-blue-500 hover:underline truncate block max-w-[180px]"
+                            className="font-medium hover:underline"
                           >
+                            {[lead.first_name, lead.last_name]
+                              .filter(Boolean)
+                              .join(" ") || "—"}
+                          </a>
+                        </td>
+                        <td className="py-2 text-muted-foreground">{lead.company ?? "—"}</td>
+                        <td className="py-2 text-muted-foreground">{lead.campaign_name ?? "—"}</td>
+                        <td className="py-2">
+                          <StatusBadge status={lead.status} />
+                        </td>
+                        <td className="py-2">
+                          <span className="text-muted-foreground truncate block max-w-[180px] text-xs">
                             {lead.linkedin_url.replace(
                               "https://www.linkedin.com/in/",
                               ""
                             )}
-                          </a>
+                          </span>
                         </td>
-                        <td className="py-2">
-                          {lead.status === "removed" ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
-                                restoreLead.mutate(lead.id, {
-                                  onSuccess: () =>
-                                    toast.success("Lead restored"),
+                        <td className="py-2 text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            {(lead.status === "pending" || lead.status === "scheduled") && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-xs"
+                                onClick={() => skipLead.mutate(lead.id, {
+                                  onSuccess: () => toast.success("Lead skipped"),
                                   onError: (err) => toast.error(err.message),
-                                })
-                              }
-                            >
-                              Restore
-                            </Button>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="text-destructive"
-                              onClick={() =>
-                                deleteLead.mutate(lead.id, {
-                                  onSuccess: () =>
-                                    toast.success("Lead removed"),
+                                })}
+                              >
+                                Skip
+                              </Button>
+                            )}
+                            {(lead.status === "error" || lead.status === "withdrawn" || lead.status === "skipped") && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-xs"
+                                onClick={() => requeueLead.mutate(lead.id, {
+                                  onSuccess: () => toast.success("Lead re-queued"),
                                   onError: (err) => toast.error(err.message),
-                                })
-                              }
-                            >
-                              Remove
-                            </Button>
-                          )}
+                                })}
+                              >
+                                Re-queue
+                              </Button>
+                            )}
+                            {lead.status === "removed" ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-xs"
+                                onClick={() => restoreLead.mutate(lead.id, {
+                                  onSuccess: () => toast.success("Lead restored"),
+                                  onError: (err) => toast.error(err.message),
+                                })}
+                              >
+                                Restore
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-xs text-muted-foreground hover:text-destructive"
+                                onClick={() => deleteLead.mutate(lead.id, {
+                                  onSuccess: () => toast.success("Lead removed"),
+                                  onError: (err) => toast.error(err.message),
+                                })}
+                              >
+                                Remove
+                              </Button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}

@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Sequence
 
-from sqlalchemy import select, func, update, or_
+from sqlalchemy import case, select, func, update, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from linauto.db.models import (
@@ -375,6 +375,134 @@ class Repository:
             )
         )
         return result.scalar_one()
+
+    async def get_todays_schedule(self, account_id: str, day_start: datetime, day_end: datetime) -> list:
+        """Get today's scheduled + already-executed leads for an account.
+
+        Returns list of dicts with lead info + campaign_name + status.
+        """
+        # SCHEDULED leads (not yet executed)
+        scheduled_q = await self.session.execute(
+            select(Lead, Campaign.name.label("campaign_name"))
+            .join(Campaign, Campaign.id == Lead.campaign_id)
+            .where(
+                Campaign.account_id == account_id,
+                Lead.status == LeadStatus.SCHEDULED,
+                Lead.scheduled_at >= day_start,
+                Lead.scheduled_at < day_end,
+            )
+            .order_by(Lead.scheduled_at)
+        )
+        scheduled_rows = scheduled_q.all()
+
+        # Already-executed today (CONNECTION_REQUESTED with connection_requested_at today)
+        executed_q = await self.session.execute(
+            select(Lead, Campaign.name.label("campaign_name"))
+            .join(Campaign, Campaign.id == Lead.campaign_id)
+            .where(
+                Campaign.account_id == account_id,
+                Lead.status == LeadStatus.CONNECTION_REQUESTED,
+                Lead.connection_requested_at >= day_start,
+                Lead.connection_requested_at < day_end,
+            )
+            .order_by(Lead.connection_requested_at)
+        )
+        executed_rows = executed_q.all()
+
+        # Also include connected leads that were requested today
+        connected_q = await self.session.execute(
+            select(Lead, Campaign.name.label("campaign_name"))
+            .join(Campaign, Campaign.id == Lead.campaign_id)
+            .where(
+                Campaign.account_id == account_id,
+                Lead.status.in_([LeadStatus.CONNECTED, LeadStatus.FOLLOWUP_SCHEDULED, LeadStatus.FOLLOWUP_SENT, LeadStatus.COMPLETED]),
+                Lead.connection_requested_at >= day_start,
+                Lead.connection_requested_at < day_end,
+            )
+            .order_by(Lead.connection_requested_at)
+        )
+        connected_rows = connected_q.all()
+
+        results = []
+        for lead, cname in scheduled_rows:
+            results.append({
+                "lead_id": lead.id,
+                "first_name": lead.first_name,
+                "last_name": lead.last_name,
+                "linkedin_url": lead.linkedin_url,
+                "campaign_name": cname,
+                "scheduled_at": lead.scheduled_at.isoformat() if lead.scheduled_at else None,
+                "status": lead.status.value,
+            })
+        for lead, cname in list(executed_rows) + list(connected_rows):
+            results.append({
+                "lead_id": lead.id,
+                "first_name": lead.first_name,
+                "last_name": lead.last_name,
+                "linkedin_url": lead.linkedin_url,
+                "campaign_name": cname,
+                "scheduled_at": lead.connection_requested_at.isoformat() if lead.connection_requested_at else None,
+                "status": "sent",
+            })
+
+        # Sort by scheduled_at
+        results.sort(key=lambda r: r["scheduled_at"] or "")
+        return results
+
+    async def get_account_health_stats(self, account_id: str) -> dict:
+        """Get health stats for an account: last activity, 7d error rate."""
+        from datetime import timedelta
+        seven_days_ago = datetime.utcnow() - timedelta(days=7)
+
+        # Last action + 7d error rate in one query
+        result = await self.session.execute(
+            select(
+                func.max(ActionLog.created_at).label("last_action_at"),
+                func.count().label("total_7d"),
+                func.sum(
+                    case(
+                        (ActionLog.status == ActionLogStatus.ERROR, 1),
+                        else_=0,
+                    )
+                ).label("errors_7d"),
+            ).where(
+                ActionLog.account_id == account_id,
+                ActionLog.created_at >= seven_days_ago,
+            )
+        )
+        row = result.one()
+        total_7d = row.total_7d or 0
+        errors_7d = row.errors_7d or 0
+        last_action_at = row.last_action_at
+
+        # Last error message
+        last_error_msg = None
+        if errors_7d > 0:
+            err_result = await self.session.execute(
+                select(ActionLog.details)
+                .where(
+                    ActionLog.account_id == account_id,
+                    ActionLog.status == ActionLogStatus.ERROR,
+                )
+                .order_by(ActionLog.created_at.desc())
+                .limit(1)
+            )
+            details = err_result.scalar_one_or_none()
+            if details and isinstance(details, dict):
+                last_error_msg = details.get("error") or details.get("reason")
+
+        days_since = None
+        if last_action_at:
+            days_since = (datetime.utcnow() - last_action_at).days
+
+        return {
+            "last_action_at": last_action_at,
+            "days_since_last_activity": days_since,
+            "error_rate_7d": round(errors_7d / total_7d * 100, 1) if total_7d > 0 else 0.0,
+            "total_actions_7d": total_7d,
+            "errors_7d": errors_7d,
+            "last_error_message": last_error_msg,
+        }
 
     # ── Scheduler helpers ─────────────────────────────────────────────────
 
@@ -892,6 +1020,34 @@ class Repository:
         await self.session.refresh(lead)
         return lead
 
+    async def skip_lead(self, lead_id: str) -> Lead | None:
+        """Skip a lead — valid from PENDING or SCHEDULED."""
+        from linauto.campaign.state_machine import validate_transition, InvalidTransition
+        lead = await self.session.get(Lead, lead_id)
+        if not lead:
+            return None
+        validate_transition(lead.status, LeadStatus.SKIPPED)
+        lead.status = LeadStatus.SKIPPED
+        lead.scheduled_at = None
+        await self.session.commit()
+        await self.session.refresh(lead)
+        return lead
+
+    async def requeue_lead(self, lead_id: str) -> Lead | None:
+        """Re-queue a lead back to PENDING — valid from ERROR, WITHDRAWN, SKIPPED."""
+        from linauto.campaign.state_machine import validate_transition, InvalidTransition
+        lead = await self.session.get(Lead, lead_id)
+        if not lead:
+            return None
+        validate_transition(lead.status, LeadStatus.PENDING)
+        lead.status = LeadStatus.PENDING
+        lead.error_message = None
+        lead.retry_count = 0
+        lead.scheduled_at = None
+        await self.session.commit()
+        await self.session.refresh(lead)
+        return lead
+
     # ── Global Leads (Lead Library) ───────────────────────────────────────
 
     async def list_leads_global(
@@ -899,6 +1055,7 @@ class Repository:
         page: int = 1,
         per_page: int = 50,
         lead_list_id: str | None = None,
+        campaign_id: str | None = None,
         status_filter: str | None = None,
         search: str | None = None,
     ) -> tuple:
@@ -909,6 +1066,10 @@ class Repository:
         if lead_list_id:
             stmt = stmt.where(Lead.lead_list_id == lead_list_id)
             count_stmt = count_stmt.where(Lead.lead_list_id == lead_list_id)
+
+        if campaign_id:
+            stmt = stmt.where(Lead.campaign_id == campaign_id)
+            count_stmt = count_stmt.where(Lead.campaign_id == campaign_id)
 
         if status_filter:
             stmt = stmt.where(Lead.status == status_filter)

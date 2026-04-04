@@ -135,6 +135,7 @@ class LeadOut(BaseModel):
     retry_count: int
     scheduled_at: Optional[datetime] = None
     created_at: datetime
+    campaign_name: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -245,6 +246,29 @@ class CampaignStatsSummary(BaseModel):
 class CampaignStatsResponse(BaseModel):
     daily: List[CampaignStatsDaily]
     summary: CampaignStatsSummary
+
+
+# ── Schedule ─────────────────────────────────────────────────────────────
+
+class ScheduleSlotOut(BaseModel):
+    lead_id: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    linkedin_url: str
+    campaign_name: str
+    scheduled_at: Optional[str] = None
+    status: str  # "scheduled" or "sent"
+
+
+# ── Account Health ───────────────────────────────────────────────────────
+
+class AccountHealthOut(BaseModel):
+    last_action_at: Optional[datetime] = None
+    days_since_last_activity: Optional[int] = None
+    error_rate_7d: float = 0.0
+    total_actions_7d: int = 0
+    errors_7d: int = 0
+    last_error_message: Optional[str] = None
 
 
 # ── Health ────────────────────────────────────────────────────────────────

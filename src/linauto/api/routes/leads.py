@@ -127,6 +127,7 @@ async def list_leads_global(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
     lead_list_id: Optional[str] = Query(None),
+    campaign_id: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     repo: Repository = Depends(get_repo),
@@ -135,11 +136,28 @@ async def list_leads_global(
         page=page,
         per_page=per_page,
         lead_list_id=lead_list_id,
+        campaign_id=campaign_id,
         status_filter=status,
         search=search,
     )
+
+    # Enrich with campaign names
+    campaign_ids = {l.campaign_id for l in leads if l.campaign_id}
+    campaign_names = {}
+    for cid in campaign_ids:
+        c = await repo.get_campaign(cid)
+        if c:
+            campaign_names[cid] = c.name
+
+    items = []
+    for l in leads:
+        out = LeadOut.model_validate(l)
+        if l.campaign_id and l.campaign_id in campaign_names:
+            out.campaign_name = campaign_names[l.campaign_id]
+        items.append(out)
+
     return LeadPage(
-        items=[LeadOut.model_validate(l) for l in leads],
+        items=items,
         total=total,
         page=page,
         per_page=per_page,
@@ -161,4 +179,28 @@ async def restore_lead(lead_id: str, repo: Repository = Depends(get_repo)):
     lead = await repo.restore_lead(lead_id)
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found or not removed")
+    return LeadOut.model_validate(lead)
+
+
+@router.post("/leads/{lead_id}/skip", response_model=LeadOut)
+async def skip_lead(lead_id: str, repo: Repository = Depends(get_repo)):
+    from linauto.campaign.state_machine import InvalidTransition
+    try:
+        lead = await repo.skip_lead(lead_id)
+    except InvalidTransition as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return LeadOut.model_validate(lead)
+
+
+@router.post("/leads/{lead_id}/requeue", response_model=LeadOut)
+async def requeue_lead(lead_id: str, repo: Repository = Depends(get_repo)):
+    from linauto.campaign.state_machine import InvalidTransition
+    try:
+        lead = await repo.requeue_lead(lead_id)
+    except InvalidTransition as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
     return LeadOut.model_validate(lead)

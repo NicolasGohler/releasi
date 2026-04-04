@@ -93,6 +93,7 @@ export interface Lead {
   retry_count: number;
   scheduled_at: string | null;
   created_at: string;
+  campaign_name: string | null;
 }
 
 export interface LeadPage {
@@ -122,6 +123,25 @@ export interface DailyStat {
   followup_messages_sent: number;
   connections_accepted: number;
   errors: number;
+}
+
+export interface ScheduleSlot {
+  lead_id: string;
+  first_name: string | null;
+  last_name: string | null;
+  linkedin_url: string;
+  campaign_name: string;
+  scheduled_at: string | null;
+  status: string; // "scheduled" or "sent"
+}
+
+export interface AccountHealth {
+  last_action_at: string | null;
+  days_since_last_activity: number | null;
+  error_rate_7d: number;
+  total_actions_7d: number;
+  errors_7d: number;
+  last_error_message: string | null;
 }
 
 export interface ImportResponse {

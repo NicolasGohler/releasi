@@ -34,6 +34,20 @@ export function useAccountStats(id: string, days = 30) {
   });
 }
 
+export function useAccountSchedule(id: string) {
+  return useQuery({
+    queryKey: ["accounts", id, "schedule"],
+    queryFn: () => api.fetchAccountSchedule(id),
+  });
+}
+
+export function useAccountHealth(id: string) {
+  return useQuery({
+    queryKey: ["accounts", id, "health"],
+    queryFn: () => api.fetchAccountHealth(id),
+  });
+}
+
 export function useCreateAccount() {
   const qc = useQueryClient();
   return useMutation({
@@ -231,6 +245,7 @@ export function useGlobalLeads(params?: {
   page?: number;
   per_page?: number;
   lead_list_id?: string;
+  campaign_id?: string;
   status?: string;
   search?: string;
 }) {
@@ -256,6 +271,30 @@ export function useRestoreLead() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.restoreLead,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["global-leads"] });
+      qc.invalidateQueries({ queryKey: ["leads"] });
+      qc.invalidateQueries({ queryKey: ["campaigns"] });
+    },
+  });
+}
+
+export function useSkipLead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.skipLead,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["global-leads"] });
+      qc.invalidateQueries({ queryKey: ["leads"] });
+      qc.invalidateQueries({ queryKey: ["campaigns"] });
+    },
+  });
+}
+
+export function useRequeueLead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.requeueLead,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["global-leads"] });
       qc.invalidateQueries({ queryKey: ["leads"] });
