@@ -12,7 +12,7 @@ from playwright.async_api import Page
 from linauto.config import get_settings
 from linauto.linkedin.selectors import (
     FEED_URL, LOGIN_URL_PATTERNS, INVITATION_MANAGER_URL,
-    PROFILE_ACTION_BUTTONS,
+    CONNECTIONS_URL, PROFILE_ACTION_BUTTONS,
 )
 
 logger = structlog.get_logger()
@@ -146,6 +146,26 @@ class LinkedInNavigator:
             )
         except Exception as e:
             return NavigationResult(success=False, url=FEED_URL, error=str(e))
+
+    async def go_to_connections(self) -> NavigationResult:
+        """Navigate to connections list sorted by most recently added."""
+        try:
+            await self._random_delay(0.5, 2.0)
+            await self.page.goto(
+                CONNECTIONS_URL,
+                wait_until="domcontentloaded",
+                timeout=15000,
+            )
+            await self._random_delay()
+            return NavigationResult(
+                success=True,
+                url=self.page.url,
+                session_valid=self._check_session(self.page.url),
+            )
+        except Exception as e:
+            return NavigationResult(
+                success=False, url=CONNECTIONS_URL, error=str(e)
+            )
 
     async def go_to_invitation_manager(self) -> NavigationResult:
         """Navigate to the sent invitations page."""

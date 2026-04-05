@@ -47,6 +47,18 @@ class InvitationSnapshot:
     urls: list  # profile URLs of all pending sent invitations
 
 
+@dataclass
+class RecentConnectionsSnapshot:
+    success: bool
+    session_valid: bool
+    # Normalized profile slugs (e.g. "/in/john-doe") of connections made within
+    # the cutoff window. Ordered newest-first as returned by the page.
+    slugs: list
+    # True if the page scroll hit the age cutoff cleanly (vs. hitting load-more
+    # exhaustion or an error mid-scroll). Used for logging only.
+    hit_cutoff: bool = False
+
+
 class LinkedInActions:
     """Each method performs ONE atomic LinkedIn action."""
 
@@ -819,6 +831,192 @@ class LinkedInActions:
             }
             return urls;
         }""")
+
+    @staticmethod
+    def _parse_connection_age_hours(text: str) -> Optional[float]:
+        """
+        Parse LinkedIn's relative connection timestamp into hours.
+
+        LinkedIn renders connection dates as relative text, e.g.:
+          "Connected just now"  → 0
+          "Connected 1 hour ago"  → 1
+          "Connected 3 hours ago"  → 3
+          "Connected 1 day ago"   → 24
+          "Connected 2 days ago"  → 48
+          "Connected 1 week ago"  → 168
+          "Connected 2 weeks ago" → 336
+          "Connected January 2025" / "Connected Jan 2025" → very large (skip)
+
+        Returns None if the text cannot be parsed (treat as very old → stop).
+        """
+        if not text:
+            return None
+        t = text.lower().strip()
+        # "just now" / "moments ago"
+        if "just now" in t or "moment" in t:
+            return 0.0
+        # Hours: "1 hour ago", "3 hours ago"
+        m = re.search(r'(\d+)\s+hour', t)
+        if m:
+            return float(m.group(1))
+        # Days: "1 day ago", "2 days ago"
+        m = re.search(r'(\d+)\s+day', t)
+        if m:
+            return float(m.group(1)) * 24
+        # Weeks: "1 week ago", "2 weeks ago"
+        m = re.search(r'(\d+)\s+week', t)
+        if m:
+            return float(m.group(1)) * 168
+        # Months / years / absolute dates → treat as very old
+        return None
+
+    async def get_recent_connections(
+        self,
+        cutoff_hours: float = 30.0,
+        max_scrolls: int = 20,
+    ) -> RecentConnectionsSnapshot:
+        """
+        Scroll the connections page (sorted by recently added) and return profile
+        slugs of connections made within the last `cutoff_hours` hours.
+
+        Stops scrolling as soon as it encounters a card older than the cutoff,
+        so the number of page interactions scales with new connections only —
+        not total connection count.
+
+        Args:
+            cutoff_hours: Stop when a connection is older than this. Default 30h
+                gives a safe overlap with the daily run cadence (runs at 10 AM,
+                cutoff 30h covers yesterday's 10 AM run + 6h buffer).
+            max_scrolls: Safety cap on "Show more" clicks to avoid infinite loops.
+
+        Returns RecentConnectionsSnapshot with slugs of recent connections.
+
+        NOTE: Selectors in this method are marked # VERIFY — validate via noVNC
+        before relying on this in production.
+        """
+        from linauto.linkedin import selectors as _sel
+
+        def _norm(url: str) -> Optional[str]:
+            m = re.search(r'/in/([^/?#\s]+)', url)
+            return f"/in/{m.group(1).rstrip('/')}" if m else None
+
+        try:
+            nav = await self.navigator.go_to_connections()
+            if not nav.success:
+                logger.warning("action.connections_page_failed", error=nav.error)
+                return RecentConnectionsSnapshot(success=False, session_valid=True, slugs=[])
+            if not nav.session_valid:
+                return RecentConnectionsSnapshot(success=False, session_valid=False, slugs=[])
+
+            await self.delay.micro_delay(1.5, 3.0)
+
+            collected_slugs: list = []
+            hit_cutoff = False
+
+            for scroll_n in range(max_scrolls):
+                # Extract all currently visible connection cards via JS.
+                # Each card exposes: profile URL + timestamp text.
+                # VERIFY: the JS attribute paths match the actual DOM.
+                cards_data = await self.page.evaluate("""
+                    () => {
+                        const results = [];
+                        // VERIFY: selector for connection card list items
+                        const cards = document.querySelectorAll(
+                            'li.mn-connection-card, li[class*="connection-card"], [data-view-name="connection-card"]'
+                        );
+                        cards.forEach(card => {
+                            // VERIFY: profile link selector within card
+                            const link = card.querySelector('a[href*="/in/"]');
+                            const href = link ? link.getAttribute('href') : null;
+
+                            // VERIFY: timestamp element — try <time> first, then spans
+                            let timeText = null;
+                            const timeEl = card.querySelector(
+                                'time.mn-connection-card__connected-at, ' +
+                                'span.mn-connection-card__connected-at, ' +
+                                '[class*="connected-at"], [class*="connection-date"], ' +
+                                'time'
+                            );
+                            if (timeEl) {
+                                // Prefer datetime attribute on <time> if present
+                                timeText = timeEl.getAttribute('datetime') || timeEl.innerText || null;
+                            }
+                            if (href) results.push({ href, timeText });
+                        });
+                        return results;
+                    }
+                """)
+
+                if not cards_data:
+                    logger.warning(
+                        "action.connections_page_no_cards",
+                        scroll_n=scroll_n,
+                        note="VERIFY selectors — LinkedIn DOM may differ",
+                    )
+                    await self._debug_screenshot("connections_page_no_cards")
+                    break
+
+                # Process cards in page order (newest first).
+                # Once we see a card older than cutoff, stop — everything after
+                # is guaranteed older since the list is sorted newest-first.
+                found_new_this_pass = 0
+                for card in cards_data:
+                    href = card.get("href") or ""
+                    slug = _norm(href)
+                    if not slug or slug in collected_slugs:
+                        continue
+
+                    time_text = card.get("timeText") or ""
+                    age_hours = self._parse_connection_age_hours(time_text)
+
+                    if age_hours is None or age_hours > cutoff_hours:
+                        # Hit a card that's too old (or unparseable) — we're done
+                        hit_cutoff = True
+                        logger.debug(
+                            "action.connections_cutoff_reached",
+                            slug=slug,
+                            time_text=time_text,
+                            age_hours=age_hours,
+                            collected=len(collected_slugs),
+                        )
+                        break
+
+                    collected_slugs.append(slug)
+                    found_new_this_pass += 1
+
+                if hit_cutoff:
+                    break
+
+                # Try to load more if we haven't hit the cutoff yet
+                load_more = await self._find_element(_sel.CONNECTIONS_LOAD_MORE, timeout_ms=2000)
+                if not load_more:
+                    # No more pages — exhausted the list without hitting cutoff
+                    logger.debug(
+                        "action.connections_page_exhausted",
+                        collected=len(collected_slugs),
+                        scrolls=scroll_n,
+                    )
+                    break
+
+                await load_more.click()
+                await self.delay.micro_delay(1.5, 3.0)
+
+            logger.info(
+                "action.connections_scraped",
+                collected=len(collected_slugs),
+                hit_cutoff=hit_cutoff,
+                cutoff_hours=cutoff_hours,
+            )
+            return RecentConnectionsSnapshot(
+                success=True,
+                session_valid=True,
+                slugs=collected_slugs,
+                hit_cutoff=hit_cutoff,
+            )
+
+        except Exception as e:
+            logger.warning("action.get_recent_connections_failed", error=str(e))
+            return RecentConnectionsSnapshot(success=False, session_valid=True, slugs=[])
 
     async def get_sent_invitation_urls(
         self,
