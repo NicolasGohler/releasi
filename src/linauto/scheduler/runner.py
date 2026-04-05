@@ -819,6 +819,20 @@ async def check_acceptances():
                 if not disappeared:
                     continue
 
+                # Cap profile visits per run to avoid rapid scraping detection.
+                # LinkedIn flags accounts that visit many profiles in quick succession.
+                # Max 15/day — defer the rest to tomorrow's acceptance check run.
+                _max_visits_per_run = 15
+                if len(disappeared) > _max_visits_per_run:
+                    logger.warning(
+                        "acceptance.visit_cap_applied",
+                        account=account.name,
+                        total=len(disappeared),
+                        visiting=_max_visits_per_run,
+                        deferred=len(disappeared) - _max_visits_per_run,
+                    )
+                    disappeared = disappeared[:_max_visits_per_run]
+
                 # Visit disappeared profiles to confirm accepted vs declined/expired
                 confirm_page = await pool_context.new_page()
                 try:
@@ -868,7 +882,12 @@ async def check_acceptances():
                             # "pending" — leave as-is (URL normalization edge case)
                             logger.debug("acceptance.still_pending", url=lead.linkedin_url)
 
-                        await DelayGenerator().micro_delay(2, 5)
+                        # Human-paced inter-visit delay: 45-90s base, occasionally longer.
+                        # Previous 2-5s caused 54 visits in 39 min → suspension signal.
+                        _visit_delay = random.uniform(45, 90)
+                        if random.random() < 0.2:   # 20% chance of a longer pause
+                            _visit_delay += random.uniform(30, 60)
+                        await asyncio.sleep(_visit_delay)
                 finally:
                     await confirm_page.close()
 
