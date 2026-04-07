@@ -892,6 +892,8 @@ def check_acceptances_cmd(
             leads = await repo.get_leads_by_status(campaign.id, LeadStatus.CONNECTION_REQUESTED)
             requested_leads.extend(leads)
 
+        CUTOFF_HOURS = 30.0
+
         console.print(f"[bold]Account:[/bold] {account_name}")
         console.print(f"[bold]CONNECTION_REQUESTED leads:[/bold] {len(requested_leads)}")
         if not requested_leads:
@@ -901,7 +903,7 @@ def check_acceptances_cmd(
 
         browser = LinkedInBrowser()
         try:
-            await browser.launch(
+            context = await browser.launch(
                 account_id=account.id,
                 li_at_cookie=account.li_at_cookie,
                 user_agent=account.user_agent,
@@ -917,79 +919,97 @@ def check_acceptances_cmd(
                     console.print("[red]Account marked as cookie_expired.[/red]")
                 return
 
-            inv_page = await browser.new_page()
+            # ── Step 1: connections page → find recent acceptances ────────────
+            console.print("\n[bold]Step 1: loading connections page...[/bold]")
+            conn_page = await context.new_page()
             try:
-                tracked_slugs = {
-                    n for lead in requested_leads
-                    if (n := _normalize(lead.linkedin_url))
-                }
-                console.print("\n[bold]Loading invitation manager...[/bold]")
-                inv_actions = LinkedInActions(inv_page)
-                result = await inv_actions.get_sent_invitation_urls(stop_when_found=tracked_slugs)
+                conn_actions = LinkedInActions(conn_page)
+                conn_result = await conn_actions.get_recent_connections(cutoff_hours=CUTOFF_HOURS)
             finally:
-                await inv_page.close()
+                await conn_page.close()
 
-            if not result.success:
-                console.print("[red]Failed to load invitation manager.[/red]")
-                return
-
-            if not result.session_valid:
+            if not conn_result.session_valid:
                 console.print("[red]Session invalid (redirect to login).[/red]")
                 if not dry_run:
                     await repo.update_account(account, status="cookie_expired")
                     console.print("[red]Account marked as cookie_expired.[/red]")
                 return
 
-            console.print(f"[green]Pending invitations found:[/green] {len(result.urls)}")
+            recent_slugs = set(conn_result.slugs)
+            console.print(f"  Recent connections found: {len(recent_slugs)} (cutoff {CUTOFF_HOURS}h, hit_cutoff={conn_result.hit_cutoff})")
 
-            # Diff
-            pending_normalized = {_normalize(u) for u in result.urls if _normalize(u)}
-            disappeared = [
-                lead for lead in requested_leads
-                if (n := _normalize(lead.linkedin_url)) and n not in pending_normalized
-            ]
-            console.print(f"[bold]Disappeared (accepted or declined):[/bold] {len(disappeared)}")
-
-            if not disappeared:
-                console.print("[green]All leads still pending — nothing to update.[/green]")
-                return
-
-            # Confirm each disappeared lead
-            console.print()
             accepted = []
-            declined = []
-            inconclusive = []
+            for lead in requested_leads:
+                slug = _normalize(lead.linkedin_url)
+                if not slug or slug not in recent_slugs:
+                    continue
+                name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.linkedin_url
+                accepted.append(lead)
+                console.print(f"  [green]CONNECTED[/green]  {name}")
+                if not dry_run:
+                    await repo.update_lead(
+                        lead,
+                        status=LeadStatus.CONNECTED,
+                        connection_accepted_at=datetime.utcnow(),
+                    )
+                    await repo.log_action(
+                        account_id=account.id,
+                        campaign_id=lead.campaign_id,
+                        lead_id=lead.id,
+                        action_type=ActionType.CHECK_ACCEPTANCE,
+                        status=ActionLogStatus.SUCCESS,
+                        details={"accepted": True, "method": "connections_page"},
+                    )
 
-            confirm_page = await browser.new_page()
+            # ── Step 2: invitation manager diff → detect declines/expired ─────
+            still_requested = [
+                l for l in requested_leads
+                if _normalize(l.linkedin_url) not in recent_slugs
+            ]
+
+            console.print(f"\n[bold]Step 2: loading invitation manager ({len(still_requested)} still-pending leads)...[/bold]")
+            inv_page = await context.new_page()
             try:
-                confirm_actions = LinkedInActions(confirm_page)
-                for lead in disappeared:
-                    status = await confirm_actions.check_connection_status(lead.linkedin_url)
-                    name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.linkedin_url
-                    if status == "connected":
-                        accepted.append(lead)
-                        console.print(f"  [green]CONNECTED[/green]  {name}")
-                        if not dry_run:
-                            await repo.update_lead(
-                                lead,
-                                status=LeadStatus.CONNECTED,
-                                connection_accepted_at=datetime.utcnow(),
-                            )
-                    elif status == "not_connected":
-                        declined.append(lead)
-                        console.print(f"  [red]DECLINED  [/red]  {name}")
-                        if not dry_run:
-                            await repo.update_lead(lead, status=LeadStatus.WITHDRAWN)
-                    else:
-                        inconclusive.append(lead)
-                        console.print(f"  [yellow]UNKNOWN   [/yellow]  {name}  (leaving as CONNECTION_REQUESTED)")
+                tracked_slugs = {
+                    n for lead in still_requested
+                    if (n := _normalize(lead.linkedin_url))
+                }
+                inv_actions = LinkedInActions(inv_page)
+                inv_result = await inv_actions.get_sent_invitation_urls(stop_when_found=tracked_slugs)
             finally:
-                await confirm_page.close()
+                await inv_page.close()
+
+            declined = []
+            if inv_result.success and inv_result.session_valid:
+                pending_normalized = {_normalize(u) for u in inv_result.urls if _normalize(u)}
+                console.print(f"  Pending invitations in manager: {len(pending_normalized)}")
+                for lead in still_requested:
+                    slug = _normalize(lead.linkedin_url)
+                    if not slug or slug in pending_normalized:
+                        continue  # still pending — no action
+                    name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.linkedin_url
+                    declined.append(lead)
+                    console.print(f"  [red]DECLINED  [/red]  {name}")
+                    if not dry_run:
+                        await repo.update_lead(lead, status=LeadStatus.WITHDRAWN)
+                        await repo.log_action(
+                            account_id=account.id,
+                            campaign_id=lead.campaign_id,
+                            lead_id=lead.id,
+                            action_type=ActionType.CHECK_ACCEPTANCE,
+                            status=ActionLogStatus.SUCCESS,
+                            details={"accepted": False, "status": "not_connected"},
+                        )
+            elif not inv_result.session_valid:
+                console.print("[red]Session invalid during invitation manager load.[/red]")
+                if not dry_run:
+                    await repo.update_account(account, status="cookie_expired")
+            else:
+                console.print("[yellow]Failed to load invitation manager — withdrawal check skipped.[/yellow]")
 
             console.print()
-            console.print(f"[green]Accepted:[/green]     {len(accepted)}")
-            console.print(f"[red]Declined:[/red]     {len(declined)}")
-            console.print(f"[yellow]Inconclusive:[/yellow] {len(inconclusive)}")
+            console.print(f"[green]Accepted:[/green]  {len(accepted)}")
+            console.print(f"[red]Declined:[/red]  {len(declined)}")
             if dry_run:
                 console.print("\n[dim]Dry-run — no changes written to DB.[/dim]")
 
