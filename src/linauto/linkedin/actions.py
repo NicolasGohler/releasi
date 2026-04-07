@@ -1074,9 +1074,17 @@ class LinkedInActions:
             if not nav.session_valid:
                 return InvitationSnapshot(success=True, session_valid=False, urls=[])
 
-            # Click "Load more" until all tracked leads are visible or no more pages
+            # Click "Load more" until all tracked leads are visible or no more pages.
+            # After each click, scroll to bottom to trigger lazy rendering, then
+            # wait up to 6s for the next button — LinkedIn re-renders it after the
+            # new batch loads, which can take 3-5s on a slow proxy.
+            prev_url_count = 0
             for _ in range(50):
-                load_more = await self._find_element(selectors.INVITATION_LOAD_MORE, timeout_ms=2000)
+                # Scroll to bottom to ensure the Load more button is in view / rendered
+                await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await self.delay.micro_delay(0.5, 1.0)
+
+                load_more = await self._find_element(selectors.INVITATION_LOAD_MORE, timeout_ms=6000)
                 if not load_more:
                     break
 
@@ -1093,7 +1101,14 @@ class LinkedInActions:
                         return InvitationSnapshot(success=True, session_valid=True, urls=current_urls)
 
                 await load_more.click()
-                await self.delay.micro_delay(1.0, 2.0)
+                await self.delay.micro_delay(2.0, 3.5)
+
+                # Stale-page guard: if URL count hasn't grown after a click, stop
+                current_count = len(await self._extract_invitation_urls())
+                if current_count == prev_url_count and _ > 0:
+                    logger.debug("action.invitation_manager_stale", page=_, count=current_count)
+                    break
+                prev_url_count = current_count
 
             # Extract all profile URLs via JS after loading all pages
             urls = await self._extract_invitation_urls()
