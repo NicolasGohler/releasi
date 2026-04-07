@@ -855,12 +855,14 @@ def debug_profile(
 def check_acceptances_cmd(
     account_name: str = typer.Option(..., "--account", "-a", help="Account name"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print what would change without updating DB"),
+    cutoff_hours: float = typer.Option(30.0, "--cutoff-hours", help="How far back to scan connections page (default 30h; use larger value after a gap/suspension)"),
 ):
     """
     Manually run the acceptance checker for an account (safe — uses ephemeral browser, not pool).
 
-    Loads the invitation manager once, diffs against CONNECTION_REQUESTED leads, visits
-    disappeared profiles to confirm accepted vs declined. Safe to run while the scheduler
+    Step 1: scrapes connections page (sorted by recently added) to find acceptances.
+    Step 2: diffs invitation manager to find declines/expired. Zero individual profile visits.
+    Safe to run while the scheduler
     is active because it does NOT share the BrowserPool.
     """
     async def _check():
@@ -892,7 +894,7 @@ def check_acceptances_cmd(
             leads = await repo.get_leads_by_status(campaign.id, LeadStatus.CONNECTION_REQUESTED)
             requested_leads.extend(leads)
 
-        CUTOFF_HOURS = 30.0
+        CUTOFF_HOURS = cutoff_hours
 
         console.print(f"[bold]Account:[/bold] {account_name}")
         console.print(f"[bold]CONNECTION_REQUESTED leads:[/bold] {len(requested_leads)}")
