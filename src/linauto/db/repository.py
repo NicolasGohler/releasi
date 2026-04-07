@@ -534,6 +534,21 @@ class Repository:
         )
         return result.scalars().all()
 
+    async def get_operational_campaigns(self, account_id: str) -> Sequence[Campaign]:
+        """Get all non-archived campaigns (active + paused) for an account.
+
+        Used by acceptance checker and follow-up dispatcher so that leads in
+        paused campaigns are still processed — connections accepted while a
+        campaign is paused should still be marked CONNECTED.
+        """
+        result = await self.session.execute(
+            select(Campaign).where(
+                Campaign.account_id == account_id,
+                Campaign.archived == False,  # noqa: E712
+            )
+        )
+        return result.scalars().all()
+
     async def update_lead_schedule(
         self, lead_id: str, scheduled_at, new_status: LeadStatus
     ) -> None:

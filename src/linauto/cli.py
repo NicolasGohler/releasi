@@ -883,8 +883,9 @@ def check_acceptances_cmd(
                 return f"/in/{m.group(1).rstrip('/')}"
             return ""
 
-        # Gather CONNECTION_REQUESTED leads
-        campaigns = await repo.get_active_campaigns(account.id)
+        # Gather CONNECTION_REQUESTED leads across all non-archived campaigns
+        # (includes paused campaigns — acceptances should be recorded regardless)
+        campaigns = await repo.get_operational_campaigns(account.id)
         campaign_map = {c.id: c for c in campaigns}
         requested_leads = []
         for campaign in campaigns:

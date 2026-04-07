@@ -704,7 +704,8 @@ async def check_acceptances():
             if _acceptance_checked.get(account.id) == acct_today:
                 continue
 
-            campaigns = await repo.get_active_campaigns(account.id)
+            # Include paused campaigns — acceptances while paused still need recording
+            campaigns = await repo.get_operational_campaigns(account.id)
             campaign_map = {c.id: c for c in campaigns}
             requested_leads = []
             for campaign in campaigns:
