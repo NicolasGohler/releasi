@@ -835,39 +835,52 @@ class LinkedInActions:
     @staticmethod
     def _parse_connection_age_hours(text: str) -> Optional[float]:
         """
-        Parse LinkedIn's relative connection timestamp into hours.
+        Parse LinkedIn's connection timestamp text into hours since connection.
 
-        LinkedIn renders connection dates as relative text, e.g.:
-          "Connected just now"  → 0
-          "Connected 1 hour ago"  → 1
-          "Connected 3 hours ago"  → 3
-          "Connected 1 day ago"   → 24
-          "Connected 2 days ago"  → 48
-          "Connected 1 week ago"  → 168
-          "Connected 2 weeks ago" → 336
-          "Connected January 2025" / "Connected Jan 2025" → very large (skip)
+        LinkedIn renders connection dates as:
+          "Connected on April 7, 2026"  → hours since that date
+          "Connected on April 6, 2026"  → hours since that date
 
-        Returns None if the text cannot be parsed (treat as very old → stop).
+        Legacy relative formats (kept for robustness):
+          "just now" / "moments ago"    → 0
+          "1 hour ago" / "3 hours ago"  → 1 / 3
+          "1 day ago" / "2 days ago"    → 24 / 48
+          "1 week ago" / "2 weeks ago"  → 168 / 336
+          "January 2025" / month-only   → very large (treat as old, stop)
+
+        Returns None if the text cannot be parsed (treated as very old → stop).
         """
+        from datetime import datetime as _dt
         if not text:
             return None
-        t = text.lower().strip()
+        t = text.strip()
+
+        # Primary format: "Connected on April 7, 2026"
+        if t.lower().startswith("connected on "):
+            date_str = t[len("connected on "):].strip()
+            try:
+                conn_date = _dt.strptime(date_str, "%B %d, %Y")
+                return (_dt.now() - conn_date).total_seconds() / 3600
+            except ValueError:
+                pass
+
+        t_lower = t.lower()
         # "just now" / "moments ago"
-        if "just now" in t or "moment" in t:
+        if "just now" in t_lower or "moment" in t_lower:
             return 0.0
         # Hours: "1 hour ago", "3 hours ago"
-        m = re.search(r'(\d+)\s+hour', t)
+        m = re.search(r'(\d+)\s+hour', t_lower)
         if m:
             return float(m.group(1))
         # Days: "1 day ago", "2 days ago"
-        m = re.search(r'(\d+)\s+day', t)
+        m = re.search(r'(\d+)\s+day', t_lower)
         if m:
             return float(m.group(1)) * 24
         # Weeks: "1 week ago", "2 weeks ago"
-        m = re.search(r'(\d+)\s+week', t)
+        m = re.search(r'(\d+)\s+week', t_lower)
         if m:
             return float(m.group(1)) * 168
-        # Months / years / absolute dates → treat as very old
+        # Months / years / unparseable absolute dates → treat as very old
         return None
 
     async def get_recent_connections(
@@ -890,12 +903,7 @@ class LinkedInActions:
             max_scrolls: Safety cap on "Show more" clicks to avoid infinite loops.
 
         Returns RecentConnectionsSnapshot with slugs of recent connections.
-
-        NOTE: Selectors in this method are marked # VERIFY — validate via noVNC
-        before relying on this in production.
         """
-        from linauto.linkedin import selectors as _sel
-
         def _norm(url: str) -> Optional[str]:
             m = re.search(r'/in/([^/?#\s]+)', url)
             return f"/in/{m.group(1).rstrip('/')}" if m else None
@@ -913,36 +921,41 @@ class LinkedInActions:
             collected_slugs: list = []
             hit_cutoff = False
 
+            seen_slugs: set = set()
+
             for scroll_n in range(max_scrolls):
                 # Extract all currently visible connection cards via JS.
-                # Each card exposes: profile URL + timestamp text.
-                # VERIFY: the JS attribute paths match the actual DOM.
+                # Strategy: anchor on <p> elements whose text starts with
+                # "Connected on" (LinkedIn's current format), then walk up to
+                # find the nearest ancestor containing a /in/ profile link.
+                # This is resilient to LinkedIn's obfuscated CSS class names.
                 cards_data = await self.page.evaluate("""
                     () => {
                         const results = [];
-                        // VERIFY: selector for connection card list items
-                        const cards = document.querySelectorAll(
-                            'li.mn-connection-card, li[class*="connection-card"], [data-view-name="connection-card"]'
-                        );
-                        cards.forEach(card => {
-                            // VERIFY: profile link selector within card
-                            const link = card.querySelector('a[href*="/in/"]');
-                            const href = link ? link.getAttribute('href') : null;
+                        const seenHrefs = new Set();
 
-                            // VERIFY: timestamp element — try <time> first, then spans
-                            let timeText = null;
-                            const timeEl = card.querySelector(
-                                'time.mn-connection-card__connected-at, ' +
-                                'span.mn-connection-card__connected-at, ' +
-                                '[class*="connected-at"], [class*="connection-date"], ' +
-                                'time'
-                            );
-                            if (timeEl) {
-                                // Prefer datetime attribute on <time> if present
-                                timeText = timeEl.getAttribute('datetime') || timeEl.innerText || null;
+                        // Find all "Connected on" text nodes in <p> elements
+                        const paras = document.querySelectorAll('p, span, div');
+                        for (const el of paras) {
+                            const text = (el.innerText || el.textContent || '').trim();
+                            if (!text.toLowerCase().startsWith('connected on ')) continue;
+
+                            // Walk up up to 6 levels to find a container with a /in/ link
+                            let container = el.parentElement;
+                            for (let i = 0; i < 6; i++) {
+                                if (!container) break;
+                                const link = container.querySelector('a[href*="/in/"]');
+                                if (link) {
+                                    const href = link.getAttribute('href');
+                                    if (href && !seenHrefs.has(href)) {
+                                        seenHrefs.add(href);
+                                        results.push({ href, timeText: text });
+                                    }
+                                    break;
+                                }
+                                container = container.parentElement;
                             }
-                            if (href) results.push({ href, timeText });
-                        });
+                        }
                         return results;
                     }
                 """)
@@ -951,7 +964,6 @@ class LinkedInActions:
                     logger.warning(
                         "action.connections_page_no_cards",
                         scroll_n=scroll_n,
-                        note="VERIFY selectors — LinkedIn DOM may differ",
                     )
                     await self._debug_screenshot("connections_page_no_cards")
                     break
@@ -959,12 +971,13 @@ class LinkedInActions:
                 # Process cards in page order (newest first).
                 # Once we see a card older than cutoff, stop — everything after
                 # is guaranteed older since the list is sorted newest-first.
-                found_new_this_pass = 0
+                prev_count = len(collected_slugs)
                 for card in cards_data:
                     href = card.get("href") or ""
                     slug = _norm(href)
-                    if not slug or slug in collected_slugs:
+                    if not slug or slug in seen_slugs:
                         continue
+                    seen_slugs.add(slug)
 
                     time_text = card.get("timeText") or ""
                     age_hours = self._parse_connection_age_hours(time_text)
@@ -982,15 +995,18 @@ class LinkedInActions:
                         break
 
                     collected_slugs.append(slug)
-                    found_new_this_pass += 1
 
                 if hit_cutoff:
                     break
 
-                # Try to load more if we haven't hit the cutoff yet
-                load_more = await self._find_element(_sel.CONNECTIONS_LOAD_MORE, timeout_ms=2000)
-                if not load_more:
-                    # No more pages — exhausted the list without hitting cutoff
+                # Scroll down to trigger infinite-scroll loading of more cards
+                prev_height = await self.page.evaluate("document.body.scrollHeight")
+                await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await self.delay.micro_delay(2.0, 3.5)
+                new_height = await self.page.evaluate("document.body.scrollHeight")
+
+                if new_height == prev_height:
+                    # Page height didn't grow — no more content to load
                     logger.debug(
                         "action.connections_page_exhausted",
                         collected=len(collected_slugs),
@@ -998,8 +1014,14 @@ class LinkedInActions:
                     )
                     break
 
-                await load_more.click()
-                await self.delay.micro_delay(1.5, 3.0)
+                # Also stop if this scroll yielded no new slugs (stale loop guard)
+                if len(collected_slugs) == prev_count and scroll_n > 0:
+                    logger.debug(
+                        "action.connections_no_new_cards",
+                        scroll_n=scroll_n,
+                        collected=len(collected_slugs),
+                    )
+                    break
 
             logger.info(
                 "action.connections_scraped",

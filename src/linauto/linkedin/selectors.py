@@ -230,42 +230,18 @@ INVITATION_LOAD_MORE = [
 ]
 
 # ── Connections page (recent connections scrape) ─────────────────────────
-# VERIFY all selectors below via noVNC before relying on them in production.
-# URL to navigate to, with sort=RECENTLY_ADDED so newest connections appear first.
-CONNECTIONS_URL = "https://www.linkedin.com/mynetwork/invite-connect/connections/?sortType=RECENTLY_ADDED"  # VERIFY: check URL still works
+# LinkedIn uses obfuscated/hashed CSS class names that change on deploys.
+# Extraction logic in actions.py uses content-based JS (no class selectors):
+#   - Anchor on <p> elements whose text starts with "Connected on "
+#   - Walk up to find nearest ancestor containing an a[href*="/in/"] link
+#
+# URL: sortType param is stripped by LinkedIn's router but the page IS sorted
+# newest-first when navigating from this URL.
+CONNECTIONS_URL = "https://www.linkedin.com/mynetwork/invite-connect/connections/?sortType=RECENTLY_ADDED"
 
-# Each connection card in the list. LinkedIn renders a <ul> of <li> items,
-# each containing a card with the person's name, title and connection timestamp.
-CONNECTIONS_LIST_ITEM = [
-    "li.mn-connection-card",                           # VERIFY
-    "li[class*='connection-card']",                    # VERIFY
-    "[data-view-name='connection-card']",              # VERIFY
-    ".mn-connections__card",                           # VERIFY
-]
-
-# The profile link (<a href="/in/slug">) inside each connection card.
-CONNECTIONS_CARD_PROFILE_LINK = [
-    "a.mn-connection-card__link",                      # VERIFY
-    "a[href*='/in/']",
-]
-
-# The timestamp element inside each card — LinkedIn shows relative text like
-# "Connected 2 hours ago", "Connected 1 day ago", "Connected 3 days ago".
-# The actual text content is parsed in actions.py via _parse_connection_age_hours().
-CONNECTIONS_CARD_TIMESTAMP = [
-    "time.mn-connection-card__connected-at",           # VERIFY: may be <time> or <span>
-    "span.mn-connection-card__connected-at",           # VERIFY
-    "[class*='connected-at']",                         # VERIFY
-    "[class*='connection-date']",                      # VERIFY
-    "time",                                            # fallback: first <time> in card
-]
-
-# "Show more results" button at the bottom of the connections list.
-CONNECTIONS_LOAD_MORE = [
-    "button:has-text('Show more')",
-    "button:has-text('Show more results')",
-    "button:has-text('Load more')",
-]
+# Timestamp format verified 2026-04-07: "Connected on April 7, 2026"
+# Full date (not relative). Parsed in actions.py _parse_connection_age_hours().
+# Pagination: infinite scroll (no "Show more" button). Scroll to bottom to load more.
 
 # ── Nav bar avatar (for profile picture scraping) ────────────────────────
 
