@@ -516,7 +516,7 @@ async def account_health(
 @router.get("/accounts/{account_id}/activity", response_model=List[ActionLogOut])
 async def account_activity(
     account_id: str,
-    limit: int = Query(50, le=200),
+    limit: int = Query(100, le=500),
     repo: Repository = Depends(get_repo),
 ):
     account = await repo.get_account(account_id)

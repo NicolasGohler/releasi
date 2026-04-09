@@ -15,7 +15,7 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
 
 @router.get("/activity", response_model=List[ActionLogOut])
 async def global_activity(
-    limit: int = Query(50, le=200),
+    limit: int = Query(100, le=500),
     repo: Repository = Depends(get_repo),
 ):
     logs = await repo.list_action_log(limit=limit)
