@@ -1,0 +1,434 @@
+"""Account endpoints."""
+from __future__ import annotations
+
+from datetime import date, timedelta
+from typing import List, Optional
+
+from pathlib import Path
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
+
+from linauto.api.auth import require_api_key
+from linauto.api.deps import get_repo
+from linauto.api.schemas import (
+    AccountOut, AccountCreate, AccountUpdate, CookieUpdate,
+    ActionLogOut, DailyStatOut,
+)
+from linauto.db.repository import Repository
+
+router = APIRouter(dependencies=[Depends(require_api_key)])
+# Public router for endpoints that don't require auth (e.g. avatar served via <img> tags)
+public_router = APIRouter()
+
+
+@router.get("/accounts", response_model=List[AccountOut])
+async def list_accounts(
+    include_archived: bool = Query(False),
+    repo: Repository = Depends(get_repo),
+):
+    accounts = await repo.list_accounts(include_archived=include_archived)
+    return [AccountOut.model_validate(a) for a in accounts]
+
+
+@router.post("/accounts/{account_id}/archive", response_model=AccountOut)
+async def archive_account(account_id: str, repo: Repository = Depends(get_repo)):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    account = await repo.update_account(account, archived=True, status="cookie_expired")
+    return AccountOut.model_validate(account)
+
+
+@router.post("/accounts/{account_id}/unarchive", response_model=AccountOut)
+async def unarchive_account(account_id: str, repo: Repository = Depends(get_repo)):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    account = await repo.update_account(account, archived=False)
+    return AccountOut.model_validate(account)
+
+
+@router.get("/accounts/{account_id}", response_model=AccountOut)
+async def get_account(account_id: str, repo: Repository = Depends(get_repo)):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return AccountOut.model_validate(account)
+
+
+@router.post("/accounts", response_model=AccountOut, status_code=201)
+async def create_account(body: AccountCreate, repo: Repository = Depends(get_repo)):
+    existing = await repo.get_account_by_name(body.name)
+    if existing:
+        raise HTTPException(status_code=409, detail="Account name already exists")
+    account = await repo.create_account(
+        name=body.name,
+        li_at_cookie=body.li_at_cookie or "",
+        li_a_cookie=body.li_a_cookie,
+        user_agent=body.user_agent,
+        timezone=body.timezone,
+        proxy_url=body.proxy_url,
+        proxy_country=body.proxy_country,
+    )
+    # If no cookie provided, mark as needing login
+    if not body.li_at_cookie:
+        await repo.update_account(account, status="cookie_expired")
+    return AccountOut.model_validate(account)
+
+
+@router.put("/accounts/{account_id}", response_model=AccountOut)
+async def update_account(
+    account_id: str,
+    body: AccountUpdate,
+    repo: Repository = Depends(get_repo),
+):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    kwargs = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not kwargs:
+        return AccountOut.model_validate(account)
+    proxy_changed = "proxy_country" in kwargs and kwargs["proxy_country"] != account.proxy_country
+    account = await repo.update_account(account, **kwargs)
+    # Evict pool slot when proxy changes so next acquire launches with the new proxy
+    if proxy_changed:
+        try:
+            from linauto.linkedin.pool import get_browser_pool
+            pool = get_browser_pool()
+            await pool.evict(account.id)
+        except RuntimeError:
+            pass  # Pool not initialized
+    return AccountOut.model_validate(account)
+
+
+@router.put("/accounts/{account_id}/cookie", response_model=AccountOut)
+async def update_cookie(
+    account_id: str,
+    body: CookieUpdate,
+    repo: Repository = Depends(get_repo),
+):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    kwargs = {"li_at_cookie": body.li_at_cookie, "status": "active"}
+    if body.li_a_cookie is not None:
+        kwargs["li_a_cookie"] = body.li_a_cookie
+    account = await repo.update_account(account, **kwargs)
+
+    # Evict old pool slot so pool picks up the new cookie cleanly
+    try:
+        from linauto.linkedin.pool import get_browser_pool
+        pool = get_browser_pool()
+        await pool.evict(account.id)
+    except RuntimeError:
+        pass  # Pool not initialized
+
+    return AccountOut.model_validate(account)
+
+
+@router.post("/accounts/{account_id}/check-connection")
+async def check_connection(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """Fast HTTP session check — no browser, no proxy, completes in ~1-2s."""
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if not account.li_at_cookie:
+        return {"valid": False, "reason": "no_cookie", "elapsed_ms": 0}
+
+    import time
+    import httpx
+    start = time.monotonic()
+
+    headers = {
+        "Cookie": f"li_at={account.li_at_cookie}",
+        "User-Agent": account.user_agent or (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    # No proxy — cookie validity is independent of proxy; keeps check fast and reliable
+    login_patterns = ["/login", "/uas/login", "/signup", "/checkpoint/"]
+
+    try:
+        async with httpx.AsyncClient(
+            headers=headers,
+            follow_redirects=True,
+            timeout=5.0,
+        ) as client:
+            resp = await client.get("https://www.linkedin.com/feed/")
+
+        elapsed = int((time.monotonic() - start) * 1000)
+        final_url = str(resp.url)
+
+        if any(p in final_url for p in login_patterns):
+            await repo.update_account(account, status="cookie_expired")
+            return {"valid": False, "reason": "redirected_to_login", "elapsed_ms": elapsed}
+
+        if resp.status_code == 200:
+            if account.status == "cookie_expired":
+                await repo.update_account(account, status="active")
+            return {"valid": True, "elapsed_ms": elapsed}
+
+        return {"valid": False, "reason": f"unexpected_status_{resp.status_code}", "elapsed_ms": elapsed}
+
+    except httpx.ProxyError as e:
+        elapsed = int((time.monotonic() - start) * 1000)
+        return {"valid": False, "reason": "proxy_unreachable", "error": str(e), "elapsed_ms": elapsed}
+    except httpx.TimeoutException:
+        elapsed = int((time.monotonic() - start) * 1000)
+        return {"valid": False, "reason": "proxy_unreachable", "error": "Connection timed out", "elapsed_ms": elapsed}
+    except Exception as e:
+        elapsed = int((time.monotonic() - start) * 1000)
+        return {"valid": False, "reason": "error", "error": str(e), "elapsed_ms": elapsed}
+
+
+@router.post("/accounts/{account_id}/login-session")
+async def start_login_session(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    from linauto.linkedin.login_session import LoginSessionManager
+    manager = LoginSessionManager.get_instance()
+
+    # Auto-cleanup any stale session before starting a new one
+    if manager.is_active:
+        await manager._cleanup()
+
+    try:
+        novnc_path = await manager.start_session(account_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start login session: {e}")
+
+    return {"novnc_url": novnc_path, "account_id": account_id}
+
+
+@router.post("/accounts/{account_id}/login-session/finish")
+async def finish_login_session(
+    account_id: str,
+    background_tasks: BackgroundTasks,
+    repo: Repository = Depends(get_repo),
+):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    from linauto.linkedin.login_session import LoginSessionManager
+    manager = LoginSessionManager.get_instance()
+
+    if not manager.is_active:
+        raise HTTPException(status_code=400, detail="No active login session")
+
+    try:
+        result = await manager.finish_session()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to finish session: {e}")
+
+    if not result["li_at"]:
+        return {"success": False, "message": "No li_at cookie found. Did you complete the login?"}
+
+    # Save cookies to database
+    update_kwargs = {"li_at_cookie": result["li_at"], "status": "active"}
+    if result["li_a"]:
+        update_kwargs["li_a_cookie"] = result["li_a"]
+    await repo.update_account(account, **update_kwargs)
+
+    # Evict old pool slot so the pool creates a fresh browser with the new cookie
+    # on next acquire (avoids stale cookie / fingerprint mismatch)
+    try:
+        from linauto.linkedin.pool import get_browser_pool
+        pool = get_browser_pool()
+        await pool.evict(account.id)
+    except RuntimeError:
+        pass  # Pool not initialized (CLI context)
+
+    # Validate the new session immediately via proxy HTTP check in the background.
+    # This confirms the cookie works and the proxy route is healthy, and will
+    # auto-recover the account to ACTIVE status if the health check passes.
+    async def _validate_after_login(acct_id: str):
+        try:
+            from linauto.scheduler.runner import check_cookie_health
+            await check_cookie_health()
+            logger.info("post_login.health_check_done", account_id=acct_id)
+        except Exception as e:
+            logger.warning("post_login.health_check_failed", account_id=acct_id, error=str(e))
+
+    import structlog as _structlog
+    logger = _structlog.get_logger()
+    background_tasks.add_task(_validate_after_login, account_id)
+
+    return {"success": True, "message": "Cookies extracted and saved successfully"}
+
+
+@router.post("/accounts/{account_id}/login-session/cancel")
+async def cancel_login_session(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    from linauto.linkedin.login_session import LoginSessionManager
+    manager = LoginSessionManager.get_instance()
+
+    if not manager.is_active:
+        return {"success": True, "message": "No active session"}
+
+    await manager._cleanup()
+    return {"success": True, "message": "Login session cancelled"}
+
+
+@public_router.get("/accounts/{account_id}/avatar")
+async def get_avatar(account_id: str, repo: Repository = Depends(get_repo)):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if not account.avatar_path:
+        raise HTTPException(status_code=404, detail="No avatar available")
+    path = Path(account.avatar_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Avatar file not found")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@router.post("/accounts/{account_id}/fetch-avatar")
+async def fetch_avatar_now(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """One-time fetch of avatar — uses pool browser if available."""
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    # Try to use pool (avoids spawning a separate browser fingerprint)
+    try:
+        from linauto.linkedin.pool import get_browser_pool
+        pool = get_browser_pool()
+        await pool.acquire(account)
+        try:
+            slot = pool._slots.get(account.id)
+            if slot:
+                # validate_session scrapes the avatar
+                valid = await slot.browser.validate_session()
+                if not valid:
+                    raise HTTPException(status_code=400, detail="Session invalid — cookie may be expired")
+                avatar_path = await slot.browser.save_avatar(account.id)
+                if avatar_path:
+                    await repo.update_account(account, avatar_path=avatar_path)
+                    return {"success": True, "avatar_path": avatar_path}
+                return {"success": False, "message": "Could not find profile photo on page"}
+            return {"success": False, "message": "Pool slot not available"}
+        finally:
+            pool.release(account.id)
+    except RuntimeError:
+        # Pool not initialized — fall back to ephemeral browser
+        from linauto.linkedin.browser import LinkedInBrowser
+        browser = LinkedInBrowser()
+        try:
+            await browser.launch(
+                account_id=account.id,
+                li_at_cookie=account.li_at_cookie,
+                user_agent=account.user_agent,
+                proxy_url=account.proxy_url,
+                proxy_country=account.proxy_country,
+                timezone=account.timezone,
+            )
+            valid = await browser.validate_session()
+            if not valid:
+                raise HTTPException(status_code=400, detail="Session invalid — cookie may be expired")
+            avatar_path = await browser.save_avatar(account.id)
+            if avatar_path:
+                await repo.update_account(account, avatar_path=avatar_path)
+                return {"success": True, "avatar_path": avatar_path}
+            return {"success": False, "message": "Could not find profile photo on page"}
+        finally:
+            await browser.close()
+
+
+@router.post("/accounts/{account_id}/replan")
+async def replan_account(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """Reset today's scheduled leads and regenerate the daily plan with current settings."""
+    from datetime import date as _date
+    from sqlalchemy import update as _sql_update
+    from linauto.db.models import Lead, LeadStatus, ActionType, ActionLogStatus
+    from linauto.scheduler.planner import generate_daily_plan, SlotType
+
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    campaigns = await repo.get_active_campaigns(account.id)
+    total_scheduled = 0
+
+    for campaign in campaigns:
+        # Reset today's SCHEDULED leads back to PENDING and clear their scheduled_at
+        await repo.session.execute(
+            _sql_update(Lead)
+            .where(Lead.campaign_id == campaign.id, Lead.status == LeadStatus.SCHEDULED)
+            .values(status=LeadStatus.PENDING, scheduled_at=None)
+        )
+        await repo.session.commit()
+
+        pending = await repo.get_pending_leads(campaign.id)
+        if not pending:
+            continue
+
+        plan = generate_daily_plan(
+            account_id=account.id,
+            day=_date.today(),
+            pending_lead_ids=[l.id for l in pending],
+            daily_limit=account.daily_limit,
+            timezone_str=account.timezone,
+            campaign_weekend_enabled=campaign.weekend_enabled,
+        )
+
+        for slot in plan:
+            if slot.slot_type == SlotType.CONNECTION_REQUEST and slot.lead_id:
+                await repo.update_lead_schedule(slot.lead_id, slot.scheduled_at, LeadStatus.SCHEDULED)
+                total_scheduled += 1
+
+    return {"ok": True, "scheduled": total_scheduled}
+
+
+@router.get("/accounts/{account_id}/activity", response_model=List[ActionLogOut])
+async def account_activity(
+    account_id: str,
+    limit: int = Query(50, le=200),
+    repo: Repository = Depends(get_repo),
+):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    logs = await repo.list_action_log(account_id=account_id, limit=limit)
+    return [ActionLogOut.model_validate(l) for l in logs]
+
+
+@router.get("/accounts/{account_id}/stats", response_model=List[DailyStatOut])
+async def account_stats(
+    account_id: str,
+    days: int = Query(30, le=90),
+    repo: Repository = Depends(get_repo),
+):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    start = date.today() - timedelta(days=days)
+    stats = await repo.get_daily_stats_range(account_id, start, date.today())
+    return [DailyStatOut.model_validate(s) for s in stats]

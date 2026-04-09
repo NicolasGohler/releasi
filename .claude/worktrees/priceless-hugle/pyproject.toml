@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linauto"
+version = "0.1.0"
+description = "LinkedIn automation tool for connection requests and follow-up messaging"
+requires-python = ">=3.9"
+dependencies = [
+    "playwright>=1.40",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.19",
+    "alembic>=1.13",
+    "apscheduler>=3.10,<4.0",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "pyyaml>=6.0",
+    "typer[all]>=0.9",
+    "structlog>=23.2",
+    "python-dateutil>=2.8",
+    "playwright-stealth>=2.0.2",
+    "httpx>=0.25",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.23",
+    "pytest-playwright>=0.4",
+    "factory-boy>=3.3",
+    "coverage>=7.3",
+]
+api = [
+    "fastapi>=0.109",
+    "uvicorn[standard]>=0.25",
+    "python-multipart>=0.0.6",
+]
+
+[project.scripts]
+linauto = "linauto.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
