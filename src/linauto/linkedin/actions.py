@@ -123,8 +123,9 @@ class LinkedInActions:
 
     async def _find_dropdown_item_by_js(self, text: str) -> Optional[Locator]:
         """Find a dropdown menu item by visible text using JavaScript.
-        Uses case-insensitive substring match to handle variants like
-        'Connect' vs 'Invite X to connect'."""
+        Uses word-boundary matching: item text must equal the query exactly,
+        start with it, or end with it — but NOT just contain it as a substring
+        (e.g. 'Remove connection' must NOT match 'Connect')."""
         idx = await self.page.evaluate("""(text) => {
             const lower = text.toLowerCase();
             const candidates = Array.from(document.querySelectorAll(
@@ -133,7 +134,10 @@ class LinkedInActions:
             return candidates.findIndex(el => {
                 const style = window.getComputedStyle(el);
                 if (style.display === 'none' || style.visibility === 'hidden') return false;
-                return el.innerText.trim().toLowerCase().includes(lower);
+                const t = el.innerText.trim().toLowerCase();
+                // Exact match, starts-with, or ends-with — but not arbitrary substring.
+                // This prevents 'Remove connection' matching a search for 'Connect'.
+                return t === lower || t.startsWith(lower + ' ') || t.endsWith(' ' + lower);
             });
         }""", text)
         if idx >= 0:
@@ -334,13 +338,32 @@ class LinkedInActions:
         # 400ms covers the typical async render window without adding noticeable delay.
         await asyncio.sleep(0.4)
 
+        # ── Guard: if 'Remove connection' is visible, this profile is already
+        # connected — return a sentinel value so the caller knows to skip.
+        # Check this BEFORE searching for Connect to avoid misclassifying
+        # 'Remove connection' as the Connect target (both contain "connect").
+        remove_conn = await self._try_locator(
+            self.page.get_by_role("menuitem", name=re.compile(r"Remove connection", re.IGNORECASE)),
+            timeout_ms=500,
+        )
+        if not remove_conn:
+            remove_conn = await self.page.evaluate("""() => {
+                return Array.from(document.querySelectorAll('[role="menuitem"], .artdeco-dropdown__item'))
+                    .some(el => el.innerText.trim().toLowerCase().startsWith('remove connection'));
+            }""")
+        if remove_conn:
+            logger.info("action.remove_connection_in_dropdown_already_connected", url=profile_url)
+            return "already_connected"  # sentinel — caller checks for this string
+
         # Find Connect in the dropdown
         connect_btn = None
 
-        # Role-based: try menuitem and listitem roles
+        # Role-based: try menuitem and listitem roles.
+        # Pattern: "Connect" exactly, "Connect " prefix, or " connect" suffix —
+        # avoids matching "Remove connection" which also contains "connect".
         for role in ["menuitem", "listitem"]:
             connect_btn = await self._try_locator(
-                self.page.get_by_role(role, name=re.compile(r"Connect", re.IGNORECASE)),
+                self.page.get_by_role(role, name=re.compile(r"^Connect(\s|$)|to connect$", re.IGNORECASE)),
                 timeout_ms=2000,
             )
             if connect_btn:
@@ -523,6 +546,9 @@ class LinkedInActions:
 
         # 5. Find Connect button/anchor to confirm profile is connectable
         connect_btn = await self._find_connect_button(profile_url)
+        if connect_btn == "already_connected":
+            logger.info("action.already_connected_remove_in_dropdown", url=profile_url)
+            return ActionResult(ActionStatus.SKIPPED, reason="already_connected")
         if not connect_btn:
             # Last-resort already-connected check: Message present + Follow absent
             # + Connect absent → 1st-degree connection.
@@ -665,6 +691,29 @@ class LinkedInActions:
                     reason="weekly_invitation_limit",
                     details={"url": profile_url},
                 )
+            # Check if the open dialog is a "Remove connection" confirmation —
+            # this means we accidentally clicked "Remove connection" in the More
+            # dropdown instead of "Connect" (misclassified as Connect button).
+            # Treat as already connected so lead is marked SKIPPED, not ERROR.
+            is_removal_dialog = await self.page.evaluate("""() => {
+                const d = document.querySelector('[role="dialog"]');
+                if (!d) return false;
+                const t = d.innerText.toLowerCase();
+                return t.includes('remove') && t.includes('connection');
+            }""")
+            if is_removal_dialog:
+                logger.warning("action.removal_dialog_instead_of_invite", url=profile_url)
+                # Close the dialog to leave the page clean
+                try:
+                    close_btn = await self._try_locator(
+                        self.page.locator('[role="dialog"] button[aria-label*="Dismiss" i], [role="dialog"] button[aria-label*="Cancel" i], [role="dialog"] button:has-text("Cancel")'),
+                        timeout_ms=1000,
+                    )
+                    if close_btn:
+                        await close_btn.click()
+                except Exception:
+                    pass
+                return ActionResult(ActionStatus.SKIPPED, reason="already_connected")
             await self._dump_buttons_debug()
             await self._debug_screenshot("send_btn_missing")
             return ActionResult(
