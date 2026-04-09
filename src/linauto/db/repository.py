@@ -131,6 +131,26 @@ class Repository:
         )
         return result.scalar_one()
 
+    async def plan_generated_today(self, campaign_id: str, local_date: "date") -> bool:
+        """Return True if a DAILY_PLAN_GENERATED entry exists for this campaign today.
+
+        Used by the planner to distinguish a real daily plan from a single
+        dispatcher backfill lead — both result in future_scheduled > 0, but
+        only the former means planning is done for the day.
+        """
+        day_str = local_date.isoformat()  # stored in details JSON as "date": "YYYY-MM-DD"
+        result = await self.session.execute(
+            select(func.count()).where(
+                ActionLog.campaign_id == campaign_id,
+                ActionLog.action_type == ActionType.DAILY_PLAN_GENERATED,
+                ActionLog.status == ActionLogStatus.SUCCESS,
+                # created_at covers any UTC time that day; the details.date field
+                # is the account's local date, which is the authoritative anchor.
+                ActionLog.details.contains(day_str),
+            )
+        )
+        return (result.scalar_one() or 0) > 0
+
     async def reset_stale_scheduled_leads(self, campaign_id: str) -> int:
         """Reset SCHEDULED leads with a past scheduled_at back to PENDING.
 

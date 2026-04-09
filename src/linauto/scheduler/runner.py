@@ -199,9 +199,12 @@ async def daily_planning_sweep():
                     )
                     continue
 
-                # If leads are already scheduled for today, don't re-plan regardless
-                # of time — the dispatcher and backfill handle everything from here.
-                if future_scheduled > 0:
+                # If a full daily plan was already generated today, don't re-plan.
+                # NOTE: do NOT use future_scheduled > 0 here — the dispatcher's
+                # backfill mechanism keeps exactly 1 lead in SCHEDULED state at
+                # all times, which would make future_scheduled always > 0 and
+                # permanently block the planner from generating a real plan.
+                if await repo.plan_generated_today(campaign.id, acct_today):
                     continue
 
                 # effective_start: None before the work window (standard morning plan,
