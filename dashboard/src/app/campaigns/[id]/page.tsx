@@ -6,6 +6,7 @@ import Link from "next/link";
 import { CampaignActivityChart } from "@/components/stats/campaign-chart";
 import {
   useCampaign,
+  useCampaignStats,
   useAccount,
   useUpdateCampaign,
   useActivateCampaign,
@@ -38,6 +39,7 @@ export default function CampaignDetailPage({
   const { id } = use(params);
   const router = useRouter();
   const { data: campaign, isLoading } = useCampaign(id);
+  const { data: campaignStats } = useCampaignStats(id); // summary.total_sent is always all-time
   const { data: account } = useAccount(campaign?.account_id ?? "", {
     enabled: !!campaign?.account_id,
   });
@@ -104,9 +106,12 @@ export default function CampaignDetailPage({
   const counts = campaign.status_counts ?? {};
   const totalLeads = Object.values(counts).reduce((a, b) => a + b, 0);
   const pending = counts["pending"] ?? 0;
-  const sent = counts["connection_requested"] ?? 0;
+  // total_sent from action_log (authoritative): counts all successful dispatches
+  // regardless of current lead status (accepted, withdrawn, still pending, etc.)
+  const sent = campaignStats?.summary.total_sent ?? (counts["connection_requested"] ?? 0);
   const connected = counts["connected"] ?? 0;
   const errors = counts["error"] ?? 0;
+  const acceptRate = campaignStats?.summary.acceptance_rate ?? null;
 
   const assignedListIds = new Set((campaign.assigned_lists ?? []).map((l) => l.id));
   const availableLists = (allLists ?? []).filter((ll) => !assignedListIds.has(ll.id));
@@ -224,7 +229,7 @@ export default function CampaignDetailPage({
           <StatCard label="Connected" value={connected} />
           <StatCard
             label="Accept Rate"
-            value={sent > 0 ? `${Math.round((connected / (sent + connected)) * 100)}%` : "—"}
+            value={acceptRate !== null ? `${acceptRate}%` : "—"}
           />
           <StatCard label="Errors" value={errors} />
         </div>
