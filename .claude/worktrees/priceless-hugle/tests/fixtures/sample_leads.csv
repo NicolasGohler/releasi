@@ -1,7 +1,0 @@
-First Name,Last Name,Company,Job Title,LinkedIn Profile URL,Industry
-John,Doe,Acme Corp,CTO,https://www.linkedin.com/in/johndoe,Technology
-Jane,Smith,TechStart,VP Engineering,https://linkedin.com/in/janesmith?trk=some-param,SaaS
-Bob,Johnson,BigCo,Director of Sales,https://www.linkedin.com/in/BobJohnson/,Enterprise
-Alice,Williams,StartupXYZ,CEO,linkedin.com/in/alicewilliams,Fintech
-,Missing URL,NoLinkedIn,Manager,,Healthcare
-Charlie,Brown,PeanutsCo,Developer,https://www.linkedin.com/in/charliebrown,Software

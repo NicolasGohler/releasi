@@ -34,3 +34,4 @@ htmlcov/
 .pytest_cache/
 linauto.db
 logo copy.png
+.claude/
