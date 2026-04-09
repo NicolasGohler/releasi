@@ -645,20 +645,10 @@ class Repository:
         self,
         account_id: str | None = None,
         campaign_id: str | None = None,
-        limit: int = 50,
+        limit: int = 100,
     ) -> Sequence[ActionLog]:
-        """List action log entries, newest first.
-
-        Excludes scheduler-internal types (CHECK_ACCEPTANCE, DAILY_PLAN_GENERATED)
-        that produce high-volume entries and would bury real user-facing activity.
-        """
-        from linauto.db.models import ActionType
-        _INTERNAL_TYPES = (ActionType.CHECK_ACCEPTANCE, ActionType.DAILY_PLAN_GENERATED)
-        stmt = (
-            select(ActionLog)
-            .where(ActionLog.action_type.notin_(_INTERNAL_TYPES))
-            .order_by(ActionLog.created_at.desc())
-        )
+        """List action log entries, newest first."""
+        stmt = select(ActionLog).order_by(ActionLog.created_at.desc())
         if account_id:
             stmt = stmt.where(ActionLog.account_id == account_id)
         if campaign_id:
