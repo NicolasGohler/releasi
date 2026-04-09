@@ -129,9 +129,9 @@ All times are **in the account's configured timezone** (e.g. `America/New_York` 
 
 | Job | Schedule | Purpose |
 |-----|----------|---------|
-| `daily_planner` | Hourly; plans once per local day before work window | Assign scheduled_at to pending leads |
-| `dispatcher` | Every 5 min | Execute due connection requests |
-| `acceptance_checker` | Hourly; fires at `acceptance_check_hour` local time (default 10 AM) | Detect accepted connections via invitation manager diff |
+| `daily_planner` | Hourly; plans once per local day (checked via `plan_generated_today()`) | Assign scheduled_at to pending leads |
+| `dispatcher` | Every 5 min ±75s jitter | Execute due connection requests |
+| `acceptance_checker` | Hourly; fires at `acceptance_check_hour` local time (default 10 AM) | Detect accepted connections via connections page scroll |
 | `cooldown_checker` | 04:00 UTC daily | Resume paused accounts |
 | `followup_dispatcher` | Every 30 min | Send follow-up messages |
 | `keepalive` | Hourly; fires once in 7–10 AM local window | Organic morning LinkedIn session |
@@ -154,6 +154,15 @@ All times are **in the account's configured timezone** (e.g. `America/New_York` 
 - **Focus clicks stay direct**: `note_field.click()`, `msg_input.click()` are focus actions, not button activations — left as-is.
 - **JS fallback**: `el.click()` only used when Playwright pointer events are intercepted by sticky nav bar.
 
+### Already-Connected Detection (`actions.py` → `send_connection_request`)
+LinkedIn profiles that are already 1st-degree connections must be caught before the connect flow is attempted. Detection runs in layers:
+1. **JS scan of profile header** for `\b1st\b` text → `SKIPPED(already_connected)`
+2. **CSS selectors** (`ALREADY_CONNECTED_INDICATORS`) as fallback
+3. **More dropdown guard** — after opening the More dropdown, explicitly checks for a "Remove connection" menu item before searching for Connect. Returns `"already_connected"` sentinel immediately if found.
+4. **Dialog fallback** — if the connect button was clicked but no Send button appears in the resulting dialog, checks whether the open dialog is a removal confirmation (`contains "remove" + "connection"`). If so → `SKIPPED(already_connected)` and closes the dialog cleanly.
+
+**Critical**: `_find_dropdown_item_by_js("Connect")` uses **word-boundary matching** (exact/starts-with/ends-with), NOT substring `.includes()`. Substring matching caused "Remove connection" to match "connect" and be clicked instead, opening a removal confirmation dialog instead of an invite modal.
+
 ### Browsing Noise (`noise.py`)
 - **Back-scroll 15%**: Occasional upward scroll during feed browsing.
 - **Horizontal drift**: `delta_x = random.randint(-3, 3)` — humans don't scroll perfectly vertically.
@@ -173,7 +182,7 @@ All times are **in the account's configured timezone** (e.g. `America/New_York` 
 | 3 consecutive session errors (non-network) | Mark `cookie_expired` as last resort |
 | 3 consecutive network/timeout errors | Log `proxy_connectivity_issues`, skip cycle, do NOT mark `cookie_expired` |
 | Morning warm-up detects login redirect | Mark `cookie_expired` |
-| Acceptance checker invitation manager → session invalid | Mark `cookie_expired` |
+| Acceptance checker connections page → login redirect | Mark `cookie_expired` |
 | `check_cookie_health` passes for expired account | Auto-recover to `active` |
 
 **What NOT to do**: Never send bare HTTP requests with only `li_at` from the server IP. LinkedIn treats this as a stolen-cookie test and invalidates the session.
@@ -182,17 +191,19 @@ All times are **in the account's configured timezone** (e.g. `America/New_York` 
 
 ### Acceptance Checker (`runner.py` → `check_acceptances`)
 - Runs **once daily at 10:00** (`acceptance_check_hour` setting, default 10).
-- Loads the LinkedIn invitation manager page **once** per account.
-- Extracts all pending sent invitation URLs via a single JS evaluation (no per-profile visits for the check itself).
-- **Diffs** against `CONNECTION_REQUESTED` leads in DB: leads missing from the pending list have either accepted or declined.
-- Only visits profiles of disappeared leads to confirm status (~new acceptances per day, not all pending).
-- `"connected"` → mark `CONNECTED`, schedule follow-up.
-- `"not_connected"` → confirmed declined/expired → mark `WITHDRAWN`. Includes Creator-mode profiles showing "Follow" instead of "Connect".
-- `"unknown"` → profile navigation failed (network/proxy error) → leave as `CONNECTION_REQUESTED`, retry tomorrow.
-- `check_connection_status` logic: successful page load + no 1st-degree badge = `"not_connected"`. `"unknown"` only when navigation fails. This handles LinkedIn Creator profiles (Follow-primary, no Connect button).
-- Manual testing: `linauto check-acceptances --account "Name" [--dry-run]` — uses ephemeral browser, safe to run while scheduler is active (no BrowserPool conflict).
-- Withdrawal check runs on the same already-loaded page (no second navigation).
-- Cost: ~1–2 MB/day (1 invitation manager page + a few profile visits) vs. old approach (~240 MB/day).
+- **Connections page only** — loads `linkedin.com/mynetwork/connections/`, infinite-scrolls until the age cutoff (default 30h), collects all profile slugs via content-based JS (anchors on "Connected on" text nodes). No individual profile visits.
+- **Diffs** scraped slugs against `CONNECTION_REQUESTED` leads in DB → marks matches as `CONNECTED`.
+- Does **not** detect declines — withdrawn/declined invitations are intentionally ignored.
+- Manual run: `linauto check-acceptances --account "Name" [--cutoff-hours 96] [--dry-run]`
+- Cost: ~1 page load + scroll per run (vs. old invitation manager approach which was ~240 MB/day).
+- LinkedIn connection timestamp format: `"Connected on April 7, 2026"` (full date, not relative). Parsed in `actions.py` → `_parse_connection_age_hours()`.
+- Connections page uses infinite scroll (not a "Load more" button) — pagination handled by `window.scrollTo` + height-change guard in `get_recent_connections()`.
+
+### Daily Planner (`runner.py` → `daily_planning_sweep`)
+- Uses `repo.plan_generated_today(campaign_id, local_date)` to determine if today's plan already ran — checks `action_log` for a `DAILY_PLAN_GENERATED` entry with today's local date.
+- **Do NOT use `future_scheduled > 0`** as the "already planned" guard. The dispatcher backfill always keeps 1 lead in `SCHEDULED` state, so `future_scheduled` is almost always ≥ 1 and would permanently block the planner after a mid-day container restart.
+- On mid-day restart: `effective_start = now` (spreads remaining slots across the rest of the window).
+- Skips planning if past `work_end_hour` — tomorrow's morning run handles it.
 
 ### Morning Warm-Up (`runner.py` → `keep_alive`)
 - Runs once per local day in the account's 7–10 AM window (hourly job with per-account time check).
