@@ -75,7 +75,7 @@ export const cancelLoginSession = (id: string) =>
     method: "POST",
   });
 
-export const fetchAccountActivity = (id: string, limit = 100) =>
+export const fetchAccountActivity = (id: string, limit = 500) =>
   apiFetch<ActionLog[]>(`/accounts/${id}/activity?limit=${limit}`);
 
 export const fetchAccountStats = (id: string, days = 30) =>
@@ -254,7 +254,7 @@ export const requeueLead = (id: string) =>
 
 // ── Activity ──────────────────────────────────────────────────────────────
 
-export const fetchGlobalActivity = (limit = 100) =>
+export const fetchGlobalActivity = (limit = 500) =>
   apiFetch<ActionLog[]>(`/activity?limit=${limit}`);
 
 // ── Avatars ──────────────────────────────────────────────────────────────
