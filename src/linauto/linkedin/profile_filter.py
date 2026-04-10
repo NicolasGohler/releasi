@@ -38,7 +38,10 @@ class ProfileFilter:
 
         if filters.min_connections is not None:
             count = await self._get_connection_count(page)
-            if count is not None and count < filters.min_connections:
+            if count is None:
+                logger.info("profile_filter.connections_unknown", min=filters.min_connections)
+                return "filter_connections_unknown"
+            if count < filters.min_connections:
                 logger.info("profile_filter.low_connections", count=count, min=filters.min_connections)
                 return f"filter_low_connections:{count}"
 
