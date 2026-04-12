@@ -954,14 +954,19 @@ def check_acceptances_cmd(
                         status=LeadStatus.CONNECTED,
                         connection_accepted_at=datetime.utcnow(),
                     )
-                    await repo.log_action(
-                        account_id=account.id,
-                        campaign_id=lead.campaign_id,
-                        lead_id=lead.id,
-                        action_type=ActionType.CHECK_ACCEPTANCE,
-                        status=ActionLogStatus.SUCCESS,
-                        details={"accepted": True, "method": "connections_page"},
-                    )
+
+            if not dry_run and accepted:
+                await repo.log_action(
+                    account_id=account.id,
+                    action_type=ActionType.ACCEPTANCE_CHECK_SUMMARY,
+                    status=ActionLogStatus.SUCCESS,
+                    details={
+                        "accepted": len(accepted),
+                        "scanned": len(recent_slugs),
+                        "hit_cutoff": conn_result.hit_cutoff,
+                        "cutoff_hours": CUTOFF_HOURS,
+                    },
+                )
 
             console.print()
             console.print(f"[green]Accepted:[/green]  {len(accepted)}")

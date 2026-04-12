@@ -21,7 +21,12 @@ function formatActionType(type: string) {
 }
 
 export function ActivityTimeline({ logs, timezone }: { logs: ActionLog[]; timezone?: string | null }) {
-  if (logs.length === 0) {
+  // Filter out legacy per-lead CHECK_ACCEPTANCE entries — replaced by ACCEPTANCE_CHECK_SUMMARY
+  const displayLogs = logs.filter(
+    (l) => l.action_type.toUpperCase() !== "CHECK_ACCEPTANCE"
+  );
+
+  if (displayLogs.length === 0) {
     return (
       <p className="text-sm text-muted-foreground py-8 text-center">
         No activity yet
@@ -29,47 +34,33 @@ export function ActivityTimeline({ logs, timezone }: { logs: ActionLog[]; timezo
     );
   }
 
-  // Collapse all CHECK_ACCEPTANCE entries into a single summary row
-  const acceptanceEntries = logs.filter((l) => l.action_type.toUpperCase() === "CHECK_ACCEPTANCE");
-  const acceptanceCount = acceptanceEntries.length;
-  const latestAcceptance = acceptanceEntries[0]; // logs are newest-first
-
-  const displayLogs: Array<ActionLog | { _type: "acceptance_summary"; count: number; entry: ActionLog }> = [];
-  let acceptanceSummarized = false;
-
-  for (const log of logs) {
-    if (log.action_type.toUpperCase() === "CHECK_ACCEPTANCE") {
-      if (!acceptanceSummarized) {
-        displayLogs.push({ _type: "acceptance_summary", count: acceptanceCount, entry: latestAcceptance });
-        acceptanceSummarized = true;
-      }
-      // Skip remaining individual acceptance entries
-    } else {
-      displayLogs.push(log);
-    }
-  }
-
   return (
     <div className="space-y-3">
-      {displayLogs.map((item, idx) => {
-        // Collapsed acceptance summary row
-        if ("_type" in item && item._type === "acceptance_summary") {
+      {displayLogs.map((item) => {
+        // Per-run acceptance checker summary
+        if (item.action_type.toUpperCase() === "ACCEPTANCE_CHECK_SUMMARY") {
+          const details = (item.details ?? {}) as Record<string, unknown>;
+          const accepted = (details.accepted as number) ?? 0;
+          const scanned = (details.scanned as number) ?? null;
+          const hitCutoff = details.hit_cutoff as boolean | undefined;
           return (
             <div
-              key="acceptance-summary"
+              key={item.id}
               className="flex items-start gap-3 rounded-md border border-border p-3 text-sm"
             >
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="font-medium">Check Acceptance</span>
-                  <StatusBadge status="SUCCESS" />
+                  <StatusBadge status={item.status} />
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  {item.count} connection{item.count !== 1 ? "s" : ""} accepted
+                  {accepted} connection{accepted !== 1 ? "s" : ""} accepted
+                  {scanned !== null ? ` · ${scanned} scanned` : ""}
+                  {hitCutoff === false ? " · reached end of window" : ""}
                 </p>
               </div>
               <span className="text-xs text-muted-foreground whitespace-nowrap">
-                {formatTime(item.entry.created_at, timezone)}
+                {formatTime(item.created_at, timezone)}
               </span>
             </div>
           );

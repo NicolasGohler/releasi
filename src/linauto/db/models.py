@@ -60,7 +60,8 @@ class LeadStatus(str, enum.Enum):
 class ActionType(str, enum.Enum):
     CONNECTION_REQUEST = "connection_request"
     FOLLOWUP_MESSAGE = "followup_message"
-    CHECK_ACCEPTANCE = "check_acceptance"
+    CHECK_ACCEPTANCE = "check_acceptance"          # legacy per-lead entries (pre-Apr 2026)
+    ACCEPTANCE_CHECK_SUMMARY = "acceptance_check_summary"  # one entry per run
     LIMIT_DETECTED = "limit_detected"
     COOLDOWN_STARTED = "cooldown_started"
     COOLDOWN_ENDED = "cooldown_ended"

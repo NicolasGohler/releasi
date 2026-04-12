@@ -769,14 +769,6 @@ async def check_acceptances():
                             status=LeadStatus.CONNECTED,
                             connection_accepted_at=datetime.utcnow(),
                         )
-                        await repo.log_action(
-                            account_id=account.id,
-                            campaign_id=campaign.id,
-                            lead_id=lead.id,
-                            action_type=ActionType.CHECK_ACCEPTANCE,
-                            status=ActionLogStatus.SUCCESS,
-                            details={"accepted": True, "method": "connections_page"},
-                        )
                         await repo.increment_daily_stat(account.id, "connections_accepted")
                         newly_connected.append((lead, campaign))
                         logger.info("acceptance.connected", url=lead.linkedin_url)
@@ -788,6 +780,19 @@ async def check_acceptances():
                     recent_slugs=len(recent_slugs),
                     newly_connected=len(newly_connected),
                     hit_cutoff=conn_result.hit_cutoff,
+                )
+
+                # ── One summary log entry for this run (replaces per-lead entries) ──
+                await repo.log_action(
+                    account_id=account.id,
+                    action_type=ActionType.ACCEPTANCE_CHECK_SUMMARY,
+                    status=ActionLogStatus.SUCCESS,
+                    details={
+                        "accepted": len(newly_connected),
+                        "scanned": len(recent_slugs),
+                        "hit_cutoff": conn_result.hit_cutoff,
+                        "cutoff_hours": CUTOFF_HOURS,
+                    },
                 )
 
                 # ── Step 2: schedule follow-ups for newly connected leads ────
