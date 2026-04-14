@@ -158,6 +158,14 @@ class CampaignExecutor:
                 await self.repo.update_lead(
                     lead, status=LeadStatus.INVALID, error_message=action_result.reason
                 )
+                await self.repo.log_action(
+                    account_id=account.id,
+                    campaign_id=campaign.id,
+                    lead_id=lead.id,
+                    action_type=ActionType.CONNECTION_REQUEST,
+                    status=ActionLogStatus.SKIPPED,
+                    details={"reason": action_result.reason},
+                )
                 result["skipped"] = True  # counts as skipped for dispatcher backfill
 
             elif action_result.status == ActionStatus.SKIPPED:
@@ -182,6 +190,14 @@ class CampaignExecutor:
                     validate_transition(lead.status, LeadStatus.SKIPPED)
                     await self.repo.update_lead(
                         lead, status=LeadStatus.SKIPPED, error_message=action_result.reason
+                    )
+                    await self.repo.log_action(
+                        account_id=account.id,
+                        campaign_id=campaign.id,
+                        lead_id=lead.id,
+                        action_type=ActionType.CONNECTION_REQUEST,
+                        status=ActionLogStatus.SKIPPED,
+                        details={"reason": action_result.reason},
                     )
                 result["skipped"] = True
 

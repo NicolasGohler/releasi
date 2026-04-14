@@ -14,6 +14,20 @@ function formatTime(iso: string, tz?: string | null) {
   });
 }
 
+function formatSkipReason(reason: string | undefined): string {
+  if (!reason) return "";
+  if (reason === "already_connected") return "Already connected";
+  if (reason === "filter_connections_unknown") return "Skipped — connection count unreadable";
+  if (reason === "profile_not_found") return "Skipped — profile not found";
+  if (reason === "pending_request") return "Skipped — pending request already sent";
+  if (reason.startsWith("filter_low_connections:")) {
+    const count = reason.split(":")[1];
+    return `Skipped — too few connections (${count})`;
+  }
+  if (reason.startsWith("filter_")) return `Skipped — ${reason.replace("filter_", "").replace(/_/g, " ")}`;
+  return reason;
+}
+
 function formatActionType(type: string) {
   return type
     .replace(/_/g, " ")
@@ -102,9 +116,7 @@ export function ActivityTimeline({ logs, timezone }: { logs: ActionLog[]; timezo
               </div>
               {isConnectionRequest && log.details && (
                 <p className="text-xs text-muted-foreground mt-1 truncate">
-                  {(log.details as Record<string, unknown>).reason === "already_connected"
-                    ? "Already connected"
-                    : JSON.stringify(log.details)}
+                  {formatSkipReason((log.details as Record<string, unknown>).reason as string | undefined)}
                 </p>
               )}
               {!isConnectionRequest && log.details && (
