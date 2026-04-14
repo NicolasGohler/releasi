@@ -98,7 +98,7 @@ class ProfileFilter:
                         let cur = el.parentElement;
                         for (let i = 0; i < 3 && cur; i++) {
                             const full = (cur.innerText || cur.textContent || '').trim();
-                            const m = full.match(/^([\d,]+)\+?\s*[\n\r]*\s*connections?$/i);
+                            const m = full.match(/^([\d,]+)\+?\s*connections?$/i);
                             if (m) return m[1].replace(/,/g, '');
                             cur = cur.parentElement;
                         }
