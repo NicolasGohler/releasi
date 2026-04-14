@@ -284,9 +284,13 @@ PROFILE_NO_PHOTO = [
 ]
 
 PROFILE_CONNECTION_COUNT = [
+    # NOTE: LinkedIn now uses obfuscated CSS class names (e.g. "_16deed48")
+    # that change with each deploy, making CSS selectors unreliable.
+    # profile_filter._get_connection_count() uses JS content-matching as the
+    # primary strategy (finds <p>/"connections" label, reads count from parent).
+    # These CSS selectors are kept only as a fallback for older cached layouts.
     '.pv-top-card--list-bullet li:has-text("connections") span.t-bold',
     'a[href*="/connections/"] span.t-bold',
-    # Broader: any element near top of page with connection count text
     'span:has-text("connections")',
 ]
 

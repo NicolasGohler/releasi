@@ -76,7 +76,44 @@ class ProfileFilter:
         Extract the connection count from the profile page.
         Parses text like "500+", "127", "1,234" into an integer.
         Returns None if the count can't be determined.
+
+        LinkedIn now uses obfuscated CSS class names that change with each
+        deploy, so CSS selectors are unreliable. Primary strategy is JS
+        content-matching: find the element labelled "connections" and read
+        the number from its parent's text. CSS selectors are tried as a
+        fallback for any older LinkedIn layouts still in the wild.
         """
+        # Primary: JS content-based search (robust against obfuscated classes)
+        try:
+            result = await page.evaluate("""
+                () => {
+                    // Find any <p> or <span> whose trimmed text is exactly
+                    // "connections" or "connection", then read the count from
+                    // the parent element's full text (LinkedIn renders the
+                    // number as a bare text node alongside the label child).
+                    const labels = document.querySelectorAll('p, span');
+                    for (const el of labels) {
+                        const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                        if (t !== 'connections' && t !== 'connection') continue;
+                        let cur = el.parentElement;
+                        for (let i = 0; i < 3 && cur; i++) {
+                            const full = (cur.innerText || cur.textContent || '').trim();
+                            const m = full.match(/^([\d,]+)\+?\s*[\n\r]*\s*connections?$/i);
+                            if (m) return m[1].replace(/,/g, '');
+                            cur = cur.parentElement;
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if result is not None:
+                count = self._parse_count(str(result))
+                if count is not None:
+                    return count
+        except Exception:
+            pass
+
+        # Fallback: CSS selectors (may work on older/cached LinkedIn layouts)
         for sel in selectors.PROFILE_CONNECTION_COUNT:
             try:
                 locator = page.locator(sel).first
