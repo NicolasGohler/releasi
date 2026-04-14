@@ -39,8 +39,11 @@ class ProfileFilter:
         if filters.min_connections is not None:
             count = await self._get_connection_count(page)
             if count is None:
-                logger.info("profile_filter.connections_unknown", min=filters.min_connections)
-                return "filter_connections_unknown"
+                # Fail open: selector couldn't read the count (LinkedIn DOM change
+                # or restricted profile visibility). Don't block the lead — per
+                # CLAUDE.md "Safety checks should fail open".
+                logger.info("profile_filter.connections_unknown_fail_open", min=filters.min_connections)
+                return None
             if count < filters.min_connections:
                 logger.info("profile_filter.low_connections", count=count, min=filters.min_connections)
                 return f"filter_low_connections:{count}"
