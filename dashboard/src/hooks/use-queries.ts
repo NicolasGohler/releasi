@@ -194,6 +194,33 @@ export function useDeleteLeadList() {
   });
 }
 
+export function useStartEventImport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.startEventImport,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["lead-lists"] }),
+  });
+}
+
+export function useScrapeStatus(listId: string | null) {
+  const qc = useQueryClient();
+  return useQuery({
+    queryKey: ["scrape-status", listId],
+    queryFn: () => api.fetchScrapeStatus(listId!),
+    enabled: !!listId,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      if (status === "running") return 3000;
+      if (status === "done" || status === "error") {
+        // Refresh the list once scrape settles
+        qc.invalidateQueries({ queryKey: ["lead-lists"] });
+        return false;
+      }
+      return 3000;
+    },
+  });
+}
+
 export function useImportCSVToList(listId: string) {
   const qc = useQueryClient();
   return useMutation({

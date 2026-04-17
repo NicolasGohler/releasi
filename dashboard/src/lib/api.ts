@@ -9,6 +9,7 @@ import type {
   ActionLog,
   DailyStat,
   ImportResponse,
+  ScrapeStatus,
   ScheduleSlot,
   AccountHealth,
 } from "./types";
@@ -275,6 +276,22 @@ export const checkConnection = (accountId: string) =>
     `/accounts/${accountId}/check-connection`,
     { method: "POST" }
   );
+
+// ── Event Import ─────────────────────────────────────────────────────────
+
+export const startEventImport = (data: {
+  url: string;
+  account_id: string;
+  list_name?: string;
+  limit?: number;
+}) =>
+  apiFetch<LeadList>("/lead-lists/event-import", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const fetchScrapeStatus = (listId: string) =>
+  apiFetch<ScrapeStatus>(`/lead-lists/${listId}/scrape-status`);
 
 // ── Archive ──────────────────────────────────────────────────────────────
 

@@ -144,6 +144,12 @@ export interface AccountHealth {
   last_error_message: string | null;
 }
 
+export interface ScrapeStatus {
+  status: "running" | "done" | "error" | "unknown";
+  collected: number;
+  error?: string | null;
+}
+
 export interface ImportResponse {
   total_rows: number;
   imported: number;
