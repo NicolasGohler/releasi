@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState, useCallback } from "react";
+import { use, useState, useCallback, useTransition } from "react";
 import {
   useLeadList,
   useLeadListLeads,
@@ -15,6 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useDropzone } from "react-dropzone";
+import { exportLeadListCSV } from "@/lib/api";
 
 export default function LeadListDetailPage({
   params,
@@ -30,6 +31,7 @@ export default function LeadListDetailPage({
   const assign = useAssignListToCampaign();
   const unassign = useUnassignListFromCampaign();
   const [selectedCampaign, setSelectedCampaign] = useState("");
+  const [isExporting, startExport] = useTransition();
 
   const onDrop = useCallback(
     (files: File[]) => {
@@ -77,6 +79,22 @@ export default function LeadListDetailPage({
         <span className="text-sm text-muted-foreground">
           {list.total_leads} leads
         </span>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={isExporting || list.total_leads === 0}
+          onClick={() =>
+            startExport(async () => {
+              try {
+                await exportLeadListCSV(id, `${list.name}.csv`);
+              } catch (err) {
+                toast.error("Export failed");
+              }
+            })
+          }
+        >
+          {isExporting ? "Exporting..." : "Export CSV"}
+        </Button>
       </PageHeader>
 
       {/* CSV Upload */}

@@ -208,6 +208,20 @@ export const fetchLeadListLeads = (
   return apiFetch<LeadPage>(`/lead-lists/${listId}/leads${qs ? `?${qs}` : ""}`);
 };
 
+export const exportLeadListCSV = async (listId: string, filename: string) => {
+  const res = await fetch(`${API_URL}/api/v1/lead-lists/${listId}/export`, {
+    headers: { Authorization: `Bearer ${API_KEY}` },
+  });
+  if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
 export const assignListToCampaign = (listId: string, campaignId: string) =>
   apiFetch<{ leads_added: number }>(`/lead-lists/${listId}/assign`, {
     method: "POST",

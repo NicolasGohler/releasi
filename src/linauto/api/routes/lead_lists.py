@@ -252,6 +252,40 @@ async def import_csv_to_list(
     )
 
 
+@router.get("/lead-lists/{lead_list_id}/export")
+async def export_lead_list_csv(lead_list_id: str, repo: Repository = Depends(get_repo)):
+    """Download all leads in a list as a CSV file."""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    ll = await repo.get_lead_list(lead_list_id)
+    if not ll:
+        raise HTTPException(status_code=404, detail="Lead list not found")
+
+    leads, _ = await repo.get_list_leads(lead_list_id, page=1, per_page=10000)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["linkedin_url", "first_name", "last_name", "company", "title"])
+    for lead in leads:
+        writer.writerow([
+            lead.linkedin_url,
+            lead.first_name or "",
+            lead.last_name or "",
+            lead.company or "",
+            lead.title or "",
+        ])
+
+    buf.seek(0)
+    filename = f"{ll.name.replace(' ', '_')}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/lead-lists/{lead_list_id}/leads", response_model=LeadPage)
 async def list_leads_in_list(
     lead_list_id: str,
