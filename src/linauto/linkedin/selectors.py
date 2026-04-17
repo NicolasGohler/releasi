@@ -294,6 +294,24 @@ PROFILE_CONNECTION_COUNT = [
     'span:has-text("connections")',
 ]
 
+# ── People search results ─────────────────────────────────────────────────
+# LinkedIn search results use hashed/obfuscated CSS class names that change
+# on deploys. All URL extraction is done via JS. These selectors are used
+# only for page-load detection (waiting for first result to appear).
+SEARCH_RESULTS_LOADED = [
+    # Any profile link inside main content — reliable cross-deploy
+    'main a[href*="/in/"]',
+    # Fallback: search results container scoped link
+    '.search-results-container a[href*="/in/"]',
+]
+
+# Indicates the search returned no results (end of pagination or empty query)
+SEARCH_NO_RESULTS = [
+    'main :text("No results found")',
+    'main :text("0 results")',
+    ':has-text("No results found")',
+]
+
 # ── Session validation ────────────────────────────────────────────────────
 
 FEED_URL = "https://www.linkedin.com/feed/"

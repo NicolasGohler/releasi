@@ -5,6 +5,7 @@ import asyncio
 import sys
 import warnings
 from pathlib import Path
+from typing import Optional
 
 # Suppress SQLAlchemy/aiosqlite GC warnings for CLI (harmless in short-lived processes)
 import logging
@@ -978,6 +979,99 @@ def check_acceptances_cmd(
         await _cleanup(session)
 
     _run(_check())
+
+
+@app.command("export-event")
+def export_event(
+    url: str = typer.Option(..., "--url", "-u", help="LinkedIn event attendees search URL"),
+    account_name: str = typer.Option(..., "--account", "-a", help="Account name to use for browsing"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output CSV file (default: stdout)"),
+    limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max number of profile URLs to collect"),
+):
+    """
+    Scrape LinkedIn event attendee profile URLs and export as CSV.
+
+    Uses the account's browser session and proxy. Paginates through search
+    results automatically. Output is a single-column CSV (linkedin_url) ready
+    for Apollo enrichment.
+
+    Example:
+        linauto export-event \\
+          --url "https://www.linkedin.com/search/results/people/?origin=EVENT_PAGE_CANNED_SEARCH&eventAttending=%5B%227446030111352614912%22%5D" \\
+          --account "Nicolas Goehler" \\
+          --output attendees.csv
+    """
+    import csv
+    import sys as _sys
+
+    async def _export():
+        repo, session = await _get_repo()
+        account = await repo.get_account_by_name(account_name)
+        if not account:
+            console.print(f"[red]Account '{account_name}' not found.[/red]")
+            raise typer.Exit(1)
+
+        from linauto.linkedin.browser import LinkedInBrowser
+        from linauto.linkedin.scraper import scrape_event_attendees
+
+        browser = LinkedInBrowser()
+        urls: list[str] = []
+        try:
+            await browser.launch(
+                account_id=account.id,
+                li_at_cookie=account.li_at_cookie,
+                user_agent=account.user_agent,
+                proxy_url=account.proxy_url,
+                proxy_country=account.proxy_country,
+                timezone=account.timezone,
+            )
+
+            valid = await browser.validate_session()
+            if not valid:
+                console.print("[red]Session expired — please re-login.[/red]")
+                raise typer.Exit(1)
+
+            page = await browser.new_page()
+            try:
+                console.print(f"[bold]Scraping attendees...[/bold]")
+                console.print(f"  Account: {account_name}")
+                if limit:
+                    console.print(f"  Limit:   {limit}")
+                console.print()
+
+                def _progress(count: int, page_num: int):
+                    console.print(f"  [dim]Page {page_num}: {count} URLs collected[/dim]")
+
+                urls = await scrape_event_attendees(
+                    page, url, limit=limit, on_progress=_progress
+                )
+            finally:
+                await page.close()
+        finally:
+            await browser.close()
+            await _cleanup(session)
+
+        # Write CSV
+        if output:
+            fh = open(output, "w", newline="")
+        else:
+            fh = _sys.stdout
+
+        try:
+            writer = csv.writer(fh)
+            writer.writerow(["linkedin_url"])
+            for profile_url in urls:
+                writer.writerow([profile_url])
+        finally:
+            if output:
+                fh.close()
+
+        if output:
+            console.print(f"\n[green]Exported {len(urls)} profile URLs → {output}[/green]")
+        else:
+            console.print(f"\n[dim]# {len(urls)} URLs written to stdout[/dim]", file=_sys.stderr)
+
+    _run(_export())
 
 
 if __name__ == "__main__":
