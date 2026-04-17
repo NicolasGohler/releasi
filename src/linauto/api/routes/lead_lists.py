@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import tempfile
+from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File  # noqa: F401
+import structlog
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, File  # noqa: F401
+from pydantic import BaseModel
 
 from linauto.api.auth import require_api_key
 from linauto.api.deps import get_repo
@@ -19,7 +22,92 @@ from linauto.api.schemas import (
 )
 from linauto.db.repository import Repository
 
+logger = structlog.get_logger()
 router = APIRouter(dependencies=[Depends(require_api_key)])
+
+# ── Event import job tracking (in-memory) ────────────────────────────────
+# Maps lead_list_id → job state. Single-process FastAPI — safe for our use case.
+_scrape_jobs: dict[str, dict] = {}
+
+
+class EventImportRequest(BaseModel):
+    url: str
+    account_id: str
+    list_name: Optional[str] = None
+    limit: Optional[int] = None
+
+
+class ScrapeStatusOut(BaseModel):
+    status: str  # "running" | "done" | "error" | "unknown"
+    collected: int = 0
+    error: Optional[str] = None
+
+
+async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Optional[int]):
+    """Background task: scrape LinkedIn event attendees and persist as leads."""
+    from linauto.db.engine import get_session_factory
+    from linauto.db.repository import Repository as _Repo
+    from linauto.db.models import Lead, LeadStatus
+    from linauto.linkedin.browser import LinkedInBrowser
+    from linauto.linkedin.scraper import scrape_event_attendees
+
+    _scrape_jobs[list_id] = {"status": "running", "collected": 0}
+
+    session = get_session_factory()()
+    repo = _Repo(session)
+    browser = LinkedInBrowser()
+
+    try:
+        account = await repo.get_account(account_id)
+        if not account:
+            _scrape_jobs[list_id] = {"status": "error", "collected": 0, "error": "Account not found"}
+            return
+
+        await browser.launch(
+            account_id=account.id,
+            li_at_cookie=account.li_at_cookie,
+            user_agent=account.user_agent,
+            proxy_url=account.proxy_url,
+            proxy_country=account.proxy_country,
+            timezone=account.timezone,
+        )
+
+        valid = await browser.validate_session()
+        if not valid:
+            _scrape_jobs[list_id] = {"status": "error", "collected": 0, "error": "Session expired — please re-login"}
+            return
+
+        page = await browser.new_page()
+        try:
+            def _on_progress(count: int, _page_num: int):
+                _scrape_jobs[list_id]["collected"] = count
+
+            urls = await scrape_event_attendees(page, url, limit=limit, on_progress=_on_progress)
+        finally:
+            await page.close()
+
+        # Persist leads
+        ll = await repo.get_lead_list(list_id)
+        if ll and urls:
+            existing_urls = await repo.get_list_lead_urls(list_id)
+            new_leads = [
+                Lead(lead_list_id=list_id, linkedin_url=u, status=LeadStatus.PENDING)
+                for u in urls if u not in existing_urls
+            ]
+            if new_leads:
+                count = await repo.bulk_create_leads(new_leads)
+                await repo.update_lead_list(ll, total_leads=ll.total_leads + count, csv_filename="event_attendees.csv")
+
+        _scrape_jobs[list_id] = {"status": "done", "collected": len(urls)}
+        logger.info("event_scrape.done", list_id=list_id, total=len(urls))
+
+    except Exception as e:
+        logger.error("event_scrape.failed", list_id=list_id, error=str(e))
+        prev = _scrape_jobs.get(list_id, {})
+        _scrape_jobs[list_id] = {"status": "error", "collected": prev.get("collected", 0), "error": str(e)}
+    finally:
+        await browser.close()
+        await session.close()
 
 
 async def _enrich_lead_list(repo: Repository, lead_list) -> LeadListOut:
@@ -68,6 +156,28 @@ async def create_lead_list(
         raise HTTPException(status_code=409, detail="Lead list name already exists")
     ll = await repo.create_lead_list(name=body.name)
     return await _enrich_lead_list(repo, ll)
+
+
+@router.post("/lead-lists/event-import", response_model=LeadListOut, status_code=201)
+async def event_import_list(
+    body: EventImportRequest,
+    background_tasks: BackgroundTasks,
+    repo: Repository = Depends(get_repo),
+):
+    """Create a lead list and start scraping LinkedIn event attendees in the background."""
+    name = body.list_name or f"Event Attendees - {datetime.utcnow().strftime('%m/%d')}"
+    ll = await repo.create_lead_list(name=name, csv_filename="scraping...")
+    background_tasks.add_task(_run_event_scrape, ll.id, body.account_id, body.url, body.limit)
+    return await _enrich_lead_list(repo, ll)
+
+
+@router.get("/lead-lists/{lead_list_id}/scrape-status", response_model=ScrapeStatusOut)
+async def get_scrape_status(lead_list_id: str):
+    """Poll the progress of an in-progress event attendee scrape."""
+    job = _scrape_jobs.get(lead_list_id)
+    if not job:
+        return ScrapeStatusOut(status="unknown", collected=0)
+    return ScrapeStatusOut(**job)
 
 
 @router.post("/lead-lists/{lead_list_id}/archive", response_model=LeadListOut)
