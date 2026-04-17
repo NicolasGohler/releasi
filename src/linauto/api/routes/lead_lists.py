@@ -127,25 +127,6 @@ async def list_lead_lists(
     return [await _enrich_lead_list(repo, ll) for ll in lists]
 
 
-@router.get("/lead-lists/{lead_list_id}", response_model=LeadListDetail)
-async def get_lead_list(lead_list_id: str, repo: Repository = Depends(get_repo)):
-    ll = await repo.get_lead_list(lead_list_id)
-    if not ll:
-        raise HTTPException(status_code=404, detail="Lead list not found")
-
-    links = await repo.get_list_campaigns(lead_list_id)
-    campaigns = []
-    for link in links:
-        campaign = await repo.get_campaign(link.campaign_id)
-        if campaign:
-            campaigns.append({"id": campaign.id, "name": campaign.name})
-
-    out = LeadListDetail.model_validate(ll)
-    out.campaign_count = len(campaigns)
-    out.campaigns = campaigns
-    return out
-
-
 @router.post("/lead-lists", response_model=LeadListOut, status_code=201)
 async def create_lead_list(
     body: LeadListCreate,
@@ -158,6 +139,7 @@ async def create_lead_list(
     return await _enrich_lead_list(repo, ll)
 
 
+# Static routes must be registered before /{lead_list_id} to avoid 405s
 @router.post("/lead-lists/event-import", response_model=LeadListOut, status_code=201)
 async def event_import_list(
     body: EventImportRequest,
@@ -178,6 +160,25 @@ async def get_scrape_status(lead_list_id: str):
     if not job:
         return ScrapeStatusOut(status="unknown", collected=0)
     return ScrapeStatusOut(**job)
+
+
+@router.get("/lead-lists/{lead_list_id}", response_model=LeadListDetail)
+async def get_lead_list(lead_list_id: str, repo: Repository = Depends(get_repo)):
+    ll = await repo.get_lead_list(lead_list_id)
+    if not ll:
+        raise HTTPException(status_code=404, detail="Lead list not found")
+
+    links = await repo.get_list_campaigns(lead_list_id)
+    campaigns = []
+    for link in links:
+        campaign = await repo.get_campaign(link.campaign_id)
+        if campaign:
+            campaigns.append({"id": campaign.id, "name": campaign.name})
+
+    out = LeadListDetail.model_validate(ll)
+    out.campaign_count = len(campaigns)
+    out.campaigns = campaigns
+    return out
 
 
 @router.post("/lead-lists/{lead_list_id}/archive", response_model=LeadListOut)
