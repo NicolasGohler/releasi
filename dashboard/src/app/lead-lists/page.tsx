@@ -2,16 +2,18 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useLeadLists, useDeleteLeadList, useScrapeStatus } from "@/hooks/use-queries";
+import { useLeadLists, useCreateLeadList, useDeleteLeadList, useScrapeStatus } from "@/hooks/use-queries";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { EventImportDialog } from "@/components/leads/event-import-dialog";
@@ -35,11 +37,29 @@ export default function LeadListsPage() {
   const { data: lists, isLoading } = useLeadLists();
   const deleteList = useDeleteLeadList();
 
+  const createList = useCreateLeadList();
+  const [showCreate, setShowCreate] = useState(false);
+  const [newName, setNewName] = useState("");
   const [showEventDialog, setShowEventDialog] = useState(false);
   const [scrapingIds, setScrapingIds] = useState<Set<string>>(new Set());
 
   const handleScrapeStarted = (listId: string) => {
     setScrapingIds((prev) => new Set(prev).add(listId));
+  };
+
+  const handleCreate = () => {
+    if (!newName.trim()) return;
+    createList.mutate(
+      { name: newName.trim() },
+      {
+        onSuccess: () => {
+          toast.success("Lead list created");
+          setNewName("");
+          setShowCreate(false);
+        },
+        onError: (err) => toast.error(err.message),
+      }
+    );
   };
 
   return (
@@ -52,12 +72,36 @@ export default function LeadListsPage() {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => setShowCreate(true)}>
+              Empty list
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => setShowEventDialog(true)}>
               From LinkedIn Event
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </PageHeader>
+
+      {showCreate && (
+        <Card>
+          <CardContent className="flex gap-3 p-4">
+            <Input
+              placeholder="List name"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+              autoFocus
+            />
+            <Button onClick={handleCreate} disabled={createList.isPending}>
+              Create
+            </Button>
+            <Button variant="outline" onClick={() => { setShowCreate(false); setNewName(""); }}>
+              Cancel
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       <EventImportDialog
         open={showEventDialog}
