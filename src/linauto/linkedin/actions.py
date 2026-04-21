@@ -890,12 +890,16 @@ class LinkedInActions:
           "Connected on April 7, 2026"  → hours since that date
           "Connected on April 6, 2026"  → hours since that date
 
-        Legacy relative formats (kept for robustness):
-          "just now" / "moments ago"    → 0
-          "1 hour ago" / "3 hours ago"  → 1 / 3
-          "1 day ago" / "2 days ago"    → 24 / 48
-          "1 week ago" / "2 weeks ago"  → 168 / 336
-          "January 2025" / month-only   → very large (treat as old, stop)
+        Relative formats (kept for robustness — LinkedIn has rendered these
+        historically and may again, especially during A/B tests):
+          "just now" / "moments ago"          → 0
+          "a few seconds ago" / "30 seconds"  → 0
+          "a minute ago" / "5 minutes ago"    → 1/60 / 5/60
+          "an hour ago" / "8 hours ago"       → 1 / 8
+          "yesterday"                         → 24
+          "a day ago" / "3 days ago"          → 24 / 72
+          "a week ago" / "2 weeks ago"        → 168 / 336
+          "January 2025" / month-only         → None (treat as old, stop)
 
         Returns None if the text cannot be parsed (treated as very old → stop).
         """
@@ -903,9 +907,10 @@ class LinkedInActions:
         if not text:
             return None
         t = text.strip()
+        t_lower = t.lower()
 
         # Primary format: "Connected on April 7, 2026"
-        if t.lower().startswith("connected on "):
+        if t_lower.startswith("connected on "):
             date_str = t[len("connected on "):].strip()
             try:
                 conn_date = _dt.strptime(date_str, "%B %d, %Y")
@@ -913,20 +918,32 @@ class LinkedInActions:
             except ValueError:
                 pass
 
-        t_lower = t.lower()
-        # "just now" / "moments ago"
-        if "just now" in t_lower or "moment" in t_lower:
+        # "just now" / "moments ago" / "a few seconds ago"
+        if "just now" in t_lower or "moment" in t_lower or "second" in t_lower:
             return 0.0
+
+        # "yesterday" — treat as 24h
+        if "yesterday" in t_lower:
+            return 24.0
+
+        # Normalize "a/an <unit>" → "1 <unit>" so the numeric regexes match.
+        # Word boundaries prevent matching inside other words.
+        t_norm = re.sub(r'\b(a|an)\s+(minute|hour|day|week)\b', r'1 \2', t_lower)
+
+        # Minutes: "5 minutes ago", "1 minute ago"
+        m = re.search(r'(\d+)\s+minute', t_norm)
+        if m:
+            return float(m.group(1)) / 60.0
         # Hours: "1 hour ago", "3 hours ago"
-        m = re.search(r'(\d+)\s+hour', t_lower)
+        m = re.search(r'(\d+)\s+hour', t_norm)
         if m:
             return float(m.group(1))
         # Days: "1 day ago", "2 days ago"
-        m = re.search(r'(\d+)\s+day', t_lower)
+        m = re.search(r'(\d+)\s+day', t_norm)
         if m:
             return float(m.group(1)) * 24
         # Weeks: "1 week ago", "2 weeks ago"
-        m = re.search(r'(\d+)\s+week', t_lower)
+        m = re.search(r'(\d+)\s+week', t_norm)
         if m:
             return float(m.group(1)) * 168
         # Months / years / unparseable absolute dates → treat as very old
@@ -983,11 +1000,24 @@ class LinkedInActions:
                         const results = [];
                         const seenHrefs = new Set();
 
-                        // Find all "Connected on" text nodes in <p> elements
-                        const paras = document.querySelectorAll('p, span, div');
+                        // Match either the current absolute format
+                        // ("Connected on April 7, 2026") or any relative
+                        // phrasing LinkedIn may render ("5 minutes ago",
+                        // "8 hours ago", "yesterday", "3 days ago", etc.).
+                        // Keeping both patterns makes the scraper robust to
+                        // A/B tests and UI changes.
+                        const RELATIVE_RX = /(just now|moments? ago|yesterday|\\b(?:a|an|\\d+)\\s+(?:second|minute|hour|day|week)s?\\s+ago)/i;
+                        const isTimeText = (s) => {
+                            const lower = s.toLowerCase();
+                            if (lower.startsWith('connected on ')) return true;
+                            return RELATIVE_RX.test(lower);
+                        };
+
+                        const paras = document.querySelectorAll('p, span, div, time');
                         for (const el of paras) {
                             const text = (el.innerText || el.textContent || '').trim();
-                            if (!text.toLowerCase().startsWith('connected on ')) continue;
+                            if (!text || text.length > 80) continue;
+                            if (!isTimeText(text)) continue;
 
                             // Walk up up to 6 levels to find a container with a /in/ link
                             let container = el.parentElement;

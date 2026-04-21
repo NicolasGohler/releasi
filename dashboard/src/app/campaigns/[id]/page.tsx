@@ -70,7 +70,14 @@ export default function CampaignDetailPage({
     enabled: !!campaign?.account_id,
   });
 
-  const campaignActivity = activity?.filter((a) => a.campaign_id === id) ?? [];
+  // Include campaign-scoped entries plus account-scoped system entries
+  // (e.g. ACCEPTANCE_CHECK_SUMMARY has no campaign_id but is relevant here).
+  const campaignActivity =
+    activity?.filter(
+      (a) =>
+        a.campaign_id === id ||
+        a.action_type.toUpperCase() === "ACCEPTANCE_CHECK_SUMMARY",
+    ) ?? [];
 
   if (isLoading) {
     return (
