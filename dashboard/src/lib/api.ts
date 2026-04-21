@@ -49,14 +49,47 @@ export const createAccount = (data: {
   name: string;
   li_at_cookie?: string;
   timezone?: string;
-  proxy_country?: string;
+  proxy_host?: string | null;
+  proxy_port?: number | null;
+  proxy_username?: string | null;
+  proxy_password?: string | null;
+  proxy_country?: string | null;
 }) => apiFetch<Account>("/accounts", { method: "POST", body: JSON.stringify(data) });
 
+// For password edits: omit `proxy_password` entirely to keep the existing
+// value. Pass an empty string to clear.
 export const updateAccount = (
   id: string,
-  data: { name?: string; timezone?: string; daily_limit?: number; weekly_limit?: number }
+  data: {
+    name?: string;
+    timezone?: string;
+    daily_limit?: number;
+    weekly_limit?: number;
+    withdraw_threshold?: number | null;
+    proxy_host?: string | null;
+    proxy_port?: number | null;
+    proxy_username?: string | null;
+    proxy_password?: string;
+    proxy_country?: string | null;
+  }
 ) =>
   apiFetch<Account>(`/accounts/${id}`, { method: "PUT", body: JSON.stringify(data) });
+
+export const testProxyUnsaved = (data: {
+  proxy_host: string;
+  proxy_port: number;
+  proxy_username?: string | null;
+  proxy_password?: string | null;
+}) =>
+  apiFetch<import("./types").ProxyTestResult>("/accounts/test-proxy", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const testProxyStored = (id: string) =>
+  apiFetch<import("./types").ProxyTestResult>(`/accounts/${id}/test-proxy`, {
+    method: "POST",
+  });
 
 export const updateCookie = (id: string, data: { li_at_cookie: string }) =>
   apiFetch<Account>(`/accounts/${id}/cookie`, { method: "PUT", body: JSON.stringify(data) });

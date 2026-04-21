@@ -59,7 +59,7 @@ export function useCreateAccount() {
 export function useUpdateAccount(id: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { name?: string; timezone?: string; daily_limit?: number; weekly_limit?: number; proxy_country?: string | null }) =>
+    mutationFn: (data: Parameters<typeof api.updateAccount>[1]) =>
       api.updateAccount(id, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["accounts", id] });

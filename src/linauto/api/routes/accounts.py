@@ -14,6 +14,7 @@ from linauto.api.deps import get_repo
 from linauto.api.schemas import (
     AccountOut, AccountCreate, AccountUpdate, CookieUpdate,
     ActionLogOut, DailyStatOut, ScheduleSlotOut, AccountHealthOut,
+    ProxyTestRequest, ProxyTestResponse,
 )
 from linauto.db.repository import Repository
 
@@ -22,11 +23,122 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
 public_router = APIRouter()
 
 
+# ── Proxy URL helpers ───────────────────────────────────────────────────────
+
+def _parse_proxy_url(url: Optional[str]) -> dict:
+    """Return parsed components of a proxy URL for display.
+
+    Returns {host, port, username, password_set} — password itself is never
+    exposed to clients.
+    """
+    if not url:
+        return {"host": None, "port": None, "username": None, "password_set": False}
+    from urllib.parse import urlparse
+    try:
+        p = urlparse(url)
+        return {
+            "host": p.hostname,
+            "port": p.port,
+            "username": p.username,
+            "password_set": bool(p.password),
+        }
+    except Exception:
+        return {"host": None, "port": None, "username": None, "password_set": False}
+
+
+def _proxy_password(url: Optional[str]) -> Optional[str]:
+    """Extract the plaintext password from an existing proxy URL."""
+    if not url:
+        return None
+    from urllib.parse import urlparse
+    try:
+        return urlparse(url).password
+    except Exception:
+        return None
+
+
+def _assemble_proxy_url(
+    host: Optional[str],
+    port: Optional[int],
+    username: Optional[str],
+    password: Optional[str],
+) -> Optional[str]:
+    """Build http://user:pass@host:port. Returns None if host/port missing."""
+    if not host or not port:
+        return None
+    from urllib.parse import quote
+    auth = ""
+    if username:
+        auth = quote(username, safe="")
+        if password:
+            auth += ":" + quote(password, safe="")
+        auth += "@"
+    return f"http://{auth}{host}:{port}"
+
+
 async def _enrich_account(account, repo: Repository) -> AccountOut:
-    """Build AccountOut with computed fields like pending_requests."""
+    """Build AccountOut with computed fields like pending_requests + proxy parts."""
     out = AccountOut.model_validate(account)
     out.pending_requests = await repo.count_pending_requests_for_account(account.id)
+    parsed = _parse_proxy_url(account.proxy_url)
+    out.proxy_host = parsed["host"]
+    out.proxy_port = parsed["port"]
+    out.proxy_username = parsed["username"]
+    out.proxy_password_set = parsed["password_set"]
     return out
+
+
+async def _test_proxy(proxy_url: Optional[str]) -> ProxyTestResponse:
+    """Ping ipinfo.io through the proxy to verify it works.
+
+    Returns ok=True with IP + country on success. On auth failure, timeout,
+    connection refused, etc. returns ok=False with a human-friendly message.
+    Uses httpx (no browser) — safe to call freely, costs no LinkedIn traffic.
+    """
+    import time
+    import httpx
+    start = time.monotonic()
+    try:
+        client_kwargs = {"timeout": 10.0}
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            resp = await client.get("https://ipinfo.io/json")
+        elapsed = int((time.monotonic() - start) * 1000)
+        if resp.status_code != 200:
+            return ProxyTestResponse(
+                ok=False, latency_ms=elapsed,
+                error=f"Unexpected status {resp.status_code}",
+            )
+        data = resp.json()
+        return ProxyTestResponse(
+            ok=True,
+            ip=data.get("ip"),
+            country=data.get("country"),
+            latency_ms=elapsed,
+        )
+    except httpx.ProxyError as e:
+        elapsed = int((time.monotonic() - start) * 1000)
+        msg = str(e).lower()
+        if "407" in msg or "authentication" in msg or "auth" in msg:
+            err = "Authentication failed — check username/password"
+        else:
+            err = f"Proxy connection failed: {e}"
+        return ProxyTestResponse(ok=False, latency_ms=elapsed, error=err)
+    except httpx.ConnectError as e:
+        elapsed = int((time.monotonic() - start) * 1000)
+        return ProxyTestResponse(
+            ok=False, latency_ms=elapsed,
+            error=f"Cannot reach proxy host/port: {e}",
+        )
+    except httpx.TimeoutException:
+        elapsed = int((time.monotonic() - start) * 1000)
+        return ProxyTestResponse(
+            ok=False, latency_ms=elapsed, error="Connection timed out",
+        )
+    except Exception as e:
+        elapsed = int((time.monotonic() - start) * 1000)
+        return ProxyTestResponse(ok=False, latency_ms=elapsed, error=str(e))
 
 
 @router.get("/accounts", response_model=List[AccountOut])
@@ -69,19 +181,26 @@ async def create_account(body: AccountCreate, repo: Repository = Depends(get_rep
     existing = await repo.get_account_by_name(body.name)
     if existing:
         raise HTTPException(status_code=409, detail="Account name already exists")
+
+    # Assemble proxy_url from components if provided; fall back to legacy
+    # proxy_url field (for CLI compatibility).
+    proxy_url = body.proxy_url or _assemble_proxy_url(
+        body.proxy_host, body.proxy_port, body.proxy_username, body.proxy_password
+    )
+
     account = await repo.create_account(
         name=body.name,
         li_at_cookie=body.li_at_cookie or "",
         li_a_cookie=body.li_a_cookie,
         user_agent=body.user_agent,
         timezone=body.timezone,
-        proxy_url=body.proxy_url,
+        proxy_url=proxy_url,
         proxy_country=body.proxy_country,
     )
     # If no cookie provided, mark as needing login
     if not body.li_at_cookie:
         await repo.update_account(account, status="cookie_expired")
-    return AccountOut.model_validate(account)
+    return await _enrich_account(account, repo)
 
 
 @router.put("/accounts/{account_id}", response_model=AccountOut)
@@ -93,10 +212,47 @@ async def update_account(
     account = await repo.get_account(account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    kwargs = {k: v for k, v in body.model_dump().items() if v is not None}
+
+    # Build non-proxy kwargs first (name/timezone/limits/proxy_country/withdraw_threshold)
+    sent_fields = body.model_fields_set
+    proxy_component_fields = {"proxy_host", "proxy_port", "proxy_username", "proxy_password"}
+    kwargs: dict = {}
+    for field, value in body.model_dump().items():
+        if field in proxy_component_fields:
+            continue
+        if value is None:
+            continue
+        kwargs[field] = value
+
+    # Reassemble proxy_url if *any* component field was sent.
+    proxy_reassembled = False
+    if sent_fields & proxy_component_fields:
+        existing_parsed = _parse_proxy_url(account.proxy_url)
+        existing_pw = _proxy_password(account.proxy_url)
+
+        # For each component: sent value wins; else keep existing.
+        host = body.proxy_host if "proxy_host" in sent_fields else existing_parsed["host"]
+        port = body.proxy_port if "proxy_port" in sent_fields else existing_parsed["port"]
+        username = (
+            body.proxy_username if "proxy_username" in sent_fields
+            else existing_parsed["username"]
+        )
+        password = body.proxy_password if "proxy_password" in sent_fields else existing_pw
+
+        # Empty host/port → clear proxy entirely
+        if not host or not port:
+            kwargs["proxy_url"] = None
+        else:
+            kwargs["proxy_url"] = _assemble_proxy_url(host, port, username, password)
+        proxy_reassembled = True
+
     if not kwargs:
-        return AccountOut.model_validate(account)
-    proxy_changed = "proxy_country" in kwargs and kwargs["proxy_country"] != account.proxy_country
+        return await _enrich_account(account, repo)
+
+    proxy_changed = (
+        proxy_reassembled
+        or ("proxy_country" in kwargs and kwargs["proxy_country"] != account.proxy_country)
+    )
     account = await repo.update_account(account, **kwargs)
     # Evict pool slot when proxy changes so next acquire launches with the new proxy
     if proxy_changed:
@@ -106,7 +262,38 @@ async def update_account(
             await pool.evict(account.id)
         except RuntimeError:
             pass  # Pool not initialized
-    return AccountOut.model_validate(account)
+    return await _enrich_account(account, repo)
+
+
+# ── Proxy test ───────────────────────────────────────────────────────────────
+
+# Static path — must be registered before /{account_id} routes to avoid 405
+@router.post("/accounts/test-proxy", response_model=ProxyTestResponse)
+async def test_proxy_unsaved(body: ProxyTestRequest):
+    """Test proxy credentials submitted via form (no persist, no auth to LinkedIn).
+
+    Used by /accounts/new so users can verify creds before saving.
+    """
+    proxy_url = _assemble_proxy_url(
+        body.proxy_host, body.proxy_port, body.proxy_username, body.proxy_password
+    )
+    if not proxy_url:
+        return ProxyTestResponse(ok=False, error="Host and port are required")
+    return await _test_proxy(proxy_url)
+
+
+@router.post("/accounts/{account_id}/test-proxy", response_model=ProxyTestResponse)
+async def test_proxy_stored(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """Test the proxy currently stored on the account."""
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if not account.proxy_url:
+        return ProxyTestResponse(ok=False, error="No proxy configured for this account")
+    return await _test_proxy(account.proxy_url)
 
 
 @router.put("/accounts/{account_id}/cookie", response_model=AccountOut)

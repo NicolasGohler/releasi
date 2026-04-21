@@ -6,6 +6,10 @@ export interface Account {
   weekly_limit: number;
   timezone: string | null;
   proxy_country: string | null;
+  proxy_host: string | null;
+  proxy_port: number | null;
+  proxy_username: string | null;
+  proxy_password_set: boolean;
   paused_until: string | null;
   withdraw_threshold: number | null;
   pending_requests: number | null;
@@ -13,6 +17,14 @@ export interface Account {
   archived: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface ProxyTestResult {
+  ok: boolean;
+  ip?: string | null;
+  country?: string | null;
+  latency_ms?: number | null;
+  error?: string | null;
 }
 
 export interface CampaignStatDaily {

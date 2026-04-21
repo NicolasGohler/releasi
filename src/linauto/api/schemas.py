@@ -17,6 +17,13 @@ class AccountOut(BaseModel):
     weekly_limit: int
     timezone: Optional[str] = None
     proxy_country: Optional[str] = None
+    # Parsed components of proxy_url — the raw URL (with password) is never
+    # returned to clients. proxy_password_set indicates whether a password is
+    # stored, so the UI can show a masked placeholder and a "Change" toggle.
+    proxy_host: Optional[str] = None
+    proxy_port: Optional[int] = None
+    proxy_username: Optional[str] = None
+    proxy_password_set: bool = False
     paused_until: Optional[datetime] = None
     withdraw_threshold: Optional[int] = None
     pending_requests: Optional[int] = None
@@ -35,6 +42,13 @@ class AccountCreate(BaseModel):
     li_a_cookie: Optional[str] = None
     user_agent: Optional[str] = None
     timezone: Optional[str] = "Europe/Berlin"
+    # Preferred: explicit proxy components. Backend assembles the URL.
+    proxy_host: Optional[str] = None
+    proxy_port: Optional[int] = None
+    proxy_username: Optional[str] = None
+    proxy_password: Optional[str] = None
+    # Legacy: raw URL (kept for CLI compatibility). If provided alongside
+    # components, the raw URL wins.
     proxy_url: Optional[str] = None
     proxy_country: Optional[str] = None
 
@@ -43,9 +57,33 @@ class AccountUpdate(BaseModel):
     name: Optional[str] = None
     timezone: Optional[str] = None
     proxy_country: Optional[str] = None
+    # Send any/all of the 4 proxy fields to change them. A password field that
+    # is *absent* from the request body means "keep existing password";
+    # presence (even empty string) replaces it. Use model_fields_set in the
+    # route to distinguish.
+    proxy_host: Optional[str] = None
+    proxy_port: Optional[int] = None
+    proxy_username: Optional[str] = None
+    proxy_password: Optional[str] = None
     daily_limit: Optional[int] = None
     weekly_limit: Optional[int] = None
     withdraw_threshold: Optional[int] = None
+
+
+class ProxyTestRequest(BaseModel):
+    """Test proxy credentials without persisting. Used by /accounts/new form."""
+    proxy_host: str
+    proxy_port: int
+    proxy_username: Optional[str] = None
+    proxy_password: Optional[str] = None
+
+
+class ProxyTestResponse(BaseModel):
+    ok: bool
+    ip: Optional[str] = None
+    country: Optional[str] = None
+    latency_ms: Optional[int] = None
+    error: Optional[str] = None
 
 
 class CookieUpdate(BaseModel):

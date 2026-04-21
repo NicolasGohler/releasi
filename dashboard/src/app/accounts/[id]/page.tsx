@@ -23,6 +23,7 @@ import { ActivityTimeline } from "@/components/activity-timeline";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { startLoginSession, finishLoginSession, cancelLoginSession, getAvatarUrl, checkConnection, replanAccount } from "@/lib/api";
+import { ProxySettings, emptyProxyForm, type ProxyFormValue } from "@/components/proxy-settings";
 
 export default function AccountDetailPage({
   params,
@@ -47,7 +48,8 @@ export default function AccountDetailPage({
   const [settingsInitialized, setSettingsInitialized] = useState(false);
   const [loginSessionActive, setLoginSessionActive] = useState(false);
   const [editWithdrawThreshold, setEditWithdrawThreshold] = useState("");
-  const [editProxyCountry, setEditProxyCountry] = useState("");
+  const [proxyForm, setProxyForm] = useState<ProxyFormValue>(emptyProxyForm);
+  const [passwordEditing, setPasswordEditing] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
   const [connectionChecking, setConnectionChecking] = useState(false);
   const [connectionResult, setConnectionResult] = useState<{
@@ -63,7 +65,14 @@ export default function AccountDetailPage({
     setEditDailyLimit(String(account.daily_limit));
     setEditWeeklyLimit(String(account.weekly_limit));
     setEditWithdrawThreshold(account.withdraw_threshold ? String(account.withdraw_threshold) : "");
-    setEditProxyCountry(account.proxy_country ?? "");
+    setProxyForm({
+      host: account.proxy_host ?? "",
+      port: account.proxy_port != null ? String(account.proxy_port) : "",
+      username: account.proxy_username ?? "",
+      password: "",
+      country: account.proxy_country ?? "",
+    });
+    setPasswordEditing(false);
     setSettingsInitialized(true);
   }
 
@@ -97,8 +106,20 @@ export default function AccountDetailPage({
     if (Number(editWeeklyLimit) !== account!.weekly_limit) data.weekly_limit = Number(editWeeklyLimit);
     const newThreshold = editWithdrawThreshold ? Number(editWithdrawThreshold) : null;
     if (newThreshold !== (account!.withdraw_threshold ?? null)) data.withdraw_threshold = newThreshold;
-    const newProxy = editProxyCountry.trim() || null;
-    if (newProxy !== (account!.proxy_country ?? null)) data.proxy_country = newProxy;
+    const newCountry = proxyForm.country.trim() || null;
+    if (newCountry !== (account!.proxy_country ?? null)) data.proxy_country = newCountry;
+
+    const newHost = proxyForm.host.trim() || null;
+    const newPort = proxyForm.port ? Number(proxyForm.port) : null;
+    const newUsername = proxyForm.username.trim() || null;
+    if (newHost !== (account!.proxy_host ?? null)) data.proxy_host = newHost;
+    if (newPort !== (account!.proxy_port ?? null)) data.proxy_port = newPort;
+    if (newUsername !== (account!.proxy_username ?? null)) data.proxy_username = newUsername;
+    // Only send password when user explicitly rotated it (Change clicked)
+    // or when this is a fresh entry (no stored password).
+    if (passwordEditing || !account!.proxy_password_set) {
+      data.proxy_password = proxyForm.password || null;
+    }
     if (Object.keys(data).length === 0) {
       toast.info("No changes to save");
       return;
@@ -412,88 +433,14 @@ export default function AccountDetailPage({
                     Leave empty to disable. When pending invitations exceed this number, the oldest are automatically withdrawn (10/day during acceptance check).
                   </p>
                 </div>
-                <div>
-                  <label className="text-xs text-muted-foreground">Proxy Location</label>
-                  <select
-                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-                    value={editProxyCountry}
-                    onChange={(e) => setEditProxyCountry(e.target.value)}
-                  >
-                    <option value="">No proxy</option>
-                    <optgroup label="North America">
-                      <option value="us">United States</option>
-                      <option value="us-newyork">US — New York</option>
-                      <option value="us-losangeles">US — Los Angeles</option>
-                      <option value="us-chicago">US — Chicago</option>
-                      <option value="us-miami">US — Miami</option>
-                      <option value="us-sanfrancisco">US — San Francisco</option>
-                      <option value="us-dallas">US — Dallas</option>
-                      <option value="ca">Canada</option>
-                      <option value="ca-toronto">Canada — Toronto</option>
-                      <option value="ca-montreal">Canada — Montreal</option>
-                      <option value="ca-vancouver">Canada — Vancouver</option>
-                      <option value="mx">Mexico</option>
-                      <option value="mx-mexicocity">Mexico — Mexico City</option>
-                    </optgroup>
-                    <optgroup label="Europe">
-                      <option value="gb">United Kingdom</option>
-                      <option value="gb-london">UK — London</option>
-                      <option value="de">Germany</option>
-                      <option value="de-berlin">Germany — Berlin</option>
-                      <option value="de-munich">Germany — Munich</option>
-                      <option value="de-frankfurt">Germany — Frankfurt</option>
-                      <option value="fr">France</option>
-                      <option value="fr-paris">France — Paris</option>
-                      <option value="nl">Netherlands</option>
-                      <option value="nl-amsterdam">Netherlands — Amsterdam</option>
-                      <option value="es">Spain</option>
-                      <option value="es-madrid">Spain — Madrid</option>
-                      <option value="es-barcelona">Spain — Barcelona</option>
-                      <option value="it">Italy</option>
-                      <option value="it-rome">Italy — Rome</option>
-                      <option value="it-milan">Italy — Milan</option>
-                      <option value="ch">Switzerland</option>
-                      <option value="ch-zurich">Switzerland — Zurich</option>
-                      <option value="at">Austria</option>
-                      <option value="at-vienna">Austria — Vienna</option>
-                      <option value="pt">Portugal</option>
-                      <option value="pt-lisbon">Portugal — Lisbon</option>
-                      <option value="gr">Greece</option>
-                      <option value="gr-athens">Greece — Athens</option>
-                      <option value="se">Sweden</option>
-                      <option value="ie">Ireland</option>
-                      <option value="pl">Poland</option>
-                    </optgroup>
-                    <optgroup label="Asia & Middle East">
-                      <option value="sg">Singapore</option>
-                      <option value="jp">Japan</option>
-                      <option value="ae">UAE</option>
-                      <option value="ae-dubai">UAE — Dubai</option>
-                      <option value="il">Israel</option>
-                      <option value="in">India</option>
-                      <option value="in-mumbai">India — Mumbai</option>
-                    </optgroup>
-                    <optgroup label="South America">
-                      <option value="br">Brazil</option>
-                      <option value="br-saopaulo">Brazil — São Paulo</option>
-                      <option value="ar">Argentina</option>
-                      <option value="co">Colombia</option>
-                    </optgroup>
-                    <optgroup label="Africa">
-                      <option value="za">South Africa</option>
-                      <option value="ma">Morocco</option>
-                      <option value="ng">Nigeria</option>
-                    </optgroup>
-                    <optgroup label="Oceania">
-                      <option value="au">Australia</option>
-                      <option value="au-sydney">Australia — Sydney</option>
-                      <option value="nz">New Zealand</option>
-                    </optgroup>
-                  </select>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Residential proxy via IPRoyal. Each account gets a sticky IP in the selected location.
-                  </p>
-                </div>
+                <ProxySettings
+                  value={proxyForm}
+                  onChange={setProxyForm}
+                  hasStoredPassword={account.proxy_password_set}
+                  passwordEditing={passwordEditing}
+                  onPasswordEditingChange={setPasswordEditing}
+                  accountId={id}
+                />
                 <p className="text-xs text-muted-foreground">
                   Created {new Date(account.created_at.endsWith("Z") ? account.created_at : account.created_at + "Z").toLocaleDateString(undefined, { timeZone: account.timezone ?? undefined })}
                 </p>
