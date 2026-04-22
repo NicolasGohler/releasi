@@ -15,6 +15,8 @@ export interface Account {
   pending_requests: number | null;
   avatar_path: string | null;
   archived: boolean;
+  work_start_hour: number | null;
+  work_end_hour: number | null;
   created_at: string;
   updated_at: string;
 }

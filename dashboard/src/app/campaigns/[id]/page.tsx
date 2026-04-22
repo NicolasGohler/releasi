@@ -25,6 +25,7 @@ import { StatCard } from "@/components/stats/stat-card";
 import { LeadsTable } from "@/components/leads/leads-table";
 import { CSVUpload } from "@/components/leads/csv-upload";
 import { ActivityTimeline } from "@/components/activity-timeline";
+import { MessageTemplateEditor } from "@/components/message-template-editor";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
@@ -330,7 +331,12 @@ export default function CampaignDetailPage({
 
           <TabsContent value="leads" className="space-y-4 mt-4">
             <CSVUpload campaignId={id} />
-            <LeadsTable campaignId={id} timezone={account?.timezone} />
+            <LeadsTable
+              campaignId={id}
+              timezone={account?.timezone}
+              assignedLists={campaign.assigned_lists}
+              campaignName={campaign.name}
+            />
           </TabsContent>
 
           <TabsContent value="lists" className="mt-4">
@@ -472,16 +478,17 @@ export default function CampaignDetailPage({
                   <p className="text-sm">{campaign.account_name ?? campaign.account_id}</p>
                 </div>
                 <div>
-                  <label className="text-xs text-muted-foreground">Connection Message Template</label>
-                  <textarea
-                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm min-h-[100px] resize-y"
+                  <label className="text-xs text-muted-foreground mb-1 block">
+                    Connection Message Template
+                    <span className="ml-2 text-muted-foreground/70">(optional — leave empty to send without a note)</span>
+                  </label>
+                  <MessageTemplateEditor
                     value={editConnMsg}
-                    onChange={(e) => setEditConnMsg(e.target.value)}
-                    placeholder="Hi {{first_name}}, I'd like to connect..."
+                    onChange={setEditConnMsg}
+                    placeholder="Hi {{first_name}}, I came across your profile and would love to connect."
+                    minHeight={110}
+                    showCharLimit
                   />
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Use {"{{first_name}}"}, {"{{last_name}}"}, {"{{company}}"}, {"{{title}}"} as variables
-                  </p>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="flex items-center gap-2">
@@ -532,8 +539,9 @@ export default function CampaignDetailPage({
                   </label>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  When enabled, 1-3 messages are sent after a connection is accepted.
-                  Use {"{{first_name}}"}, {"{{last_name}}"}, {"{{company}}"}, {"{{title}}"} as variables.
+                  Up to three messages, sent in order. Delivery waits for the delay
+                  below, then uses normal send-window rules. Variables are substituted
+                  per lead — click a chip above any field to insert.
                 </p>
                 <div>
                   <label className="text-xs text-muted-foreground">Delay after acceptance (hours)</label>
@@ -548,33 +556,37 @@ export default function CampaignDetailPage({
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-muted-foreground">Message 1</label>
-                  <textarea
-                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm min-h-[80px] resize-y disabled:opacity-50"
+                  <label className="text-xs text-muted-foreground mb-1 block">Message 1</label>
+                  <MessageTemplateEditor
                     value={editFollowupMsg1}
-                    onChange={(e) => setEditFollowupMsg1(e.target.value)}
-                    placeholder="Hi {{first_name}}, thanks for connecting!"
+                    onChange={setEditFollowupMsg1}
+                    placeholder="Hi {{first_name}}, thanks for connecting! I wanted to reach out because…"
                     disabled={!editFollowupEnabled}
+                    minHeight={96}
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-muted-foreground">Message 2 (optional)</label>
-                  <textarea
-                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm min-h-[80px] resize-y disabled:opacity-50"
+                  <label className="text-xs text-muted-foreground mb-1 block">
+                    Message 2 <span className="text-muted-foreground/70">(optional)</span>
+                  </label>
+                  <MessageTemplateEditor
                     value={editFollowupMsg2}
-                    onChange={(e) => setEditFollowupMsg2(e.target.value)}
-                    placeholder="Second message..."
+                    onChange={setEditFollowupMsg2}
+                    placeholder="Second message — sent after message 1 goes through."
                     disabled={!editFollowupEnabled || !editFollowupMsg1}
+                    minHeight={96}
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-muted-foreground">Message 3 (optional)</label>
-                  <textarea
-                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm min-h-[80px] resize-y disabled:opacity-50"
+                  <label className="text-xs text-muted-foreground mb-1 block">
+                    Message 3 <span className="text-muted-foreground/70">(optional)</span>
+                  </label>
+                  <MessageTemplateEditor
                     value={editFollowupMsg3}
-                    onChange={(e) => setEditFollowupMsg3(e.target.value)}
-                    placeholder="Third message..."
+                    onChange={setEditFollowupMsg3}
+                    placeholder="Third message — last in the sequence."
                     disabled={!editFollowupEnabled || !editFollowupMsg2}
+                    minHeight={96}
                   />
                 </div>
               </CardContent>

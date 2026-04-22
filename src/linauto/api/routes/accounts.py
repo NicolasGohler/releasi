@@ -78,6 +78,7 @@ def _assemble_proxy_url(
 
 async def _enrich_account(account, repo: Repository) -> AccountOut:
     """Build AccountOut with computed fields like pending_requests + proxy parts."""
+    from linauto.config import get_settings
     out = AccountOut.model_validate(account)
     out.pending_requests = await repo.count_pending_requests_for_account(account.id)
     parsed = _parse_proxy_url(account.proxy_url)
@@ -85,6 +86,11 @@ async def _enrich_account(account, repo: Repository) -> AccountOut:
     out.proxy_port = parsed["port"]
     out.proxy_username = parsed["username"]
     out.proxy_password_set = parsed["password_set"]
+    # Expose the global work window so the UI can tell the user whether the
+    # account is currently inside its daily send window.
+    settings = get_settings()
+    out.work_start_hour = settings.work_start_hour
+    out.work_end_hour = settings.work_end_hour
     return out
 
 

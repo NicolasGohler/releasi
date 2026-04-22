@@ -21,10 +21,15 @@ import {
 import { useLeads, useDeleteLead, useRestoreLead, useSkipLead, useRequeueLead } from "@/hooks/use-queries";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
+import { exportCampaignLeadsCSV } from "@/lib/api";
 
 interface LeadsTableProps {
   campaignId: string;
   timezone?: string | null;
+  /** Lists assigned to this campaign — drives the "filter by list" dropdown. */
+  assignedLists?: { id: string; name: string; total_leads: number }[];
+  /** Used in the default export filename. */
+  campaignName?: string;
 }
 
 // Sentinel value meaning "all active (exclude removed)"
@@ -45,10 +50,12 @@ function formatErrorMessage(msg: string): string {
   return ERROR_LABELS[msg] ?? msg.replace(/_/g, " ");
 }
 
-export function LeadsTable({ campaignId, timezone }: LeadsTableProps) {
+export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }: LeadsTableProps) {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>(ALL_ACTIVE);
+  const [listFilter, setListFilter] = useState<string>("");
+  const [exporting, setExporting] = useState(false);
 
   const skipLead = useSkipLead();
   const requeueLead = useRequeueLead();
@@ -62,7 +69,27 @@ export function LeadsTable({ campaignId, timezone }: LeadsTableProps) {
     status: isAllActive ? undefined : statusFilter,
     search: search || undefined,
     excludeRemoved: isAllActive,
+    leadListId: listFilter || undefined,
   });
+
+  async function handleExport() {
+    setExporting(true);
+    try {
+      const safeName = (campaignName || "campaign").replace(/[^\w-]+/g, "_");
+      const today = new Date().toISOString().slice(0, 10);
+      await exportCampaignLeadsCSV(campaignId, `${safeName}_leads_${today}.csv`, {
+        status: isAllActive ? undefined : statusFilter,
+        search: search || undefined,
+        excludeRemoved: isAllActive,
+        leadListId: listFilter || undefined,
+      });
+      toast.success(`Exported ${data?.total ?? 0} leads`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const statuses = [
     ALL_ACTIVE,
@@ -90,9 +117,9 @@ export function LeadsTable({ campaignId, timezone }: LeadsTableProps) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <Input
-          placeholder="Search leads..."
+          placeholder="Search name, company, title, URL…"
           value={search}
           onChange={(e) => {
             setSearch(e.target.value);
@@ -100,7 +127,24 @@ export function LeadsTable({ campaignId, timezone }: LeadsTableProps) {
           }}
           className="max-w-xs"
         />
-        <div className="flex gap-1">
+        {assignedLists && assignedLists.length > 0 && (
+          <select
+            className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+            value={listFilter}
+            onChange={(e) => {
+              setListFilter(e.target.value);
+              setPage(1);
+            }}
+          >
+            <option value="">All lists</option>
+            {assignedLists.map((ll) => (
+              <option key={ll.id} value={ll.id}>
+                {ll.name}
+              </option>
+            ))}
+          </select>
+        )}
+        <div className="flex flex-wrap gap-1">
           {statuses.map((s) => (
             <Button
               key={s}
@@ -115,6 +159,16 @@ export function LeadsTable({ campaignId, timezone }: LeadsTableProps) {
             </Button>
           ))}
         </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleExport}
+          disabled={exporting || !data || data.total === 0}
+          className="ml-auto"
+          title="Download the currently filtered leads as CSV"
+        >
+          {exporting ? "Exporting…" : `Export CSV${data ? ` (${data.total})` : ""}`}
+        </Button>
       </div>
 
       <div className="rounded-md border">

@@ -20,6 +20,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { StatCard } from "@/components/stats/stat-card";
 import { DailyChart } from "@/components/stats/daily-chart";
 import { ActivityTimeline } from "@/components/activity-timeline";
+import { LocalTimeCard } from "@/components/accounts/local-time-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { startLoginSession, finishLoginSession, cancelLoginSession, getAvatarUrl, checkConnection, replanAccount } from "@/lib/api";
@@ -305,7 +306,12 @@ export default function AccountDetailPage({
             </Card>
           </TabsContent>
 
-          <TabsContent value="health" className="mt-4">
+          <TabsContent value="health" className="mt-4 space-y-4">
+            <LocalTimeCard
+              timezone={account.timezone}
+              workStartHour={account.work_start_hour}
+              workEndHour={account.work_end_hour}
+            />
             <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
               <Card>
                 <CardContent className="pt-6">

@@ -22,6 +22,7 @@ async def list_leads(
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     exclude_removed: bool = Query(False),
+    lead_list_id: Optional[str] = Query(None),
     repo: Repository = Depends(get_repo),
 ):
     campaign = await repo.get_campaign(campaign_id)
@@ -35,12 +36,78 @@ async def list_leads(
         status_filter=status,
         search=search,
         exclude_removed=exclude_removed,
+        lead_list_id=lead_list_id,
     )
     return LeadPage(
         items=[LeadOut.model_validate(l) for l in leads],
         total=total,
         page=page,
         per_page=per_page,
+    )
+
+
+@router.get("/campaigns/{campaign_id}/leads/export")
+async def export_campaign_leads_csv(
+    campaign_id: str,
+    status: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    exclude_removed: bool = Query(False),
+    lead_list_id: Optional[str] = Query(None),
+    repo: Repository = Depends(get_repo),
+):
+    """Download filtered campaign leads as a CSV file.
+
+    Applies the same filters as the list endpoint (status, search, exclude_removed,
+    lead_list_id). Includes status and timestamps so users can slice by outcome
+    outside the app.
+    """
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    campaign = await repo.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    leads, _ = await repo.list_leads_paginated(
+        campaign_id=campaign_id,
+        page=1,
+        per_page=100000,
+        status_filter=status,
+        search=search,
+        exclude_removed=exclude_removed,
+        lead_list_id=lead_list_id,
+    )
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "linkedin_url", "first_name", "last_name", "company", "title",
+        "status", "connection_requested_at", "connection_accepted_at",
+        "followup_sent_at", "error_message", "created_at",
+    ])
+    for lead in leads:
+        writer.writerow([
+            lead.linkedin_url,
+            lead.first_name or "",
+            lead.last_name or "",
+            lead.company or "",
+            lead.title or "",
+            lead.status or "",
+            lead.connection_requested_at.isoformat() if lead.connection_requested_at else "",
+            lead.connection_accepted_at.isoformat() if lead.connection_accepted_at else "",
+            lead.followup_sent_at.isoformat() if lead.followup_sent_at else "",
+            lead.error_message or "",
+            lead.created_at.isoformat() if lead.created_at else "",
+        ])
+
+    buf.seek(0)
+    safe_name = (campaign.name or "campaign").replace(" ", "_").replace("/", "_")
+    filename = f"{safe_name}_leads.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

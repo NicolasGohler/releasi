@@ -632,6 +632,7 @@ class Repository:
         status_filter: str | None = None,
         search: str | None = None,
         exclude_removed: bool = False,
+        lead_list_id: str | None = None,
     ) -> tuple:
         """Return (leads, total_count) with pagination, optional status filter and search."""
         stmt = select(Lead).where(Lead.campaign_id == campaign_id)
@@ -644,12 +645,17 @@ class Repository:
             stmt = stmt.where(Lead.status != "REMOVED")
             count_stmt = count_stmt.where(Lead.status != "REMOVED")
 
+        if lead_list_id:
+            stmt = stmt.where(Lead.lead_list_id == lead_list_id)
+            count_stmt = count_stmt.where(Lead.lead_list_id == lead_list_id)
+
         if search:
             pattern = f"%{search}%"
             search_filter = or_(
                 Lead.first_name.ilike(pattern),
                 Lead.last_name.ilike(pattern),
                 Lead.company.ilike(pattern),
+                Lead.title.ilike(pattern),
                 Lead.linkedin_url.ilike(pattern),
             )
             stmt = stmt.where(search_filter)
@@ -1116,6 +1122,7 @@ class Repository:
                 Lead.first_name.ilike(pattern),
                 Lead.last_name.ilike(pattern),
                 Lead.company.ilike(pattern),
+                Lead.title.ilike(pattern),
                 Lead.linkedin_url.ilike(pattern),
             )
             stmt = stmt.where(search_filter)

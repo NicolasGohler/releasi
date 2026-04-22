@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { MessageTemplateEditor } from "@/components/message-template-editor";
 import {
   Select,
   SelectContent,
@@ -88,16 +88,14 @@ export default function NewCampaignPage() {
 
             <div className="space-y-2">
               <Label htmlFor="template">Connection Message (optional)</Label>
-              <Textarea
+              <MessageTemplateEditor
                 id="template"
                 value={template}
-                onChange={(e) => setTemplate(e.target.value)}
+                onChange={setTemplate}
                 placeholder={"Hi {{first_name}}, I'd love to connect..."}
-                rows={4}
+                showCharLimit
+                minHeight={110}
               />
-              <p className="text-xs text-muted-foreground">
-                Use {"{{first_name}}"}, {"{{last_name}}"}, {"{{company}}"}, {"{{title}}"} as variables
-              </p>
             </div>
 
             <Button type="submit" disabled={createCampaign.isPending}>

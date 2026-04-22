@@ -158,7 +158,7 @@ export const fetchCampaignStats = (id: string, days = 30, granularity: "day" | "
 
 export const fetchLeads = (
   campaignId: string,
-  params?: { page?: number; per_page?: number; status?: string; search?: string; excludeRemoved?: boolean }
+  params?: { page?: number; per_page?: number; status?: string; search?: string; excludeRemoved?: boolean; leadListId?: string }
 ) => {
   const sp = new URLSearchParams();
   if (params?.page) sp.set("page", String(params.page));
@@ -166,8 +166,31 @@ export const fetchLeads = (
   if (params?.status) sp.set("status", params.status);
   if (params?.search) sp.set("search", params.search);
   if (params?.excludeRemoved) sp.set("exclude_removed", "true");
+  if (params?.leadListId) sp.set("lead_list_id", params.leadListId);
   const qs = sp.toString();
   return apiFetch<LeadPage>(`/campaigns/${campaignId}/leads${qs ? `?${qs}` : ""}`);
+};
+
+export const exportCampaignLeadsCSV = async (
+  campaignId: string,
+  filename: string,
+  filters?: { status?: string; search?: string; excludeRemoved?: boolean; leadListId?: string },
+) => {
+  const sp = new URLSearchParams();
+  if (filters?.status) sp.set("status", filters.status);
+  if (filters?.search) sp.set("search", filters.search);
+  if (filters?.excludeRemoved) sp.set("exclude_removed", "true");
+  if (filters?.leadListId) sp.set("lead_list_id", filters.leadListId);
+  const qs = sp.toString();
+  const res = await fetch(`/api/v1/campaigns/${campaignId}/leads/export${qs ? `?${qs}` : ""}`);
+  if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 };
 
 export const importCSV = async (

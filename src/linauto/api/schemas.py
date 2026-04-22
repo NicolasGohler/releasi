@@ -29,6 +29,11 @@ class AccountOut(BaseModel):
     pending_requests: Optional[int] = None
     avatar_path: Optional[str] = None
     archived: bool = False
+    # Global scheduler work-window (sourced from settings.yaml at enrich time).
+    # Exposed per-account so the UI can render the local "are we in the work
+    # window right now?" state without hitting a separate /settings endpoint.
+    work_start_hour: Optional[int] = None
+    work_end_hour: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
