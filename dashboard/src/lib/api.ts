@@ -14,15 +14,14 @@ import type {
   AccountHealth,
 } from "./types";
 
-// API calls go to same origin — Vercel rewrites /api/v1/* to the backend
-const API_URL = "";
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "";
+// API calls go to same-origin /api/v1/* — the Next.js route handler at
+// src/app/api/v1/[...path]/route.ts proxies them to the backend and attaches
+// the BACKEND_API_KEY server-side. No secrets in the browser.
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_URL}/api/v1${path}`, {
+  const res = await fetch(`/api/v1${path}`, {
     ...options,
     headers: {
-      Authorization: `Bearer ${API_KEY}`,
       "Content-Type": "application/json",
       ...options?.headers,
     },
@@ -182,9 +181,8 @@ export const importCSV = async (
     formData.append("list_name", listName);
   }
 
-  const res = await fetch(`${API_URL}/api/v1/campaigns/${campaignId}/import`, {
+  const res = await fetch(`/api/v1/campaigns/${campaignId}/import`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${API_KEY}` },
     body: formData,
   });
 
@@ -216,9 +214,8 @@ export const importCSVToList = async (listId: string, file: File): Promise<Impor
   const formData = new FormData();
   formData.append("file", file);
 
-  const res = await fetch(`${API_URL}/api/v1/lead-lists/${listId}/import`, {
+  const res = await fetch(`/api/v1/lead-lists/${listId}/import`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${API_KEY}` },
     body: formData,
   });
 
@@ -242,9 +239,7 @@ export const fetchLeadListLeads = (
 };
 
 export const exportLeadListCSV = async (listId: string, filename: string) => {
-  const res = await fetch(`${API_URL}/api/v1/lead-lists/${listId}/export`, {
-    headers: { Authorization: `Bearer ${API_KEY}` },
-  });
+  const res = await fetch(`/api/v1/lead-lists/${listId}/export`);
   if (!res.ok) throw new Error(`Export failed: ${res.status}`);
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
@@ -308,7 +303,7 @@ export const fetchGlobalActivity = (limit = 500) =>
 // ── Avatars ──────────────────────────────────────────────────────────────
 
 export const getAvatarUrl = (accountId: string) =>
-  `${API_URL}/api/v1/accounts/${accountId}/avatar`;
+  `/api/v1/accounts/${accountId}/avatar`;
 
 export const fetchAvatar = (accountId: string) =>
   apiFetch<{ success: boolean }>(`/accounts/${accountId}/fetch-avatar`, { method: "POST" });

@@ -35,6 +35,7 @@ api = [
     "fastapi>=0.109",
     "uvicorn[standard]>=0.25",
     "python-multipart>=0.0.6",
+    "slowapi>=0.1.9",
 ]
 
 [project.scripts]
