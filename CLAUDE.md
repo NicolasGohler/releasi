@@ -34,11 +34,28 @@ docker run -d --name linauto --restart unless-stopped \
   -p 8000:8000 -p 6080:6080 \
   -e LINAUTO_API_ENABLED=true \
   -e LINAUTO_API_KEY=REDACTED \
-  -e "LINAUTO_CORS_ORIGINS=[\"*\"]" \
+  -e "LINAUTO_CORS_ORIGINS=[]" \
   -e LINAUTO_LOG_LEVEL=INFO -e TZ=Europe/Berlin \
   --memory=3g --cpus=1.5 \
   linauto_linauto:latest
 ```
+
+## Dashboard → API security model
+
+The dashboard (Vercel, Next.js) and backend API (FastAPI on `REDACTED:8000`) are gated as follows. **Do not regress any of this.**
+
+1. **Server-side key injection.** The dashboard never ships the API key to the browser. Browser calls go to same-origin `/api/v1/*`, which is handled by the Next.js route at `dashboard/src/app/api/v1/[...path]/route.ts`. That route forwards to `BACKEND_URL`, injects `Authorization: Bearer ${BACKEND_API_KEY}` server-side, and streams request/response bodies (CSV upload + export both depend on this).
+   - **Vercel env vars**: `BACKEND_URL` (e.g. `http://REDACTED:8000`) and `BACKEND_API_KEY` (matches `LINAUTO_API_KEY` on the server). Both are **server-only** — do NOT prefix with `NEXT_PUBLIC_`.
+   - **Never add `NEXT_PUBLIC_API_KEY`** back to `dashboard/.env*` or `lib/api.ts`. That was the old model and leaked the key to every visitor.
+   - **Never add a `/api/v1/:path*` rewrite back to `next.config.ts`**. Rewrites bypass the route handler, so the key injection would be skipped.
+
+2. **CORS fails closed.** `LINAUTO_CORS_ORIGINS=[]` in the container env (see deploy block above). The Next proxy is same-origin, so the browser never needs cross-origin access. If you add another dashboard domain, add it explicitly — do not restore `["*"]`.
+
+3. **Rate limiting.** `slowapi` is wired in `src/linauto/api/app.py` at 120 req/min per client IP (X-Forwarded-For aware — the Next proxy forwards the real client IP). Scheduler jobs run in-process and do NOT hit HTTP, so they bypass the limit. If you see 429s in dashboard usage, raise `default_limits` in `app.py` rather than disabling the middleware.
+
+4. **Vercel Deployment Protection** (manual toggle on Vercel project → Settings → Deployment Protection) is the outer gate. Without it, anyone with the URL reaches the Next.js app — which can't leak the key directly, but can still drive the proxy. Keep it enabled.
+
+5. **Adding a new API call in `lib/api.ts`**: use the existing `apiFetch` helper or fetch to `/api/v1/...` (same-origin). Never build absolute URLs to `REDACTED:8000` — that bypasses the proxy and would require re-exposing the key.
 
 ## Testing & Diagnostics on LinkedIn (CRITICAL)
 
