@@ -164,21 +164,16 @@ PROFILE_ACTION_BUTTONS = [
 ]
 
 # ── Message dialog ────────────────────────────────────────────────────────
-
-MESSAGE_BUTTON = [
-    'button:has-text("Message")',
-    'a:has-text("Message")',
-]
+#
+# The follow-up flow navigates directly to /messaging/compose/?recipient=<URN>
+# (see actions.send_message), so we no longer need a Message-button selector.
+# The compose page submits on Enter — no visible Send button on this layout,
+# so MESSAGE_SEND_BUTTON is also removed.
 
 MESSAGE_INPUT = [
     'div.msg-form__contenteditable[role="textbox"]',
     'div[aria-label="Write a message…"]',
     '.msg-form__contenteditable',
-]
-
-MESSAGE_SEND_BUTTON = [
-    'button.msg-form__send-button',
-    'button[type="submit"]:has-text("Send")',
 ]
 
 # ── Invitation manager ────────────────────────────────────────────────────

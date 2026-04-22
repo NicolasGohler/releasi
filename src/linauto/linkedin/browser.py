@@ -248,8 +248,15 @@ class LinkedInBrowser:
         )
 
         # Block bandwidth-heavy resources that aren't needed for DOM automation.
-        # Images, fonts, media, stylesheets and misc resources are never needed for
+        # Images, fonts, media and misc resources are never needed for
         # button/selector interaction. Analytics/tracking domains are purely overhead.
+        #
+        # Stylesheets are SCOPED: allowed only for requests originating from a
+        # /messaging/ frame. LinkedIn's messaging app throws "Something went
+        # wrong" without stylesheets, so the follow-up flow needs them. Profile
+        # pages, feed, connections, etc. still get stylesheets blocked — the
+        # connect/acceptance/noise flows were developed against that variant and
+        # were verified unaffected (diag_scoped_blocker.py).
         _TRACKING_DOMAINS = {
             "px.ads.linkedin.com",
             "snap.licdn.com",
@@ -258,14 +265,27 @@ class LinkedInBrowser:
             "li.protechts.net",
         }
         async def _abort_heavy_resources(route):
-            url = route.request.url
+            req = route.request
+            url = req.url
             if any(d in url for d in _TRACKING_DOMAINS):
                 await route.abort()
                 return
-            if route.request.resource_type in ("image", "media", "font", "stylesheet", "other"):
+            rtype = req.resource_type
+            if rtype in ("image", "media", "font", "other"):
                 await route.abort()
-            else:
-                await route.continue_()
+                return
+            if rtype == "stylesheet":
+                frame_url = ""
+                try:
+                    frame_url = req.frame.url if req.frame else ""
+                except Exception:
+                    pass
+                if "/messaging/" in (frame_url or ""):
+                    await route.continue_()
+                else:
+                    await route.abort()
+                return
+            await route.continue_()
         await self._context.route("**/*", _abort_heavy_resources)
         logger.debug("browser.resource_blocking_enabled")
 

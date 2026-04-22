@@ -567,7 +567,13 @@ class LinkedInActions:
                 timeout_ms=1500,
             )
             if not has_message:
-                has_message = await self._find_element(selectors.MESSAGE_BUTTON, timeout_ms=1000)
+                # Fallback: on the current LinkedIn UI the profile Message CTA is an
+                # <a> pointing at /messaging/compose/?recipient=<URN>. Its presence
+                # is a reliable 1st-degree signal.
+                has_message = await self._try_locator(
+                    self.page.locator('a[href*="/messaging/compose/"][href*="recipient="]'),
+                    timeout_ms=1000,
+                )
 
             has_follow = await self._try_locator(
                 self.page.locator("main").get_by_role("button", name=re.compile(r"^Follow$", re.IGNORECASE)),
@@ -750,35 +756,110 @@ class LinkedInActions:
         return ActionResult(ActionStatus.SUCCESS)
 
     async def send_message(self, profile_url: str, message: str) -> ActionResult:
-        """Navigate to a profile and send a direct message."""
+        """
+        Send a direct message to a 1st-degree connection.
+
+        Flow (rev. 2026-04):
+          1. Navigate to the profile, extract the recipient URN from any
+             `a[href*="/messaging/compose/"][href*="recipient="]` anchor.
+          2. Navigate directly to `/messaging/compose/?recipient=<URN>`.
+             This avoids clicking the profile Message CTA (which on the
+             current LinkedIn UI is an <a> that depends on JS hydration
+             that doesn't always fire under our resource blocker).
+          3. Type into the `msg-form__contenteditable` input.
+          4. Press Enter to submit — the compose page shows "Press Enter
+             to Send" and has no visible Send button (only a send-options
+             dropdown). Enter submits reliably.
+          5. Verify by checking that the input is cleared and the message
+             text appears as a bubble in `.msg-s-event-listitem`.
+        """
+        # ── 1. Visit profile, extract recipient URN ──
         nav = await self.navigator.go_to_profile(profile_url)
         if not nav.success:
             return ActionResult(ActionStatus.ERROR, reason=f"Navigation failed: {nav.error}")
         if not nav.session_valid:
             return ActionResult(ActionStatus.SESSION_EXPIRED)
 
-        msg_btn = await self._find_element(selectors.MESSAGE_BUTTON, timeout_ms=5000)
-        if not msg_btn:
-            return ActionResult(ActionStatus.ERROR, reason="message_button_not_found")
+        recipient_urn = await self.page.evaluate("""
+() => {
+    const a = document.querySelector('a[href*="/messaging/compose/"][href*="recipient="]');
+    if (!a) return null;
+    try {
+        const url = new URL(a.href, location.origin);
+        return url.searchParams.get('recipient');
+    } catch (e) { return null; }
+}
+""")
+        if not recipient_urn:
+            # No compose link means not a 1st-degree connection (or LinkedIn
+            # changed the DOM). Either way, we can't message this person.
+            return ActionResult(ActionStatus.ERROR, reason="recipient_urn_not_found")
 
-        await self._hover_and_click(msg_btn)
-        await self.delay.micro_delay(1.0, 2.0)
+        # ── 2. Direct navigation to the compose page ──
+        import urllib.parse
+        compose_url = (
+            "https://www.linkedin.com/messaging/compose/?recipient="
+            + urllib.parse.quote(recipient_urn, safe="")
+        )
+        try:
+            await self.page.goto(compose_url, wait_until="domcontentloaded", timeout=20000)
+        except Exception as e:
+            return ActionResult(ActionStatus.ERROR, reason=f"compose_nav_failed: {e}")
 
-        msg_input = await self._find_element(selectors.MESSAGE_INPUT, timeout_ms=5000)
+        # Wait for the messaging app to hydrate (it's a JS-heavy widget)
+        await self.delay.micro_delay(3.5, 5.0)
+
+        # ── 3. Find message input ──
+        msg_input = await self._find_element(selectors.MESSAGE_INPUT, timeout_ms=8000)
         if not msg_input:
             return ActionResult(ActionStatus.ERROR, reason="message_input_not_found")
 
         await msg_input.click()
-        await self.delay.micro_delay(0.2, 0.5)
+        await self.delay.micro_delay(0.3, 0.6)
         await self.delay.type_text(msg_input, message)
-        await self.delay.micro_delay(0.5, 1.0)
+        await self.delay.micro_delay(0.6, 1.2)
 
-        send_btn = await self._find_element(selectors.MESSAGE_SEND_BUTTON, timeout_ms=3000)
-        if not send_btn:
-            return ActionResult(ActionStatus.ERROR, reason="message_send_button_not_found")
+        # ── 4. Submit via Enter ──
+        # The compose page instructs "Press Enter to Send". There's a
+        # .msg-form__send-toggle dropdown but no .msg-form__send-button.
+        await self.page.keyboard.press("Enter")
+        await self.delay.micro_delay(1.5, 2.5)
 
-        await self._hover_and_click(send_btn)
-        await self.delay.micro_delay(1.0, 2.0)
+        # ── 5. Verify submission ──
+        input_cleared = False
+        try:
+            input_cleared = await msg_input.evaluate(
+                "el => (el.innerText || '').trim() === ''"
+            )
+        except Exception:
+            pass
+
+        bubble_found = False
+        try:
+            # Escape the message for inclusion in a JS string
+            msg_literal = (
+                message.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+            )
+            bubble_found = await self.page.evaluate(
+                "(() => { const txt = '" + msg_literal + "';"
+                " const bubbles = document.querySelectorAll('.msg-s-event-listitem, [class*=\"msg-s-event\"]');"
+                " for (const b of bubbles) { if ((b.innerText || '').includes(txt)) return true; }"
+                " return false; })()"
+            )
+        except Exception:
+            pass
+
+        if not (input_cleared or bubble_found):
+            # Neither signal fired — treat as failure so the dispatcher can retry.
+            logger.warning(
+                "action.message_send_unverified",
+                url=profile_url, input_cleared=input_cleared, bubble_found=bubble_found,
+            )
+            return ActionResult(
+                ActionStatus.ERROR,
+                reason="message_send_unverified",
+                details={"input_cleared": input_cleared, "bubble_found": bubble_found},
+            )
 
         detection = await self.detector.check_after_action(self.page)
         if not detection.is_clear:
@@ -788,7 +869,10 @@ class LinkedInActions:
                 details={"detection": detection.details},
             )
 
-        logger.info("action.message_sent", url=profile_url)
+        logger.info(
+            "action.message_sent",
+            url=profile_url, input_cleared=input_cleared, bubble_found=bubble_found,
+        )
         return ActionResult(ActionStatus.SUCCESS)
 
     async def check_connection_status(self, profile_url: str) -> str:
