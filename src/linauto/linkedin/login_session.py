@@ -97,9 +97,15 @@ class LoginSessionManager:
         self._processes.append(proc)
         logger.info("login_session.websockify_started", port=NOVNC_PORT)
 
-    async def start_session(self, account_id: str, proxy_url: Optional[str] = None) -> str:
+    async def start_session(
+        self,
+        account_id: str,
+        proxy_url: Optional[str] = None,
+        li_at_cookie: Optional[str] = None,
+        start_url: str = "https://www.linkedin.com/login",
+    ) -> str:
         """
-        Start a noVNC login session for the given account.
+        Start a noVNC browser session for the given account.
 
         Uses a temporary profile directory so it doesn't conflict with the
         automation browser that may be using the account's main profile.
@@ -107,7 +113,11 @@ class LoginSessionManager:
         maintain a consistent fingerprint.
 
         proxy_url should be the account's residential proxy so LinkedIn sees the
-        correct country IP during login (not the datacenter IP).
+        correct country IP (not the datacenter IP).
+
+        li_at_cookie — when provided the cookie is injected before navigation so
+        the user lands on an authenticated LinkedIn page (browse mode). When
+        omitted the browser starts at the login page (login mode).
 
         Returns the noVNC URL path for the user to access.
         """
@@ -168,11 +178,21 @@ class LoginSessionManager:
             **proxy_kwargs,
         )
 
-        # Navigate to LinkedIn login page
+        # Inject stored cookie (browse mode) or navigate to login page (login mode)
         page = await self._context.new_page()
-        await page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
+        if li_at_cookie:
+            await self._context.add_cookies([{
+                "name": "li_at",
+                "value": li_at_cookie,
+                "domain": ".linkedin.com",
+                "path": "/",
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "None",
+            }])
+        await page.goto(start_url, wait_until="domcontentloaded")
 
-        logger.info("login_session.started", account_id=account_id)
+        logger.info("login_session.started", account_id=account_id, browse_mode=bool(li_at_cookie))
 
         return f"/vnc.html?autoconnect=true&resize=scale"
 

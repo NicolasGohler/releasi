@@ -23,7 +23,7 @@ import { ActivityTimeline } from "@/components/activity-timeline";
 import { LocalTimeCard } from "@/components/accounts/local-time-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { startLoginSession, finishLoginSession, cancelLoginSession, getAvatarUrl, checkConnection, replanAccount } from "@/lib/api";
+import { startLoginSession, finishLoginSession, cancelLoginSession, startBrowseSession, closeBrowseSession, getAvatarUrl, checkConnection, replanAccount } from "@/lib/api";
 import { ProxySettings, emptyProxyForm, type ProxyFormValue } from "@/components/proxy-settings";
 
 export default function AccountDetailPage({
@@ -52,6 +52,8 @@ export default function AccountDetailPage({
   const [proxyForm, setProxyForm] = useState<ProxyFormValue>(emptyProxyForm);
   const [passwordEditing, setPasswordEditing] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
+  const [browseSessionActive, setBrowseSessionActive] = useState(false);
+  const [browseLoading, setBrowseLoading] = useState(false);
   const [connectionChecking, setConnectionChecking] = useState(false);
   const [connectionResult, setConnectionResult] = useState<{
     valid: boolean;
@@ -160,6 +162,55 @@ export default function AccountDetailPage({
             <StatusBadge status={account.status} />
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {!browseSessionActive ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                onClick={async () => {
+                  const win = window.open("about:blank", "_blank");
+                  setBrowseLoading(true);
+                  try {
+                    const res = await startBrowseSession(id);
+                    setBrowseSessionActive(true);
+                    const novncBase =
+                      process.env.NEXT_PUBLIC_NOVNC_URL ||
+                      `http://${window.location.hostname}:6080`;
+                    const url = `${novncBase}${res.novnc_url}`;
+                    if (win) {
+                      win.location.href = url;
+                    } else {
+                      window.open(url, "_blank");
+                    }
+                  } catch (err: unknown) {
+                    win?.close();
+                    toast.error(err instanceof Error ? err.message : "Failed to start session");
+                  } finally {
+                    setBrowseLoading(false);
+                  }
+                }}
+                disabled={browseLoading || loginSessionActive}
+              >
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                </svg>
+                {browseLoading ? "Opening…" : "Launch LinkedIn"}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5 border-amber-500/50 text-amber-500 hover:bg-amber-500/10"
+                onClick={async () => {
+                  try { await closeBrowseSession(id); } catch { /* ignore */ }
+                  setBrowseSessionActive(false);
+                  toast.info("Browse session closed");
+                }}
+              >
+                <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                Close LinkedIn Session
+              </Button>
+            )}
             <Button
               size="sm"
               variant="outline"

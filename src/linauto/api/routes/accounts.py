@@ -482,6 +482,69 @@ async def finish_login_session(
     return {"success": True, "message": "Cookies extracted and saved successfully"}
 
 
+@router.post("/accounts/{account_id}/browse-session")
+async def start_browse_session(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """Start a noVNC browser session pre-authenticated as the account.
+
+    The account's li_at cookie is injected before navigation so the user
+    lands directly on the LinkedIn feed (via the account's proxy). This is
+    for manual inspection/debugging — no cookies are saved on close.
+    """
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    from linauto.linkedin.login_session import LoginSessionManager
+    manager = LoginSessionManager.get_instance()
+
+    # Auto-cleanup any stale session
+    if manager.is_active:
+        await manager._cleanup()
+
+    proxy_url = account.proxy_url
+    if not proxy_url and account.proxy_country:
+        try:
+            from linauto.linkedin.browser import _build_proxy_url
+            proxy_url = _build_proxy_url(account.id, account.proxy_country)
+        except Exception:
+            pass
+
+    try:
+        novnc_path = await manager.start_session(
+            account_id,
+            proxy_url=proxy_url,
+            li_at_cookie=account.li_at_cookie or None,
+            start_url="https://www.linkedin.com/feed/",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start browse session: {e}")
+
+    return {"novnc_url": novnc_path, "account_id": account_id}
+
+
+@router.post("/accounts/{account_id}/browse-session/close")
+async def close_browse_session(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """Close an active browse session without saving any cookies."""
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    from linauto.linkedin.login_session import LoginSessionManager
+    manager = LoginSessionManager.get_instance()
+
+    if not manager.is_active:
+        return {"success": True, "message": "No active session"}
+
+    await manager._cleanup()
+    return {"success": True, "message": "Browse session closed"}
+
+
 @router.post("/accounts/{account_id}/login-session/cancel")
 async def cancel_login_session(
     account_id: str,

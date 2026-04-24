@@ -108,6 +108,16 @@ export const cancelLoginSession = (id: string) =>
     method: "POST",
   });
 
+export const startBrowseSession = (id: string) =>
+  apiFetch<{ novnc_url: string; account_id: string }>(`/accounts/${id}/browse-session`, {
+    method: "POST",
+  });
+
+export const closeBrowseSession = (id: string) =>
+  apiFetch<{ success: boolean; message: string }>(`/accounts/${id}/browse-session/close`, {
+    method: "POST",
+  });
+
 export const fetchAccountActivity = (id: string, limit = 500) =>
   apiFetch<ActionLog[]>(`/accounts/${id}/activity?limit=${limit}`);
 
