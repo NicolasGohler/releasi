@@ -200,6 +200,25 @@ class Repository:
         )
         return result.scalars().all()
 
+    async def get_stranded_followup_leads(self, campaign_id: str) -> Sequence[Lead]:
+        """Get CONNECTED leads that never got a followup scheduled or sent.
+
+        These are leads that the acceptance checker marked CONNECTED but whose
+        followup scheduling was missed (e.g. followup was disabled at accept
+        time, a scheduler restart interrupted the step, etc.).  They are
+        "stranded" because the acceptance checker only schedules *newly*
+        connected leads, so they would sit in CONNECTED forever without this
+        rescue query.
+        """
+        result = await self.session.execute(
+            select(Lead).where(
+                Lead.campaign_id == campaign_id,
+                Lead.status == LeadStatus.CONNECTED,
+                Lead.followup_sent_at.is_(None),
+            )
+        )
+        return result.scalars().all()
+
     async def get_pending_leads(
         self, campaign_id: str, limit: int | None = None
     ) -> Sequence[Lead]:

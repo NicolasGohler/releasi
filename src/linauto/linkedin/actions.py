@@ -820,45 +820,64 @@ class LinkedInActions:
         await self.delay.micro_delay(0.6, 1.2)
 
         # ── 4. Submit via Enter ──
-        # The compose page instructs "Press Enter to Send". There's a
-        # .msg-form__send-toggle dropdown but no .msg-form__send-button.
+        # The compose page instructs "Press Enter to Send".
         await self.page.keyboard.press("Enter")
-        await self.delay.micro_delay(1.5, 2.5)
 
         # ── 5. Verify submission ──
-        input_cleared = False
+        # PRIMARY signal: LinkedIn navigates from /messaging/compose/ → /messaging/thread/<id>/
+        # after a successful send. Wait up to 6 s for that navigation.
+        sent_ok = False
         try:
-            input_cleared = await msg_input.evaluate(
-                "el => (el.innerText || '').trim() === ''"
+            await self.page.wait_for_url(
+                lambda url: "messaging/compose" not in url,
+                timeout=6000,
             )
+            sent_ok = True
+            logger.debug("action.message_sent_navigated_to_thread", url=profile_url)
         except Exception:
             pass
 
-        bubble_found = False
-        try:
-            # Escape the message for inclusion in a JS string
-            msg_literal = (
-                message.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
-            )
-            bubble_found = await self.page.evaluate(
-                "(() => { const txt = '" + msg_literal + "';"
-                " const bubbles = document.querySelectorAll('.msg-s-event-listitem, [class*=\"msg-s-event\"]');"
-                " for (const b of bubbles) { if ((b.innerText || '').includes(txt)) return true; }"
-                " return false; })()"
-            )
-        except Exception:
-            pass
+        if not sent_ok:
+            # Page stayed on compose — check inline signals (some LinkedIn UI
+            # variants send without navigating away).
+            await self.delay.micro_delay(1.0, 2.0)
+            try:
+                cleared = await msg_input.evaluate(
+                    "el => (el.innerText || '').trim() === ''"
+                )
+                if cleared:
+                    sent_ok = True
+            except Exception:
+                # StaleElementReferenceError = element detached = page navigated.
+                # That also means the send went through.
+                sent_ok = True
 
-        if not (input_cleared or bubble_found):
-            # Neither signal fired — treat as failure so the dispatcher can retry.
+        if not sent_ok:
+            # Last-resort: scan for the message text in DOM bubbles
+            try:
+                msg_literal = (
+                    message.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+                )
+                bubble_found = await self.page.evaluate(
+                    "(() => { const txt = '" + msg_literal + "';"
+                    " const bubbles = document.querySelectorAll('.msg-s-event-listitem, [class*=\"msg-s-event\"]');"
+                    " for (const b of bubbles) { if ((b.innerText || '').includes(txt)) return true; }"
+                    " return false; })()"
+                )
+                if bubble_found:
+                    sent_ok = True
+            except Exception:
+                pass
+
+        if not sent_ok:
             logger.warning(
                 "action.message_send_unverified",
-                url=profile_url, input_cleared=input_cleared, bubble_found=bubble_found,
+                url=profile_url, page_url=self.page.url,
             )
             return ActionResult(
                 ActionStatus.ERROR,
                 reason="message_send_unverified",
-                details={"input_cleared": input_cleared, "bubble_found": bubble_found},
+                details={"page_url": self.page.url},
             )
 
         detection = await self.detector.check_after_action(self.page)
