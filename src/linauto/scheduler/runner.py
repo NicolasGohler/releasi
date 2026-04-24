@@ -687,10 +687,10 @@ async def check_acceptances():
     """
     from linauto.linkedin.actions import LinkedInActions
 
-    # Cutoff: how far back to scan the connections page. 30h gives a comfortable
-    # overlap with a daily run — a connection accepted right before yesterday's run
-    # will still appear within 30h of today's run.
-    CUTOFF_HOURS = 30.0
+    # Cutoff: how far back to scan the connections page.  72h (3-day window) means
+    # we catch connections accepted even if the checker missed yesterday's run, and
+    # covers accounts that only connected in the last 1-2 days.
+    CUTOFF_HOURS = 72.0
 
     repo, session = await _get_repo()
     try:
@@ -883,38 +883,6 @@ async def dispatch_followups():
                 continue
 
             campaigns = await repo.get_active_campaigns(account.id)
-
-            # ── Rescue stranded CONNECTED leads ─────────────────────────────
-            # The acceptance checker only schedules followups for *newly* connected
-            # leads in the same run.  If a lead ended up CONNECTED without a
-            # followup being scheduled (followup was disabled at accept time, a
-            # scheduler restart interrupted the step, etc.) it will sit in
-            # CONNECTED forever.  Find and schedule those leads now so they are
-            # picked up by the dispatcher below.
-            for campaign in campaigns:
-                if not campaign.followup_enabled:
-                    continue
-                has_messages = any(
-                    getattr(campaign, f"followup_message_{i}", None)
-                    for i in (1, 2, 3)
-                )
-                if not has_messages:
-                    continue
-                stranded = await repo.get_stranded_followup_leads(campaign.id)
-                for lead in stranded:
-                    # Schedule immediately (delay already elapsed — they've been
-                    # waiting in CONNECTED, often for days).
-                    await repo.update_lead(
-                        lead,
-                        status=LeadStatus.FOLLOWUP_SCHEDULED,
-                        scheduled_at=now,
-                    )
-                    logger.info(
-                        "followup.rescued_stranded",
-                        url=lead.linkedin_url,
-                        campaign=campaign.name,
-                    )
-            # ────────────────────────────────────────────────────────────────
 
             # Check if any campaign has due follow-ups before acquiring pool
             has_due = False

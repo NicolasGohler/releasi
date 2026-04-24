@@ -1164,14 +1164,28 @@ class LinkedInActions:
                     time_text = card.get("timeText") or ""
                     age_hours = self._parse_connection_age_hours(time_text)
 
-                    if age_hours is None or age_hours > cutoff_hours:
-                        # Hit a card that's too old (or unparseable) — we're done
+                    if age_hours is None:
+                        # Unparseable date — likely a non-English LinkedIn locale
+                        # (e.g. "Connecté le 22 avril 2026").  Skip this card
+                        # rather than treating it as "very old" and stopping the
+                        # whole scrape; the next card might have a parseable date.
+                        logger.info(
+                            "action.connections_unparseable_date",
+                            slug=slug,
+                            time_text=time_text,
+                        )
+                        continue
+
+                    if age_hours > cutoff_hours:
+                        # First card older than the cutoff — list is sorted newest-
+                        # first, so everything after this is older too.  Stop.
                         hit_cutoff = True
-                        logger.debug(
+                        logger.info(
                             "action.connections_cutoff_reached",
                             slug=slug,
                             time_text=time_text,
-                            age_hours=age_hours,
+                            age_hours=round(age_hours, 1),
+                            cutoff_hours=cutoff_hours,
                             collected=len(collected_slugs),
                         )
                         break
