@@ -500,7 +500,7 @@ class Repository:
                 func.count().label("total_7d"),
                 func.sum(
                     case(
-                        (ActionLog.status == ActionLogStatus.ERROR, 1),
+                        (ActionLog.status == ActionLogStatus.FAILED, 1),
                         else_=0,
                     )
                 ).label("errors_7d"),
@@ -521,7 +521,7 @@ class Repository:
                 select(ActionLog.details)
                 .where(
                     ActionLog.account_id == account_id,
-                    ActionLog.status == ActionLogStatus.ERROR,
+                    ActionLog.status == ActionLogStatus.FAILED,
                 )
                 .order_by(ActionLog.created_at.desc())
                 .limit(1)
