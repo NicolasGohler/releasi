@@ -833,6 +833,8 @@ class LinkedInActions:
         # PRIMARY signal: LinkedIn navigates from /messaging/compose/ → /messaging/thread/<id>/
         # after a successful send. Wait up to 8 s for that navigation.
         sent_ok = False
+        input_cleared = False
+        bubble_found = False
         try:
             await self.page.wait_for_url(
                 lambda url: "messaging/compose" not in url,
@@ -848,15 +850,16 @@ class LinkedInActions:
             # send without navigating away).
             await self.delay.micro_delay(1.0, 2.0)
             try:
-                cleared = await msg_input.evaluate(
+                input_cleared = await msg_input.evaluate(
                     "el => (el.innerText || '').trim() === ''"
                 )
-                if cleared:
+                if input_cleared:
                     sent_ok = True
             except Exception:
                 # StaleElementReferenceError = element detached = page navigated.
                 # That also means the send went through.
                 sent_ok = True
+                input_cleared = True
 
         if not sent_ok:
             # Last-resort: scan for the message text in DOM bubbles
@@ -886,8 +889,31 @@ class LinkedInActions:
                 details={"page_url": self.page.url},
             )
 
+        # ── 6. Post-send detection check ──
+        # IMPORTANT: At this point the message has already been delivered.
+        # Mirror the same logic as send_connection_request — CAPTCHA after a
+        # confirmed send means the message went through; treat as success.
+        # Only rate-limit signals and session expiry should override.
         detection = await self.detector.check_after_action(self.page)
-        if not detection.is_clear:
+        if detection.requires_cooldown:
+            # Rate limit signal — may indicate the send was blocked.
+            return ActionResult(
+                ActionStatus.LIMIT_REACHED,
+                reason=detection.detected.value,
+                details={"detection": detection.details},
+            )
+        if detection.detected == DetectionType.CAPTCHA:
+            # CAPTCHA appeared on the thread/redirect page AFTER the message
+            # was delivered. Log a warning but treat as success — retrying
+            # would send a duplicate message.
+            logger.warning(
+                "action.captcha_after_message_send",
+                url=profile_url,
+                note="Message delivered; CAPTCHA appeared after send",
+            )
+        elif detection.detected == DetectionType.SESSION_EXPIRED:
+            return ActionResult(ActionStatus.SESSION_EXPIRED)
+        elif not detection.is_clear:
             return ActionResult(
                 ActionStatus.ERROR,
                 reason=detection.detected.value,
@@ -896,7 +922,9 @@ class LinkedInActions:
 
         logger.info(
             "action.message_sent",
-            url=profile_url, input_cleared=input_cleared, bubble_found=bubble_found,
+            url=profile_url,
+            input_cleared=input_cleared,
+            bubble_found=bubble_found,
         )
         return ActionResult(ActionStatus.SUCCESS)
 
