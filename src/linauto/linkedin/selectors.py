@@ -166,14 +166,21 @@ PROFILE_ACTION_BUTTONS = [
 # ── Message dialog ────────────────────────────────────────────────────────
 #
 # The follow-up flow navigates directly to /messaging/compose/?recipient=<URN>
-# (see actions.send_message), so we no longer need a Message-button selector.
-# The compose page submits on Enter — no visible Send button on this layout,
-# so MESSAGE_SEND_BUTTON is also removed.
+# (see actions.send_message).
+#
+# LinkedIn's compose page (as of 2026-04) renders a Send button that is
+# disabled until text is typed.  Pressing Enter creates a new line — it does
+# NOT send the message.  We must click the Send button explicitly.
 
 MESSAGE_INPUT = [
     'div.msg-form__contenteditable[role="textbox"]',
     'div[aria-label="Write a message…"]',
     '.msg-form__contenteditable',
+]
+
+MESSAGE_SEND_BUTTON = [
+    'button.msg-form__send-button',
+    'button.msg-form__send-btn',   # older class name — fallback
 ]
 
 # ── Invitation manager ────────────────────────────────────────────────────

@@ -759,7 +759,7 @@ class LinkedInActions:
         """
         Send a direct message to a 1st-degree connection.
 
-        Flow (rev. 2026-04):
+        Flow (rev. 2026-04, updated 2026-04-25):
           1. Navigate to the profile, extract the recipient URN from any
              `a[href*="/messaging/compose/"][href*="recipient="]` anchor.
           2. Navigate directly to `/messaging/compose/?recipient=<URN>`.
@@ -767,11 +767,10 @@ class LinkedInActions:
              current LinkedIn UI is an <a> that depends on JS hydration
              that doesn't always fire under our resource blocker).
           3. Type into the `msg-form__contenteditable` input.
-          4. Press Enter to submit — the compose page shows "Press Enter
-             to Send" and has no visible Send button (only a send-options
-             dropdown). Enter submits reliably.
-          5. Verify by checking that the input is cleared and the message
-             text appears as a bubble in `.msg-s-event-listitem`.
+          4. Click the Send button (msg-form__send-button) — LinkedIn's compose
+             page renders a Send button that is disabled until text is typed.
+             Pressing Enter creates a new line, NOT a send.
+          5. Verify by checking navigation away from /messaging/compose/.
         """
         # ── 1. Visit profile, extract recipient URN ──
         nav = await self.navigator.go_to_profile(profile_url)
@@ -819,18 +818,25 @@ class LinkedInActions:
         await self.delay.type_text(msg_input, message)
         await self.delay.micro_delay(0.6, 1.2)
 
-        # ── 4. Submit via Enter ──
-        # The compose page instructs "Press Enter to Send".
-        await self.page.keyboard.press("Enter")
+        # ── 4. Click the Send button ──
+        # LinkedIn's compose page (2026-04+) renders a dedicated Send button
+        # (msg-form__send-button) that is disabled until text is typed.
+        # Pressing Enter inserts a newline and does NOT send the message.
+        send_btn = await self._find_element(selectors.MESSAGE_SEND_BUTTON, timeout_ms=5000)
+        if not send_btn:
+            logger.error("action.send_btn_not_found", url=profile_url)
+            return ActionResult(ActionStatus.ERROR, reason="message_send_btn_not_found")
+
+        await self._hover_and_click(send_btn)
 
         # ── 5. Verify submission ──
         # PRIMARY signal: LinkedIn navigates from /messaging/compose/ → /messaging/thread/<id>/
-        # after a successful send. Wait up to 6 s for that navigation.
+        # after a successful send. Wait up to 8 s for that navigation.
         sent_ok = False
         try:
             await self.page.wait_for_url(
                 lambda url: "messaging/compose" not in url,
-                timeout=6000,
+                timeout=8000,
             )
             sent_ok = True
             logger.debug("action.message_sent_navigated_to_thread", url=profile_url)
@@ -838,8 +844,8 @@ class LinkedInActions:
             pass
 
         if not sent_ok:
-            # Page stayed on compose — check inline signals (some LinkedIn UI
-            # variants send without navigating away).
+            # Page stayed on compose — check if input cleared (some UI variants
+            # send without navigating away).
             await self.delay.micro_delay(1.0, 2.0)
             try:
                 cleared = await msg_input.evaluate(
