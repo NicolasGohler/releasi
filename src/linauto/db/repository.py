@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Sequence
+from typing import Optional, Sequence
 
 from sqlalchemy import case, select, func, update, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -379,6 +379,42 @@ class Repository:
             )
         )
         return result.scalar_one_or_none() or 0
+
+    async def get_followup_messages_sent_today(
+        self, account_id: str, stat_date: date | None = None
+    ) -> int:
+        """Get today's followup_messages_sent count from DailyStat."""
+        stat_date = stat_date or date.today()
+        result = await self.session.execute(
+            select(func.coalesce(DailyStat.followup_messages_sent, 0))
+            .where(
+                DailyStat.account_id == account_id,
+                DailyStat.date == stat_date,
+            )
+        )
+        return result.scalar_one_or_none() or 0
+
+    async def get_lead_by_id(self, lead_id: str) -> Optional[Lead]:
+        """Fetch a single lead by primary key (for pre-send status re-verification)."""
+        return await self.session.get(Lead, lead_id)
+
+    async def has_successful_followup_log(self, lead_id: str) -> bool:
+        """Return True if a successful FOLLOWUP_MESSAGE action exists for this lead.
+
+        Used as a belt-and-suspenders guard: if the lead status update after a
+        send failed (e.g. crash between browser action and DB write), the action
+        log still records the send so we don't resend to the same person.
+        """
+        result = await self.session.execute(
+            select(ActionLog.id)
+            .where(
+                ActionLog.lead_id == lead_id,
+                ActionLog.action_type == ActionType.FOLLOWUP_MESSAGE,
+                ActionLog.status == ActionLogStatus.SUCCESS,
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
 
     async def count_leads_by_status(self, campaign_id: str, statuses: list) -> int:
         """Count leads in a campaign matching any of the given statuses."""

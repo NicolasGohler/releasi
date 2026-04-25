@@ -73,6 +73,7 @@ acceptance_check_hour: 10  # Run once daily at 10:00
 
 # Follow-up
 default_followup_delay_hours: 24
+followup_daily_cap: 15   # Max automated follow-up messages per account per day
 
 # Logging
 log_level: "INFO"

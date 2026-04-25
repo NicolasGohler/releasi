@@ -878,11 +878,27 @@ async def dispatch_followups():
         now = datetime.utcnow()
         accounts = await repo.list_active_accounts()
 
+        settings = get_settings()
+
         for account in accounts:
             if account.paused_until and not is_cooldown_expired(account.paused_until):
                 continue
 
             campaigns = await repo.get_active_campaigns(account.id)
+
+            # ── Daily cap pre-check ────────────────────────────────────────────
+            # Count how many followup messages this account has already sent today.
+            # If the cap is already reached, skip this account entirely.
+            sent_today = await repo.get_followup_messages_sent_today(account.id)
+            daily_cap = settings.followup_daily_cap
+            if sent_today >= daily_cap:
+                logger.info(
+                    "followup.daily_cap_reached",
+                    account=account.name,
+                    sent_today=sent_today,
+                    cap=daily_cap,
+                )
+                continue
 
             # Check if any campaign has due follow-ups before acquiring pool
             has_due = False
@@ -894,7 +910,6 @@ async def dispatch_followups():
                         break
             if not has_due:
                 continue
-
 
             pool = get_browser_pool()
             pool_context = None
@@ -908,15 +923,58 @@ async def dispatch_followups():
                 from linauto.campaign.executor import CampaignExecutor
                 executor = CampaignExecutor(repo, browser_context=pool_context)
 
+                # Track sends in this dispatch cycle so we respect the cap even
+                # if DailyStat writes haven't been flushed yet.
+                sent_this_cycle = 0
+                remaining_cap = daily_cap - sent_today
+
                 for campaign in campaigns:
                     if not campaign.followup_enabled:
                         continue
+                    if remaining_cap <= 0:
+                        logger.info(
+                            "followup.daily_cap_reached_mid_cycle",
+                            account=account.name,
+                            sent_today=sent_today,
+                            sent_this_cycle=sent_this_cycle,
+                            cap=daily_cap,
+                        )
+                        break
 
                     due_leads = await repo.get_followup_due_leads(campaign.id, before=now)
                     if not due_leads:
                         continue
 
                     for lead in due_leads:
+                        if remaining_cap <= 0:
+                            break
+
+                        # ── Guard: re-fetch lead status before acting ──────────
+                        # Prevents acting on stale data from the batch query above
+                        # (race condition, concurrent job, or a prior cycle that
+                        # updated the status after the batch was fetched).
+                        fresh = await repo.get_lead_by_id(lead.id)
+                        if fresh is None:
+                            logger.warning("followup.lead_vanished", url=lead.linkedin_url)
+                            continue
+                        if fresh.status != LeadStatus.FOLLOWUP_SCHEDULED:
+                            logger.warning(
+                                "followup.stale_status_skipped",
+                                url=lead.linkedin_url,
+                                expected="FOLLOWUP_SCHEDULED",
+                                actual=fresh.status.value,
+                            )
+                            continue
+                        if fresh.followup_sent_at is not None:
+                            logger.warning(
+                                "followup.already_sent_skipped",
+                                url=lead.linkedin_url,
+                                followup_sent_at=str(fresh.followup_sent_at),
+                            )
+                            continue
+                        # Use the freshly-fetched object for all subsequent ops
+                        lead = fresh
+
                         logger.info(
                             "followup.starting_sequence",
                             url=lead.linkedin_url,
@@ -933,6 +991,8 @@ async def dispatch_followups():
                                 status=LeadStatus.FOLLOWUP_SENT,
                                 followup_sent_at=datetime.utcnow(),
                             )
+                            sent_this_cycle += 1
+                            remaining_cap -= 1
                             logger.info(
                                 "followup.sequence_done",
                                 url=lead.linkedin_url,

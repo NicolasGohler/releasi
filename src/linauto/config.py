@@ -105,6 +105,10 @@ class Settings(BaseSettings):
 
     # Follow-up
     default_followup_delay_hours: int = 24
+    # Hard cap on automated follow-up messages sent per account per day.
+    # Prevents burst sending and reduces CAPTCHA triggers.
+    # Each message takes ~35s, so 15 = ~9 min of browser time spread across day.
+    followup_daily_cap: int = 15
 
     # Logging
     log_level: str = "INFO"

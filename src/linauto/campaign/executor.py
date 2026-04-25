@@ -252,6 +252,20 @@ class CampaignExecutor:
         """
         result = {"success": False, "messages_sent": 0, "fatal": False, "skipped": False}
 
+        # ── Guard 1: action-log dedup ──────────────────────────────────────────
+        # If the action_log already has a successful FOLLOWUP_MESSAGE for this
+        # lead, the send went through in a prior run even if the status update
+        # didn't persist (e.g. crash between browser action and DB write).
+        # Skip immediately — resending would be a duplicate.
+        if await self.repo.has_successful_followup_log(lead.id):
+            logger.warning(
+                "followup.action_log_dedup_skipped",
+                url=lead.linkedin_url,
+                note="Successful followup log already exists; skipping to avoid duplicate",
+            )
+            result["skipped"] = True
+            return result
+
         # Collect configured messages
         messages: List[str] = []
         for attr in ("followup_message_1", "followup_message_2", "followup_message_3"):
