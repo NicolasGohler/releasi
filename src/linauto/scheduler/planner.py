@@ -297,25 +297,28 @@ def _generate_session_slots(
         ]
 
         if use_buffer:
-            # Full-day plan: front-load sessions into first 65% so the
-            # remaining 35% acts as a buffer for backfills.
-            dispatch_cutoff = work_start + timedelta(seconds=total_window * 0.65)
+            # Full-day plan: front-load sessions into first 90% so the
+            # remaining 10% acts as a buffer for backfills.
+            dispatch_cutoff = work_start + timedelta(seconds=total_window * 0.90)
         else:
             dispatch_cutoff = work_end
 
-        # Compute inter-session gaps that guarantee all sessions fit
-        # within the cutoff. If the configured gaps are too wide, shrink
-        # them proportionally; never go below a 10-min floor.
+        # Compute inter-session gaps that fit all sessions within the cutoff.
+        # Floor is inter_session_delay[0] (the dispatcher's own enforcement gap)
+        # so planner sessions are never scheduled closer together than the
+        # dispatcher allows.  Without this floor, sessions cluster 10 min apart
+        # and the hourly reset_stale_scheduled_leads sweep wipes them before
+        # the dispatcher can execute them.
         cutoff_secs = (dispatch_cutoff - work_start).total_seconds()
         total_session_dur = sum(session_durations)
         available_for_gaps = cutoff_secs - total_session_dur
         # Budget per gap (between sessions + before first), minus jitter
         gap_budget = (available_for_gaps / num_sessions) - 300  # 5 min jitter allowance
-        gap_budget = max(600, gap_budget)  # floor: 10 min
+        gap_budget = max(inter_gap_min, gap_budget)  # floor: match dispatcher enforcement
 
         effective_gap_min = min(inter_gap_min, gap_budget * 0.4)
         effective_gap_max = min(inter_gap_max, gap_budget)
-        effective_gap_min = max(600, effective_gap_min)   # floor: 10 min
+        effective_gap_min = max(inter_gap_min, effective_gap_min)  # floor: match dispatcher
         effective_gap_max = max(effective_gap_min, effective_gap_max)
 
         # Place sessions with adaptive gaps

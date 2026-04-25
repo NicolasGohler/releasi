@@ -11,7 +11,9 @@ import {
   useUpdateAccount,
   useUpdateCookie,
   useArchiveAccount,
+  useCampaigns,
 } from "@/hooks/use-queries";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -41,6 +43,7 @@ export default function AccountDetailPage({
   const updateAccount = useUpdateAccount(id);
   const updateCookie = useUpdateCookie(id);
   const archiveAccount = useArchiveAccount();
+  const { data: campaigns } = useCampaigns({ account_id: id });
   const [newCookie, setNewCookie] = useState("");
   const [editName, setEditName] = useState("");
   const [editTimezone, setEditTimezone] = useState("");
@@ -160,6 +163,22 @@ export default function AccountDetailPage({
             </div>
             <h1 className="text-lg font-semibold truncate">{account.name}</h1>
             <StatusBadge status={account.status} />
+            {campaigns && campaigns.length > 0 && (
+              <div className="hidden sm:flex items-center gap-2">
+                {campaigns.map((c) => (
+                  <Link
+                    key={c.id}
+                    href={`/campaigns/${c.id}`}
+                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                    {c.name}
+                  </Link>
+                ))}
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {!browseSessionActive ? (
