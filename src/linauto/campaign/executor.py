@@ -250,7 +250,7 @@ class CampaignExecutor:
         Messages are sent with 30-60s delays between each.
         Returns result dict with messages_sent count and success flag.
         """
-        result = {"success": False, "messages_sent": 0, "fatal": False}
+        result = {"success": False, "messages_sent": 0, "fatal": False, "skipped": False}
 
         # Collect configured messages
         messages: List[str] = []
@@ -293,7 +293,17 @@ class CampaignExecutor:
 
                 action_result = await actions.send_message(lead.linkedin_url, msg)
 
-                if action_result.status == ActionStatus.SUCCESS:
+                if action_result.status == ActionStatus.SKIPPED:
+                    # Prior conversation detected — treat the whole sequence as skipped.
+                    result["skipped"] = True
+                    logger.info(
+                        "followup.skipped_existing_conversation",
+                        url=lead.linkedin_url,
+                        reason=action_result.reason,
+                    )
+                    break
+
+                elif action_result.status == ActionStatus.SUCCESS:
                     result["messages_sent"] += 1
                     await self.repo.log_action(
                         account_id=account.id,

@@ -808,6 +808,32 @@ class LinkedInActions:
         # Wait for the messaging app to hydrate (it's a JS-heavy widget)
         await self.delay.micro_delay(3.5, 5.0)
 
+        # ── 3a. Guard: skip if a prior conversation already exists ──
+        # LinkedIn renders existing message bubbles in the thread area below the
+        # compose form.  If any are present we have already exchanged messages
+        # with this person (inside or outside our system) and should not send
+        # another automated one.
+        try:
+            has_prior_messages = await self.page.evaluate("""
+() => {
+    const bubbles = document.querySelectorAll(
+        '.msg-s-event-listitem, [class*="msg-s-event-listitem"]'
+    );
+    return bubbles.length > 0;
+}
+""")
+            if has_prior_messages:
+                logger.info(
+                    "action.message_skipped_existing_conversation",
+                    url=profile_url,
+                )
+                return ActionResult(
+                    ActionStatus.SKIPPED,
+                    reason="existing_conversation",
+                )
+        except Exception:
+            pass  # Fail open — don't block the send if the check errors
+
         # ── 3. Find message input ──
         msg_input = await self._find_element(selectors.MESSAGE_INPUT, timeout_ms=8000)
         if not msg_input:

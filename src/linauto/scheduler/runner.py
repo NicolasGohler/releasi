@@ -938,27 +938,34 @@ async def dispatch_followups():
                                 url=lead.linkedin_url,
                                 messages_sent=fu_result["messages_sent"],
                             )
+                        elif fu_result.get("skipped"):
+                            # Prior conversation detected — mark as FOLLOWUP_SENT so
+                            # the lead doesn't show as an error and won't be retried.
+                            validate_transition(lead.status, LeadStatus.FOLLOWUP_SENT)
+                            await repo.update_lead(
+                                lead,
+                                status=LeadStatus.FOLLOWUP_SENT,
+                                followup_sent_at=datetime.utcnow(),
+                            )
+                            logger.info(
+                                "followup.skipped_marked_sent",
+                                url=lead.linkedin_url,
+                            )
                         else:
-                            new_retries = (lead.retry_count or 0) + 1
-                            if new_retries >= 3:
-                                validate_transition(lead.status, LeadStatus.ERROR)
-                                await repo.update_lead(
-                                    lead,
-                                    status=LeadStatus.ERROR,
-                                    retry_count=new_retries,
-                                )
-                                logger.warning(
-                                    "followup.max_retries_reached",
-                                    url=lead.linkedin_url,
-                                    retries=new_retries,
-                                )
-                            else:
-                                await repo.update_lead(lead, retry_count=new_retries)
-                                logger.warning(
-                                    "followup.sequence_failed",
-                                    url=lead.linkedin_url,
-                                    retry=new_retries,
-                                )
+                            # Messages are NOT idempotent — retrying risks sending
+                            # a duplicate.  Move to ERROR immediately on first failure
+                            # so the user can inspect and decide whether to retry.
+                            validate_transition(lead.status, LeadStatus.ERROR)
+                            await repo.update_lead(
+                                lead,
+                                status=LeadStatus.ERROR,
+                                retry_count=1,
+                            )
+                            logger.warning(
+                                "followup.failed_no_retry",
+                                url=lead.linkedin_url,
+                                reason=fu_result.get("reason", "unknown"),
+                            )
                         if fu_result.get("fatal"):
                             break
             finally:
