@@ -117,7 +117,14 @@ export default function CampaignDetailPage({
   // total_sent from action_log (authoritative): counts all successful dispatches
   // regardless of current lead status (accepted, withdrawn, still pending, etc.)
   const sent = campaignStats?.summary.total_sent ?? (counts["connection_requested"] ?? 0);
-  const connected = counts["connected"] ?? 0;
+  // "connected" includes all post-acceptance statuses: CONNECTED (awaiting followup),
+  // FOLLOWUP_SCHEDULED, FOLLOWUP_SENT, COMPLETED. Leads move through these states
+  // sequentially, so counting only CONNECTED would show 0 once followup is dispatched.
+  const connected =
+    (counts["connected"] ?? 0) +
+    (counts["followup_scheduled"] ?? 0) +
+    (counts["followup_sent"] ?? 0) +
+    (counts["completed"] ?? 0);
   const errors = counts["error"] ?? 0;
   const acceptRate = campaignStats?.summary.acceptance_rate ?? null;
 
@@ -352,7 +359,7 @@ export default function CampaignDetailPage({
                     {(campaign.assigned_lists ?? []).map((ll) => {
                       const counts = ll.status_counts ?? {};
                       const total = Object.values(counts).reduce((a: number, b: number) => a + b, 0);
-                      const accepted = (counts["connected"] ?? 0) + (counts["completed"] ?? 0) + (counts["followup_sent"] ?? 0);
+                      const accepted = (counts["connected"] ?? 0) + (counts["followup_scheduled"] ?? 0) + (counts["followup_sent"] ?? 0) + (counts["completed"] ?? 0);
                       const sent = counts["connection_requested"] ?? 0;
                       const pending = (counts["pending"] ?? 0) + (counts["scheduled"] ?? 0);
                       const other = total - pending - sent - accepted;

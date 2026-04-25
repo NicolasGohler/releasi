@@ -21,7 +21,7 @@ export default function CampaignsPage() {
     if (!counts) return { total: 0, sent: 0, accepted: 0, other: 0, sentPct: 0, acceptedPct: 0, otherPct: 0 };
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
     if (total === 0) return { total: 0, sent: 0, accepted: 0, other: 0, sentPct: 0, acceptedPct: 0, otherPct: 0 };
-    const accepted = (counts["connected"] ?? 0) + (counts["completed"] ?? 0) + (counts["followup_sent"] ?? 0);
+    const accepted = (counts["connected"] ?? 0) + (counts["followup_scheduled"] ?? 0) + (counts["followup_sent"] ?? 0) + (counts["completed"] ?? 0);
     const sent = counts["connection_requested"] ?? 0;
     const pending = (counts["pending"] ?? 0) + (counts["scheduled"] ?? 0);
     const other = total - pending - sent - accepted;
