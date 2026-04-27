@@ -8,11 +8,11 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 
 /**
  * Variables supported by the template engine (campaign/template.py).
- * `description` is shown in the tooltip so users know what actually gets
- * substituted at send time; `example` demonstrates a realistic value.
+ * `description` is shown in the tooltip; `example` is used in the live preview.
  */
 const STANDARD_VARIABLES: Array<{
   token: string;
@@ -24,6 +24,8 @@ const STANDARD_VARIABLES: Array<{
   { token: "company",    description: "Lead's company (from CSV column `company`, `project`, or `project_name`)", example: "Acme Inc." },
   { token: "title",      description: "Lead's job title",  example: "Head of Growth" },
 ];
+
+const EXAMPLE_BY_TOKEN = Object.fromEntries(STANDARD_VARIABLES.map(v => [v.token, v.example]));
 
 export interface MessageTemplateEditorProps {
   value: string;
@@ -38,6 +40,13 @@ export interface MessageTemplateEditorProps {
   id?: string;
   /** Additional custom variable tokens (e.g. extra_data keys) to offer alongside the standard set. */
   customVariables?: string[];
+  /**
+   * Fill-rate per token name (0–1). When provided:
+   *  - chips show a % badge for any token below 100%
+   *  - chips for 0% tokens get a red border
+   *  - the live preview renders 0%-fill tokens as an "empty" marker
+   */
+  fillRates?: Record<string, number>;
 }
 
 export interface MessageTemplateEditorHandle {
@@ -45,26 +54,72 @@ export interface MessageTemplateEditorHandle {
   insertToken: (token: string) => void;
 }
 
+// ── Preview helpers ──────────────────────────────────────────────────────────
+
+type PreviewSegment =
+  | { kind: "text";   content: string }
+  | { kind: "filled"; leading: string; example: string; token: string }
+  | { kind: "empty";  leading: string; token: string };
+
+function buildPreview(template: string, fillRates?: Record<string, number>): PreviewSegment[] {
+  const segs: PreviewSegment[] = [];
+  // Mirror the Python regex: optional leading horizontal space + {{token}}
+  const pattern = /([ \t]?)\{\{(\w+)\}\}/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(template)) !== null) {
+    const textBefore = template.slice(lastIndex, match.index);
+    if (textBefore) segs.push({ kind: "text", content: textBefore });
+
+    const leading = match[1];           // space captured from template (may be "")
+    const rawToken = match[2];
+    const token = rawToken.toLowerCase();
+    const rate = fillRates?.[token];
+    const isEmpty = rate === 0;
+    const example = EXAMPLE_BY_TOKEN[token] ?? `[${rawToken}]`;
+
+    // Compute the space that will be prepended to a resolved value — mirrors
+    // the Python _with_space() logic so the preview matches actual rendering.
+    let resolvedLeading = leading;
+    if (!leading) {
+      const charBefore = match.index > 0 ? template[match.index - 1] : "";
+      if (charBefore && !/\s/.test(charBefore)) resolvedLeading = " ";
+    }
+
+    if (isEmpty) {
+      segs.push({ kind: "empty", leading: resolvedLeading, token });
+    } else {
+      segs.push({ kind: "filled", leading: resolvedLeading, example, token });
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  const rest = template.slice(lastIndex);
+  if (rest) segs.push({ kind: "text", content: rest });
+  return segs;
+}
+
+// ── Component ────────────────────────────────────────────────────────────────
+
 /**
- * Textarea + "insert variable" chip row. Clicking a chip inserts
- * `{{token}}` at the current cursor position (or appends if unfocused),
- * then re-focuses the textarea with the cursor placed after the insert
- * so the user can keep typing naturally.
+ * Textarea + "insert variable" chip row + live preview.
  *
- * The chip set is derived from the template engine's `_FIELD_MAP` plus
- * any `customVariables` the caller passes in. The tooltip on each chip
- * explains what the variable actually resolves to and shows an example.
+ * Clicking a chip inserts `{{token}}` at the cursor (with an automatic leading
+ * space if the preceding character is not whitespace), then re-focuses so the
+ * user can keep typing. The template engine consumes that leading space when a
+ * variable resolves to empty, so "Hi {{first_name}}," becomes "Hi Sarah," or
+ * "Hi," — never "Hi ,".
  */
 export const MessageTemplateEditor = forwardRef<
   MessageTemplateEditorHandle,
   MessageTemplateEditorProps
 >(function MessageTemplateEditor(
-  { value, onChange, placeholder, disabled, showCharLimit, minHeight = 96, id, customVariables },
+  { value, onChange, placeholder, disabled, showCharLimit, minHeight = 96, id, customVariables, fillRates },
   ref,
 ) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  // Track cursor position even after blur so clicking a chip inserts at the
-  // last caret position rather than at the end.
   const [cursor, setCursor] = useState<number | null>(null);
 
   function insertAtCursor(text: string) {
@@ -73,17 +128,12 @@ export const MessageTemplateEditor = forwardRef<
       onChange(value + text);
       return;
     }
-    // Prefer the live selection over the tracked cursor, so if the user
-    // currently has the field focused with a selection the inserted text
-    // replaces it.
     const activeStart = ta.selectionStart ?? cursor ?? value.length;
-    const activeEnd = ta.selectionEnd ?? cursor ?? value.length;
+    const activeEnd   = ta.selectionEnd   ?? cursor ?? value.length;
     const before = value.slice(0, activeStart);
-    const after = value.slice(activeEnd);
-    const next = before + text + after;
+    const after  = value.slice(activeEnd);
+    const next   = before + text + after;
     onChange(next);
-    // Place caret after the inserted token, in the next tick so React has
-    // propagated the value change.
     const nextCursor = activeStart + text.length;
     setCursor(nextCursor);
     requestAnimationFrame(() => {
@@ -93,13 +143,25 @@ export const MessageTemplateEditor = forwardRef<
     });
   }
 
+  function insertToken(token: string) {
+    const ta = textareaRef.current;
+    const pos = ta
+      ? (ta.selectionStart ?? cursor ?? value.length)
+      : (cursor ?? value.length);
+    const charBefore = pos > 0 ? value[pos - 1] : "";
+    // Add a leading space only when the cursor is not already at whitespace /
+    // start-of-string — the template engine will consume it if the var is empty.
+    const needSpace = charBefore !== "" && !/\s/.test(charBefore);
+    insertAtCursor(needSpace ? ` {{${token}}}` : `{{${token}}}`);
+  }
+
   useImperativeHandle(ref, () => ({
     focus: () => textareaRef.current?.focus(),
-    insertToken: (token: string) => insertAtCursor(`{{${token}}}`),
+    insertToken,
   }));
 
   const charCount = value.length;
-  const overLimit = showCharLimit && charCount > 300;
+  const overLimit      = showCharLimit && charCount > 300;
   const approachingLimit = showCharLimit && charCount > 250 && charCount <= 300;
 
   const customChips = (customVariables ?? [])
@@ -107,58 +169,117 @@ export const MessageTemplateEditor = forwardRef<
     .filter(Boolean)
     .filter((t) => !STANDARD_VARIABLES.some((v) => v.token === t));
 
+  const previewSegs = value.trim() ? buildPreview(value, fillRates) : null;
+
+  function FillRateBadge({ token }: { token: string }) {
+    if (!fillRates) return null;
+    const rate = fillRates[token];
+    if (rate === undefined || rate === 1) return null;
+    const pct = Math.round(rate * 100);
+    return (
+      <span
+        className={cn(
+          "ml-1 text-[10px] font-mono px-0.5 rounded leading-none",
+          rate === 0
+            ? "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400"
+            : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+        )}
+      >
+        {pct}%
+      </span>
+    );
+  }
+
   return (
     <div className="space-y-1.5">
+      {/* Variable chips */}
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-xs text-muted-foreground mr-1">Insert:</span>
         <TooltipProvider delayDuration={150}>
-          {STANDARD_VARIABLES.map((v) => (
-            <Tooltip key={v.token}>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-6 px-2 font-mono text-xs"
-                  onClick={() => insertAtCursor(`{{${v.token}}}`)}
-                  disabled={disabled}
-                >
-                  + {`{{${v.token}}}`}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="max-w-xs">
-                <p className="text-xs font-medium">{`{{${v.token}}}`}</p>
-                <p className="text-xs text-muted-foreground mt-0.5">{v.description}</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Example: <span className="font-medium text-foreground">{v.example}</span>
-                </p>
-              </TooltipContent>
-            </Tooltip>
-          ))}
-          {customChips.map((token) => (
-            <Tooltip key={token}>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-6 px-2 font-mono text-xs border-dashed"
-                  onClick={() => insertAtCursor(`{{${token}}}`)}
-                  disabled={disabled}
-                >
-                  + {`{{${token}}}`}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="max-w-xs">
-                <p className="text-xs font-medium">{`{{${token}}}`}</p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Custom variable — reads from each lead&apos;s <code className="text-[10px]">extra_data</code> JSON (set via CSV import).
-                </p>
-              </TooltipContent>
-            </Tooltip>
-          ))}
+          {STANDARD_VARIABLES.map((v) => {
+            const isZero = fillRates?.[v.token] === 0;
+            return (
+              <Tooltip key={v.token}>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className={cn(
+                      "h-6 px-2 font-mono text-xs",
+                      isZero && "border-red-300 dark:border-red-700"
+                    )}
+                    onClick={() => insertToken(v.token)}
+                    disabled={disabled}
+                  >
+                    + {`{{${v.token}}}`}
+                    <FillRateBadge token={v.token} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs">
+                  <p className="text-xs font-medium">{`{{${v.token}}}`}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{v.description}</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Example: <span className="font-medium text-foreground">{v.example}</span>
+                  </p>
+                  {fillRates?.[v.token] !== undefined && fillRates[v.token] < 1 && (
+                    <p className={cn(
+                      "text-xs mt-1 font-medium",
+                      fillRates[v.token] === 0 ? "text-red-500" : "text-amber-500"
+                    )}>
+                      {fillRates[v.token] === 0
+                        ? "No leads have this field — will always send as empty"
+                        : `${Math.round(fillRates[v.token] * 100)}% of leads have this field`}
+                    </p>
+                  )}
+                </TooltipContent>
+              </Tooltip>
+            );
+          })}
+          {customChips.map((token) => {
+            const isZero = fillRates?.[token] === 0;
+            return (
+              <Tooltip key={token}>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className={cn(
+                      "h-6 px-2 font-mono text-xs border-dashed",
+                      isZero && "border-red-300 dark:border-red-700"
+                    )}
+                    onClick={() => insertToken(token)}
+                    disabled={disabled}
+                  >
+                    + {`{{${token}}}`}
+                    <FillRateBadge token={token} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs">
+                  <p className="text-xs font-medium">{`{{${token}}}`}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Custom variable — reads from each lead&apos;s{" "}
+                    <code className="text-[10px]">extra_data</code> JSON (set via CSV import).
+                  </p>
+                  {fillRates?.[token] !== undefined && fillRates[token] < 1 && (
+                    <p className={cn(
+                      "text-xs mt-1 font-medium",
+                      fillRates[token] === 0 ? "text-red-500" : "text-amber-500"
+                    )}>
+                      {fillRates[token] === 0
+                        ? "No leads have this field — will always send as empty"
+                        : `${Math.round(fillRates[token] * 100)}% of leads have this field`}
+                    </p>
+                  )}
+                </TooltipContent>
+              </Tooltip>
+            );
+          })}
         </TooltipProvider>
       </div>
+
+      {/* Textarea */}
       <textarea
         id={id}
         ref={textareaRef}
@@ -171,25 +292,64 @@ export const MessageTemplateEditor = forwardRef<
         placeholder={placeholder}
         disabled={disabled}
       />
-      {showCharLimit && (
-        <div className="flex justify-between text-xs">
-          <span className="text-muted-foreground">
-            Missing values (e.g. blank <code>company</code>) render as empty string — no placeholder text.
+
+      {/* Live preview */}
+      {previewSegs && (
+        <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap">
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium block mb-1">
+            Preview
           </span>
+          {previewSegs.map((seg, i) => {
+            if (seg.kind === "text") {
+              return <span key={i}>{seg.content}</span>;
+            }
+            if (seg.kind === "filled") {
+              return (
+                <span key={i}>
+                  {seg.leading}
+                  <mark className="bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 rounded px-0.5 not-italic">
+                    {seg.example}
+                  </mark>
+                </span>
+              );
+            }
+            // empty
+            return (
+              <span key={i} title={`{{${seg.token}}} has no data for any lead`}>
+                <span className="inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400 text-xs rounded px-1 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700">
+                  ⚠ {`{{${seg.token}}}`}
+                </span>
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Footer: hint + optional char count */}
+      <div className="flex justify-between text-xs">
+        <span className="text-muted-foreground">
+          A space before a variable (e.g.{" "}
+          <code className="text-[10px]">Hi{" "}{"{{first_name}},"}</code>) is dropped when the
+          field is blank — so you get{" "}
+          <code className="text-[10px]">Hi,</code> not{" "}
+          <code className="text-[10px]">Hi ,</code>.
+        </span>
+        {showCharLimit && (
           <span
-            className={
+            className={cn(
+              "ml-4 shrink-0",
               overLimit
                 ? "text-red-500 font-medium"
                 : approachingLimit
                 ? "text-amber-500"
                 : "text-muted-foreground"
-            }
+            )}
           >
             {charCount} / 300 chars
             {overLimit && " — LinkedIn will reject this"}
           </span>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 });

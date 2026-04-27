@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { CampaignActivityChart } from "@/components/stats/campaign-chart";
@@ -16,6 +16,7 @@ import {
   useAssignListToCampaign,
   useUnassignListFromCampaign,
   useArchiveCampaign,
+  useLeads,
 } from "@/hooks/use-queries";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -52,6 +53,43 @@ export default function CampaignDetailPage({
   const { data: allLists } = useLeadLists();
   const assign = useAssignListToCampaign();
   const unassign = useUnassignListFromCampaign();
+  const { data: leadSample } = useLeads(id, { per_page: 200 });
+
+  // Compute per-variable fill rates from the lead sample (0–1).
+  const fillRates = useMemo(() => {
+    const leads = leadSample?.items;
+    if (!leads || leads.length === 0) return undefined;
+    const total = leads.length;
+    const FIELD_MAP: Record<string, "first_name" | "last_name" | "company" | "title"> = {
+      first_name: "first_name",
+      firstname:  "first_name",
+      last_name:  "last_name",
+      lastname:   "last_name",
+      company:    "company",
+      title:      "title",
+    };
+    const rates: Record<string, number> = {};
+    for (const [token, field] of Object.entries(FIELD_MAP)) {
+      const filled = leads.filter(l => l[field] != null && l[field] !== "").length;
+      rates[token] = filled / total;
+    }
+    // extra_data keys
+    const extraKeys = new Set<string>();
+    for (const lead of leads) {
+      if (lead.extra_data) {
+        for (const k of Object.keys(lead.extra_data)) extraKeys.add(k.toLowerCase());
+      }
+    }
+    for (const key of extraKeys) {
+      const filled = leads.filter(l =>
+        l.extra_data && key in l.extra_data &&
+        l.extra_data[key] != null && l.extra_data[key] !== ""
+      ).length;
+      rates[key] = filled / total;
+    }
+    return rates;
+  }, [leadSample]);
+
   const [selectedList, setSelectedList] = useState("");
   const [editName, setEditName] = useState("");
   const [editConnMsg, setEditConnMsg] = useState("");
@@ -150,6 +188,23 @@ export default function CampaignDetailPage({
       toast.info("No changes to save");
       return;
     }
+
+    // Warn if any saved template references a variable that is empty for every lead.
+    if (fillRates) {
+      const templatesToCheck = [editConnMsg, editFollowupMsg1, editFollowupMsg2, editFollowupMsg3].filter(Boolean);
+      const zeroVars = new Set<string>();
+      for (const tmpl of templatesToCheck) {
+        for (const m of tmpl.matchAll(/\{\{(\w+)\}\}/g)) {
+          if (fillRates[m[1].toLowerCase()] === 0) zeroVars.add(m[1].toLowerCase());
+        }
+      }
+      if (zeroVars.size > 0) {
+        toast.warning(
+          `${[...zeroVars].map(v => `{{${v}}}`).join(", ")} ${zeroVars.size === 1 ? "has" : "have"} no data for any lead — will always render as empty.`
+        );
+      }
+    }
+
     updateCampaign.mutate(data, {
       onSuccess: () => {
         toast.success("Campaign settings saved");
@@ -506,6 +561,7 @@ export default function CampaignDetailPage({
                     placeholder="Hi {{first_name}}, I came across your profile and would love to connect."
                     minHeight={110}
                     showCharLimit
+                    fillRates={fillRates}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -581,6 +637,7 @@ export default function CampaignDetailPage({
                     placeholder="Hi {{first_name}}, thanks for connecting! I wanted to reach out because…"
                     disabled={!editFollowupEnabled}
                     minHeight={96}
+                    fillRates={fillRates}
                   />
                 </div>
                 <div>
@@ -593,6 +650,7 @@ export default function CampaignDetailPage({
                     placeholder="Second message — sent after message 1 goes through."
                     disabled={!editFollowupEnabled || !editFollowupMsg1}
                     minHeight={96}
+                    fillRates={fillRates}
                   />
                 </div>
                 <div>
@@ -605,6 +663,7 @@ export default function CampaignDetailPage({
                     placeholder="Third message — last in the sequence."
                     disabled={!editFollowupEnabled || !editFollowupMsg2}
                     minHeight={96}
+                    fillRates={fillRates}
                   />
                 </div>
               </CardContent>

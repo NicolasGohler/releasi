@@ -10,7 +10,10 @@ from linauto.db.models import Lead
 
 logger = structlog.get_logger()
 
-_PATTERN = re.compile(r'\{\{(\w+)\}\}')
+# Capture an optional single horizontal-space before the token so that
+# "Hi {{first_name}}," renders "Hi John," when filled and "Hi," (not "Hi ,")
+# when the variable is absent.
+_PATTERN = re.compile(r'([ \t]?)\{\{(\w+)\}\}')
 
 # Map template variable names to Lead model attributes
 _FIELD_MAP = {
@@ -37,26 +40,42 @@ def render_template(template: str, lead: Lead) -> str:
     Missing values are replaced with empty string.
     """
     def _replace(match):
-        var_name = match.group(1).lower()
+        leading_space = match.group(1)   # space already in template (may be "")
+        var_name = match.group(2).lower()
+
+        def _with_space(val: str) -> str:
+            """Return the resolved value, adding a word-boundary space if needed."""
+            if not val:
+                return ""
+            if leading_space:
+                # A space was in the template — include it with the value.
+                return leading_space + val
+            # No space in the template. Add one if the token is flush against
+            # a non-whitespace character (e.g. "Hi{{name}}" → "Hi Name").
+            pos = match.start()
+            char_before = match.string[pos - 1] if pos > 0 else ""
+            if char_before and not char_before.isspace():
+                return " " + val
+            return val
 
         # Check standard field map
         attr_name = _FIELD_MAP.get(var_name)
         if attr_name:
             value = getattr(lead, attr_name, None)
             if value:
-                return value
+                return _with_space(value)
             logger.debug("template.missing_field", variable=var_name, lead_url=lead.linkedin_url)
             return ""
 
         # Check extra_data
         if lead.extra_data and var_name in lead.extra_data:
-            return str(lead.extra_data[var_name])
+            return _with_space(str(lead.extra_data[var_name]))
 
         # Also try original case in extra_data
         if lead.extra_data:
             for key, val in lead.extra_data.items():
                 if key.lower() == var_name:
-                    return str(val)
+                    return _with_space(str(val))
 
         logger.debug("template.unknown_variable", variable=var_name, lead_url=lead.linkedin_url)
         return ""
@@ -66,7 +85,7 @@ def render_template(template: str, lead: Lead) -> str:
 
 def extract_variables(template: str) -> list:
     """Extract all {{variable}} names from a template."""
-    return _PATTERN.findall(template)
+    return [m.group(2) for m in _PATTERN.finditer(template)]
 
 
 def validate_template(template: str, lead: Optional[Lead] = None) -> list:
