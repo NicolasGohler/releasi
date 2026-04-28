@@ -501,25 +501,6 @@ export default function AccountDetailPage({
                     />
                   </div>
                 </div>
-                <div>
-                  <label className="text-xs text-muted-foreground">
-                    Auto-Withdraw Threshold
-                    {account.pending_requests != null && (
-                      <span className={`ml-2 ${account.pending_requests > 1000 ? "text-amber-400" : "text-muted-foreground"}`}>
-                        ({account.pending_requests} pending now)
-                      </span>
-                    )}
-                  </label>
-                  <Input
-                    type="number"
-                    value={editWithdrawThreshold}
-                    onChange={(e) => setEditWithdrawThreshold(e.target.value)}
-                    placeholder="e.g. 1500 — withdraws oldest invitations when exceeded"
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Leave empty to disable. When pending invitations exceed this number, the oldest are automatically withdrawn (10/day during acceptance check).
-                  </p>
-                </div>
                 <ProxySettings
                   value={proxyForm}
                   onChange={setProxyForm}
@@ -538,53 +519,94 @@ export default function AccountDetailPage({
               <CardHeader>
                 <CardTitle>Pending Connection Requests</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4 max-w-lg">
-                <p className="text-sm text-muted-foreground">
-                  Fetch the live count from LinkedIn, then withdraw a batch of the oldest or newest pending requests.
-                </p>
+              <CardContent className="space-y-5 max-w-lg">
 
-                {/* Count fetch */}
-                <div className="flex items-center gap-3">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={async () => {
-                      setInvCountLoading(true);
-                      setInvCount(null);
-                      try {
-                        const res = await fetchInvitationCount(id);
-                        setInvCount(res.count);
-                      } catch (err: unknown) {
-                        toast.error(err instanceof Error ? err.message : "Failed to fetch count");
-                      } finally {
-                        setInvCountLoading(false);
-                      }
-                    }}
-                    disabled={invCountLoading || withdrawStatus?.status === "running"}
-                  >
-                    {invCountLoading ? (
-                      <span className="flex items-center gap-2">
-                        <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                        Fetching…
-                      </span>
-                    ) : invCount !== null ? "Refresh count" : "Check pending count"}
-                  </Button>
-                  {invCount !== null && (
-                    <span className="text-sm font-semibold">
-                      {invCount.toLocaleString()} pending
-                    </span>
-                  )}
+                {/* Two counts side by side */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-md border border-border bg-muted/30 px-4 py-3">
+                    <p className="text-xs text-muted-foreground mb-1">Sent via Releasi</p>
+                    <p className="text-2xl font-semibold tabular-nums">
+                      {account.pending_requests ?? 0}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-0.5">awaiting acceptance</p>
+                  </div>
+                  <div className="rounded-md border border-border bg-muted/30 px-4 py-3">
+                    <p className="text-xs text-muted-foreground mb-1">Total on LinkedIn</p>
+                    {invCount !== null ? (
+                      <>
+                        <p className="text-2xl font-semibold tabular-nums">{invCount.toLocaleString()}</p>
+                        <button
+                          className="text-xs text-muted-foreground hover:text-foreground mt-0.5 underline-offset-2 hover:underline"
+                          onClick={async () => {
+                            setInvCountLoading(true);
+                            try {
+                              const res = await fetchInvitationCount(id);
+                              setInvCount(res.count);
+                            } catch (err: unknown) {
+                              toast.error(err instanceof Error ? err.message : "Failed to fetch count");
+                            } finally {
+                              setInvCountLoading(false);
+                            }
+                          }}
+                          disabled={invCountLoading || withdrawStatus?.status === "running"}
+                        >
+                          {invCountLoading ? "Refreshing…" : "Refresh"}
+                        </button>
+                      </>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="mt-1"
+                        onClick={async () => {
+                          setInvCountLoading(true);
+                          try {
+                            const res = await fetchInvitationCount(id);
+                            setInvCount(res.count);
+                          } catch (err: unknown) {
+                            toast.error(err instanceof Error ? err.message : "Failed to fetch count");
+                          } finally {
+                            setInvCountLoading(false);
+                          }
+                        }}
+                        disabled={invCountLoading || withdrawStatus?.status === "running"}
+                      >
+                        {invCountLoading ? (
+                          <span className="flex items-center gap-2">
+                            <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                            </svg>
+                            Fetching…
+                          </span>
+                        ) : "Fetch live count"}
+                      </Button>
+                    )}
+                  </div>
                 </div>
 
-                {/* Withdraw controls — only shown once count is known */}
+                {/* Auto-withdraw threshold */}
+                <div>
+                  <label className="text-xs text-muted-foreground">Auto-withdraw threshold</label>
+                  <Input
+                    type="number"
+                    value={editWithdrawThreshold}
+                    onChange={(e) => setEditWithdrawThreshold(e.target.value)}
+                    placeholder="e.g. 1500 — leave empty to disable"
+                    className="mt-1"
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    When the LinkedIn total exceeds this number, the 10 oldest are withdrawn automatically each day during the acceptance check.
+                  </p>
+                </div>
+
+                {/* Manual withdraw — only shown once live count is known */}
                 {invCount !== null && (
                   <div className="space-y-3 border-t border-border pt-4">
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Withdraw a batch now</p>
                     <div className="flex items-end gap-3">
                       <div>
-                        <label className="text-xs text-muted-foreground">Number to withdraw</label>
+                        <label className="text-xs text-muted-foreground">Count</label>
                         <Input
                           type="number"
                           min={1}
@@ -603,8 +625,8 @@ export default function AccountDetailPage({
                           onChange={(e) => setWithdrawOrder(e.target.value as "oldest" | "newest")}
                           disabled={withdrawStatus?.status === "running"}
                         >
-                          <option value="oldest">Oldest</option>
-                          <option value="newest">Newest</option>
+                          <option value="oldest">Oldest first</option>
+                          <option value="newest">Newest first</option>
                         </select>
                       </div>
                       <Button
@@ -617,15 +639,13 @@ export default function AccountDetailPage({
                             toast.error("Enter a number between 1 and 100");
                             return;
                           }
-                          if (!confirm(`Withdraw ${n} ${withdrawOrder} pending connection requests?`)) return;
+                          if (!confirm(`Withdraw ${n} ${withdrawOrder === "oldest" ? "oldest" : "newest"} pending connection requests?`)) return;
                           setWithdrawStatus(null);
                           setWithdrawTaskId(null);
                           try {
                             const res = await startWithdrawal(id, n, withdrawOrder);
                             setWithdrawTaskId(res.task_id);
                             setWithdrawStatus({ status: "running", withdrawn: [], db_updated: 0, error: null });
-
-                            // Poll until done
                             const poll = async () => {
                               try {
                                 const s = await pollWithdrawalStatus(id, res.task_id);
@@ -645,20 +665,18 @@ export default function AccountDetailPage({
                           }
                         }}
                       >
-                        Withdraw
+                        {withdrawStatus?.status === "running" ? (
+                          <span className="flex items-center gap-2">
+                            <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                            </svg>
+                            Withdrawing…
+                          </span>
+                        ) : "Withdraw"}
                       </Button>
                     </div>
 
-                    {/* Progress / result */}
-                    {withdrawStatus?.status === "running" && (
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <svg className="h-4 w-4 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                        Withdrawing — this may take a few minutes…
-                      </div>
-                    )}
                     {withdrawStatus?.status === "done" && (
                       <div className="rounded-md border border-green-500/30 bg-green-500/10 px-4 py-3">
                         <p className="text-sm font-medium text-green-400">
