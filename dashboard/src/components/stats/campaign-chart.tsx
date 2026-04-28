@@ -193,9 +193,9 @@ export function CampaignActivityChart({ campaignId, totalLeads }: CampaignActivi
                 <span style={{ color: "hsl(var(--muted-foreground))" }}>{value}</span>
               )}
             />
-            <Bar yAxisId="left" dataKey="sent"     name="Sent"     fill="#3b82f6" radius={[3,3,0,0]} maxBarSize={32} />
-            <Bar yAxisId="left" dataKey="accepted" name="Accepted" fill="#22c55e" radius={[3,3,0,0]} maxBarSize={32} />
-            <Bar yAxisId="left" dataKey="errors"   name="Errors"   fill="#ef4444" radius={[3,3,0,0]} maxBarSize={32} />
+            <Bar yAxisId="left" dataKey="sent"     name="Sent"     fill="#3b82f6" radius={[3,3,0,0]} maxBarSize={32} activeBar={{ fillOpacity: 0.75 }} />
+            <Bar yAxisId="left" dataKey="accepted" name="Accepted" fill="#22c55e" radius={[3,3,0,0]} maxBarSize={32} activeBar={{ fillOpacity: 0.75 }} />
+            <Bar yAxisId="left" dataKey="errors"   name="Errors"   fill="#ef4444" radius={[3,3,0,0]} maxBarSize={32} activeBar={{ fillOpacity: 0.75 }} />
             <Line
               yAxisId="right"
               dataKey="pending"

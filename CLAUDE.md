@@ -23,6 +23,15 @@ cd /root/linauto && git pull && docker restart linauto
 Or use the deploy script: `ssh root@REDACTED 'cd /root/linauto && bash scripts/deploy.sh'`
 
 Only rebuild the image when changing **dependencies** (`pyproject.toml`) or **`config.py`/`models.py`** (pydantic/SQLAlchemy schema changes). `docker-compose build` is broken (v1.29 incompatibility) — use `docker run` directly:
+
+**Secrets are stored in `/root/linauto/.env`** (not inline in the command — keeps them out of `ps aux`). Create/update it once:
+```bash
+cat > /root/linauto/.env << 'EOF'
+LINAUTO_API_KEY=REDACTED
+EOF
+chmod 600 /root/linauto/.env
+```
+
 ```bash
 cd /root/linauto && git pull
 docker-compose build
@@ -32,8 +41,8 @@ docker run -d --name linauto --restart unless-stopped \
   -v /root/linauto/config/settings.yaml:/app/config/settings.yaml:ro \
   -v /root/linauto/src:/app/src \
   -p 8000:8000 -p 6080:6080 \
+  --env-file /root/linauto/.env \
   -e LINAUTO_API_ENABLED=true \
-  -e LINAUTO_API_KEY=REDACTED \
   -e "LINAUTO_CORS_ORIGINS=[]" \
   -e LINAUTO_LOG_LEVEL=INFO -e TZ=Europe/Berlin \
   --memory=3g --cpus=1.5 \
@@ -54,6 +63,11 @@ The dashboard (Vercel, Next.js) and backend API (FastAPI on `REDACTED:8000`) are
 3. **Rate limiting.** `slowapi` is wired in `src/linauto/api/app.py` at 120 req/min per client IP (X-Forwarded-For aware — the Next proxy forwards the real client IP). Scheduler jobs run in-process and do NOT hit HTTP, so they bypass the limit. If you see 429s in dashboard usage, raise `default_limits` in `app.py` rather than disabling the middleware.
 
 4. **Vercel Deployment Protection** (manual toggle on Vercel project → Settings → Deployment Protection) is the outer gate. Without it, anyone with the URL reaches the Next.js app — which can't leak the key directly, but can still drive the proxy. Keep it enabled.
+
+5. **Dashboard password layer** (`dashboard/src/middleware.ts`). A second auth layer sits inside the Next.js app: every request checks for a signed `releasi_session` cookie. Sessions expire after **1 week**. Required Vercel env vars (server-only):
+   - `DASHBOARD_SECRET` — random string used to sign session cookies (generate with `openssl rand -hex 32`)
+   - `DASHBOARD_PASSWORD` — the password shown at `/login`
+   If either is unset, the password gate is disabled (safe for local dev). To force logout, rotate `DASHBOARD_SECRET`.
 
 5. **Adding a new API call in `lib/api.ts`**: use the existing `apiFetch` helper or fetch to `/api/v1/...` (same-origin). Never build absolute URLs to `REDACTED:8000` — that bypasses the proxy and would require re-exposing the key.
 

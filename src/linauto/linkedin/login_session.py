@@ -9,6 +9,7 @@ browser's profile. Cookies are extracted after login and saved to DB.
 from __future__ import annotations
 
 import asyncio
+import secrets
 import shutil
 import subprocess
 import os
@@ -24,6 +25,7 @@ logger = structlog.get_logger()
 DISPLAY = ":99"
 VNC_PORT = 5999
 NOVNC_PORT = 6080
+IDLE_TIMEOUT_SECONDS = 30 * 60  # 30 minutes
 
 
 class LoginSessionManager:
@@ -37,6 +39,8 @@ class LoginSessionManager:
         self._account_id: Optional[str] = None
         self._processes: list[subprocess.Popen] = []
         self._temp_dir: Optional[str] = None
+        self._token: Optional[str] = None
+        self._idle_task: Optional[asyncio.Task] = None
 
     @classmethod
     def get_instance(cls) -> LoginSessionManager:
@@ -69,7 +73,7 @@ class LoginSessionManager:
                 "x11vnc",
                 "-display", DISPLAY,
                 "-nopw",
-                "-listen", "0.0.0.0",
+                "-listen", "localhost",
                 "-rfbport", str(VNC_PORT),
                 "-forever",
                 "-shared",
@@ -81,21 +85,29 @@ class LoginSessionManager:
         self._processes.append(proc)
         logger.info("login_session.vnc_started", port=VNC_PORT)
 
-    def _start_websockify(self):
-        """Start websockify to bridge noVNC web client to VNC."""
+    def _start_websockify(self, token_dir: str):
+        """Start websockify with FileTokenPlugin so each session requires a secret token."""
         novnc_dir = "/usr/share/novnc"
         proc = subprocess.Popen(
             [
                 "websockify",
                 "--web", novnc_dir,
+                "--token-plugin", "FileTokenPlugin",
+                "--token-source", token_dir,
                 str(NOVNC_PORT),
-                f"localhost:{VNC_PORT}",
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         self._processes.append(proc)
         logger.info("login_session.websockify_started", port=NOVNC_PORT)
+
+    async def _idle_timeout_task(self):
+        """Auto-terminate the session after IDLE_TIMEOUT_SECONDS."""
+        await asyncio.sleep(IDLE_TIMEOUT_SECONDS)
+        if self.is_active:
+            logger.info("login_session.idle_timeout", account_id=self._account_id)
+            await self._cleanup()
 
     async def start_session(
         self,
@@ -119,7 +131,7 @@ class LoginSessionManager:
         the user lands on an authenticated LinkedIn page (browse mode). When
         omitted the browser starts at the login page (login mode).
 
-        Returns the noVNC URL path for the user to access.
+        Returns the noVNC URL path (including secret token) for the user to access.
         """
         if self.is_active:
             raise RuntimeError(
@@ -133,13 +145,22 @@ class LoginSessionManager:
         self._temp_dir = tempfile.mkdtemp(prefix=f"linauto_login_{account_id}_")
         logger.info("login_session.temp_dir_created", path=self._temp_dir)
 
+        # Generate a cryptographically random token for this session.
+        # websockify FileTokenPlugin maps the token to the VNC target so only
+        # a client that knows the token can connect — port 6080 alone is not enough.
+        self._token = secrets.token_urlsafe(24)
+        token_dir = os.path.join(self._temp_dir, "tokens")
+        os.makedirs(token_dir, exist_ok=True)
+        with open(os.path.join(token_dir, self._token), "w") as f:
+            f.write(f"localhost:{VNC_PORT}")
+
         # Start display stack
         os.environ["DISPLAY"] = DISPLAY
         self._start_xvfb()
         await asyncio.sleep(1)
         self._start_vnc()
         await asyncio.sleep(0.5)
-        self._start_websockify()
+        self._start_websockify(token_dir)
         await asyncio.sleep(0.5)
 
         # Use the same deterministic UA as the pool browser
@@ -192,9 +213,14 @@ class LoginSessionManager:
             }])
         await page.goto(start_url, wait_until="domcontentloaded")
 
+        # Schedule automatic teardown after the idle timeout
+        self._idle_task = asyncio.create_task(self._idle_timeout_task())
+
         logger.info("login_session.started", account_id=account_id, browse_mode=bool(li_at_cookie))
 
-        return f"/vnc.html?autoconnect=true&resize=scale"
+        # The token is part of the WebSocket path that noVNC connects to.
+        # Without the correct token the WebSocket handshake is rejected by websockify.
+        return f"/vnc.html?path=websockify/{self._token}&autoconnect=true&resize=scale"
 
     async def finish_session(self) -> dict:
         """
@@ -258,7 +284,16 @@ class LoginSessionManager:
         return result
 
     async def _cleanup(self):
-        """Stop all processes, close browser, and remove temp directory."""
+        """Stop all processes, close browser, remove temp directory, and cancel idle timer."""
+        # Cancel the idle timeout task if it's still running
+        if self._idle_task and not self._idle_task.done():
+            self._idle_task.cancel()
+            try:
+                await self._idle_task
+            except asyncio.CancelledError:
+                pass
+        self._idle_task = None
+
         if self._context:
             try:
                 await self._context.close()
@@ -285,7 +320,7 @@ class LoginSessionManager:
                     pass
         self._processes.clear()
 
-        # Remove temporary profile directory
+        # Remove temporary profile directory (includes token dir)
         if self._temp_dir:
             try:
                 shutil.rmtree(self._temp_dir, ignore_errors=True)
@@ -295,4 +330,5 @@ class LoginSessionManager:
             self._temp_dir = None
 
         self._account_id = None
+        self._token = None
         logger.info("login_session.cleaned_up")

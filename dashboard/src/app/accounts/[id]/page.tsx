@@ -96,12 +96,29 @@ export default function AccountDetailPage({
   if (isLoading) {
     return (
       <div className="space-y-6">
-        <Skeleton className="h-8 w-64" />
-        <div className="grid grid-cols-4 gap-4">
-          {Array.from({ length: 4 }).map((_, i) => (
+        {/* Header skeleton */}
+        <div className="sticky top-0 z-20 bg-background border-b border-border -mx-6 px-6 py-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <Skeleton className="h-9 w-9 rounded-full shrink-0" />
+              <Skeleton className="h-6 w-44" />
+              <Skeleton className="h-5 w-16 rounded-full" />
+            </div>
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-8 w-32" />
+              <Skeleton className="h-8 w-24" />
+              <Skeleton className="h-8 w-16" />
+            </div>
+          </div>
+        </div>
+        {/* Stat card skeletons */}
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+          {Array.from({ length: 5 }).map((_, i) => (
             <Skeleton key={i} className="h-20" />
           ))}
         </div>
+        {/* Chart skeleton */}
+        <Skeleton className="h-72 w-full" />
       </div>
     );
   }
@@ -161,8 +178,8 @@ export default function AccountDetailPage({
   return (
     <div>
       {/* Sticky header */}
-      <div className="sticky top-0 z-20 bg-background border-b border-border -mx-6 px-6 py-3 mb-6">
-        <div className="flex items-center justify-between gap-4">
+      <div className="sticky top-0 z-20 bg-background border-b border-border -mx-6 mb-6">
+        <div className="flex items-center justify-between gap-4 px-6 py-3">
           <div className="flex items-center gap-3 min-w-0">
             <div className="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-muted">
               <img
@@ -206,7 +223,8 @@ export default function AccountDetailPage({
                     const novncBase =
                       process.env.NEXT_PUBLIC_NOVNC_URL ||
                       `http://${window.location.hostname}:6080`;
-                    const url = `${novncBase}${res.novnc_url}`;
+                    const title = encodeURIComponent(`LinkedIn — ${account.name}`);
+                    const url = `${novncBase}${res.novnc_url}&title=${title}`;
                     if (win) {
                       win.location.href = url;
                     } else {
@@ -234,7 +252,6 @@ export default function AccountDetailPage({
                 onClick={async () => {
                   try { await closeBrowseSession(id); } catch { /* ignore */ }
                   setBrowseSessionActive(false);
-                  toast.info("Browse session closed");
                 }}
               >
                 <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
@@ -270,6 +287,25 @@ export default function AccountDetailPage({
             </Button>
           </div>
         </div>
+
+        {/* Persistent banner — shown while a browse session is active */}
+        {browseSessionActive && (
+          <div className="flex items-center justify-between gap-4 border-t border-amber-500/30 bg-amber-500/10 px-6 py-2">
+            <div className="flex items-center gap-2 text-sm text-amber-400">
+              <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
+              LinkedIn session active — close the tab or click End Session when done
+            </div>
+            <button
+              className="shrink-0 text-xs font-medium text-amber-400 hover:text-amber-300 transition-colors"
+              onClick={async () => {
+                try { await closeBrowseSession(id); } catch { /* ignore */ }
+                setBrowseSessionActive(false);
+              }}
+            >
+              End Session
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="space-y-6">
@@ -299,7 +335,7 @@ export default function AccountDetailPage({
 
         <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
           <StatCard label="Sent (30d)" value={totalSent} />
-          <StatCard label="Accepted" value={totalAccepted} sub={`${acceptRate}% rate`} />
+          <StatCard label="Accepted" value={totalAccepted} badge={totalSent > 0 ? `${acceptRate}%` : undefined} badgeColor="green" />
           <StatCard label="Errors" value={totalErrors} />
           <StatCard label="Pending Requests" value={account.pending_requests ?? 0} sub={account.pending_requests != null && account.pending_requests > 1000 ? "Over 1K — risk of limits" : undefined} />
           <StatCard label="Daily Target" value={account.daily_limit} />
@@ -317,10 +353,10 @@ export default function AccountDetailPage({
           <TabsContent value="stats" className="mt-4">
             <Card>
               <CardHeader>
-                <CardTitle>Daily Activity (30 days)</CardTitle>
+                <CardTitle>Daily Activity</CardTitle>
               </CardHeader>
               <CardContent>
-                <DailyChart data={stats ?? []} />
+                <DailyChart accountId={id} />
               </CardContent>
             </Card>
           </TabsContent>
@@ -719,7 +755,8 @@ export default function AccountDetailPage({
                           const novncBase =
                             process.env.NEXT_PUBLIC_NOVNC_URL ||
                             `http://${window.location.hostname}:6080`;
-                          const url = `${novncBase}${res.novnc_url}`;
+                          const title = encodeURIComponent(`LinkedIn Login — ${account.name}`);
+                          const url = `${novncBase}${res.novnc_url}&title=${title}`;
                           if (loginWindow) {
                             loginWindow.location.href = url;
                           } else {
@@ -769,7 +806,6 @@ export default function AccountDetailPage({
                         onClick={async () => {
                           try { await cancelLoginSession(id); } catch { /* ignore */ }
                           setLoginSessionActive(false);
-                          toast.info("Login session cancelled");
                         }}
                       >
                         Cancel
