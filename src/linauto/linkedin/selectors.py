@@ -187,8 +187,11 @@ MESSAGE_SEND_BUTTON = [
 
 INVITATION_MANAGER_URL = "https://www.linkedin.com/mynetwork/invitation-manager/sent/"
 
-# Invitation cards on the sent invitations page
+# Invitation cards on the sent invitations page.
+# Primary: any li that contains a Withdraw button (content-based, survives class renames).
+# Fallbacks: legacy class-based selectors.
 INVITATION_CARDS = [
+    "li:has(button:has-text('Withdraw'))",
     "li.invitation-card",
     ".mn-invitation-list li",
     "[data-view-name='invitation-card']",
@@ -219,11 +222,27 @@ INVITATION_WITHDRAW_CONFIRM = [
     '.artdeco-modal button:has-text("Withdraw")',
 ]
 
-# Pending invitation count (header area)
+# Pending invitation count — extracted via JS from the "People (N)" filter pill.
+# The JS expression is used directly in get_pending_invitation_count(); these
+# selectors are kept as a CSS fallback only.
 INVITATION_PENDING_COUNT = [
     ".mn-invitation-manager__header h2",
     "header h1",
 ]
+
+# JS expression that reads the count from the "People (N)" filter pill.
+# Returns the integer count, or null if not found.
+INVITATION_PENDING_COUNT_JS = """
+() => {
+    const btns = document.querySelectorAll('button, [role="tab"]');
+    for (const btn of btns) {
+        const text = btn.textContent || '';
+        const m = text.match(/People\\s*\\((\\d[\\d,]*)\\)/i);
+        if (m) return parseInt(m[1].replace(/,/g, ''), 10);
+    }
+    return null;
+}
+"""
 
 # Load more invitations
 INVITATION_LOAD_MORE = [

@@ -977,25 +977,23 @@ class LinkedInActions:
         return "not_connected"
 
     async def get_pending_invitation_count(self) -> int:
-        """Navigate to invitation manager and get the pending invitation count."""
+        """Navigate to invitation manager and return the People count from the filter pill."""
         nav = await self.navigator.go_to_invitation_manager()
         if not nav.success or not nav.session_valid:
             return -1
 
-        # Try to parse count from page header (e.g. "123 Sent")
-        count_el = await self._find_element(selectors.INVITATION_PENDING_COUNT, timeout_ms=5000)
-        if count_el:
-            text = await count_el.text_content()
-            import re
-            match = re.search(r'(\d[\d,]*)', text or "")
-            if match:
-                return int(match.group(1).replace(",", ""))
+        # Primary: read the "People (N)" filter pill via JS — survives class renames.
+        await self.page.wait_for_load_state("domcontentloaded")
+        await self.delay.micro_delay(1.0, 2.0)
+        count = await self.page.evaluate(selectors.INVITATION_PENDING_COUNT_JS)
+        if count is not None:
+            return count
 
-        # Fallback: count visible cards
+        # Fallback: count visible cards on the first page only (approximate).
         for sel in selectors.INVITATION_CARDS:
-            count = await self.page.locator(sel).count()
-            if count > 0:
-                return count
+            n = await self.page.locator(sel).count()
+            if n > 0:
+                return n
 
         return 0
 
@@ -1383,12 +1381,20 @@ class LinkedInActions:
             return InvitationSnapshot(success=False, session_valid=True, urls=[])
 
     async def withdraw_oldest_invitations(self, count: int, already_on_page: bool = False) -> list:
-        """
-        Withdraw the oldest N invitations from the sent invitations page.
-        Returns list of profile URLs that were withdrawn.
+        """Backwards-compat wrapper — delegates to withdraw_invitations(order='oldest')."""
+        return await self.withdraw_invitations(count, order="oldest", already_on_page=already_on_page)
 
-        When already_on_page=True, skips navigation and initial load-more loop
-        (caller already loaded the page via get_sent_invitation_urls).
+    async def withdraw_invitations(
+        self,
+        count: int,
+        order: str = "oldest",
+        already_on_page: bool = False,
+    ) -> list:
+        """
+        Withdraw N invitations from the sent invitations page.
+        order='oldest'  → withdraws from the bottom of the list (oldest sent first).
+        order='newest'  → withdraws from the top of the list (most recently sent first).
+        Returns list of profile URLs that were withdrawn.
         """
         if not already_on_page:
             nav = await self.navigator.go_to_invitation_manager()
@@ -1397,15 +1403,16 @@ class LinkedInActions:
 
         withdrawn_urls = []
 
-        if not already_on_page:
-            # Scroll to load more older invitations
-            for _ in range(5):
-                load_more = await self._find_element(selectors.INVITATION_LOAD_MORE, timeout_ms=2000)
-                if load_more:
-                    await load_more.click()
-                    await self.delay.micro_delay(1.0, 2.0)
-                else:
+        if not already_on_page and order == "oldest":
+            # Load all pages so older invitations are visible.
+            for _ in range(50):
+                await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await self.delay.micro_delay(0.5, 1.0)
+                load_more = await self._find_element(selectors.INVITATION_LOAD_MORE, timeout_ms=3000)
+                if not load_more:
                     break
+                await load_more.click()
+                await self.delay.micro_delay(2.0, 3.5)
 
         # Find all invitation cards
         cards = None
@@ -1421,8 +1428,13 @@ class LinkedInActions:
         if not cards or card_count == 0:
             return []
 
-        # Process from the last card (oldest) upward
-        for i in range(card_count - 1, max(card_count - 1 - count, -1), -1):
+        # Build iteration order: oldest → last card downward; newest → first card upward
+        if order == "oldest":
+            indices = range(card_count - 1, max(card_count - 1 - count, -1), -1)
+        else:
+            indices = range(0, min(count, card_count))
+
+        for i in indices:
             if len(withdrawn_urls) >= count:
                 break
 
@@ -1457,6 +1469,6 @@ class LinkedInActions:
                 await self.delay.micro_delay(1.0, 2.0)
                 if href:
                     withdrawn_urls.append(href)
-                logger.info("action.invitation_withdrawn", url=href)
+                logger.info("action.invitation_withdrawn", url=href, order=order)
 
         return withdrawn_urls

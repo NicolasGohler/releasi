@@ -319,6 +319,20 @@ c.commit(); c.close()
 
 Context: ~510 pre-system invitations are sitting in LinkedIn. Setting threshold=300 would clean them up at 10/day over ~21 days. The withdrawal happens on the already-loaded invitation manager page (no extra navigation cost). Code is in `runner.py` → `check_acceptances()`, `actions.py` → `withdraw_oldest_invitations()`.
 
+## On-Demand Withdrawal (dashboard UI)
+A manual withdrawal panel lives in the account Settings tab. It lets you:
+1. **Check count** — navigates to `linkedin.com/mynetwork/invitation-manager/sent/` via browser+proxy and reads the "People (N)" filter pill.
+2. **Withdraw N oldest/newest** — runs `actions.withdraw_invitations(count, order)` as a background task; polls `/accounts/{id}/invitations/withdraw/{task_id}` every 3s; marks matched leads `WITHDRAWN` in the DB.
+- API endpoints: `POST /accounts/{id}/invitations/count`, `POST /accounts/{id}/invitations/withdraw`, `GET /accounts/{id}/invitations/withdraw/{task_id}`.
+- Safe limit: 100 per session (LinkedIn tolerates this without triggering automation signals).
+
+## Scheduled Auto-Withdraw (future feature — not yet built)
+Foundation is in place. To add scheduled daily withdrawal:
+1. Add `auto_withdraw_count: Optional[int]` and `auto_withdraw_order: str` columns to the `Account` model (migration required).
+2. Add a `withdraw_invitations_sweep` APScheduler job in `runner.py` (same per-account pattern as `check_acceptances`) — reads those columns, skips accounts where `auto_withdraw_count` is NULL.
+3. Expose the two new fields in the dashboard Account Settings form.
+4. Register the job in `start_scheduler()` with e.g. `CronTrigger(hour=11, minute=0)`.
+
 ## Phase Status
 - Phase 1 (Foundation): COMPLETE — CLI, CSV import, template rendering, browser module
 - Phase 2 (Scheduling & Safety): COMPLETE — Clustered planner, warmup, cooldown, APScheduler, stealth, noise, proxy/timezone

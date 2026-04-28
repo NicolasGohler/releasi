@@ -25,7 +25,7 @@ import { ActivityTimeline } from "@/components/activity-timeline";
 import { LocalTimeCard } from "@/components/accounts/local-time-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { startLoginSession, finishLoginSession, cancelLoginSession, startBrowseSession, closeBrowseSession, getAvatarUrl, checkConnection, replanAccount } from "@/lib/api";
+import { startLoginSession, finishLoginSession, cancelLoginSession, startBrowseSession, closeBrowseSession, getAvatarUrl, checkConnection, replanAccount, fetchInvitationCount, startWithdrawal, pollWithdrawalStatus } from "@/lib/api";
 import { ProxySettings, emptyProxyForm, type ProxyFormValue } from "@/components/proxy-settings";
 
 export default function AccountDetailPage({
@@ -63,6 +63,17 @@ export default function AccountDetailPage({
     reason?: string;
     error?: string;
     elapsed_ms?: number;
+  } | null>(null);
+  const [invCountLoading, setInvCountLoading] = useState(false);
+  const [invCount, setInvCount] = useState<number | null>(null);
+  const [withdrawCount, setWithdrawCount] = useState("20");
+  const [withdrawOrder, setWithdrawOrder] = useState<"oldest" | "newest">("oldest");
+  const [withdrawTaskId, setWithdrawTaskId] = useState<string | null>(null);
+  const [withdrawStatus, setWithdrawStatus] = useState<{
+    status: "running" | "done" | "error";
+    withdrawn: string[];
+    db_updated: number;
+    error: string | null;
   } | null>(null);
 
   if (account && !settingsInitialized) {
@@ -520,6 +531,149 @@ export default function AccountDetailPage({
                 <p className="text-xs text-muted-foreground">
                   Created {new Date(account.created_at.endsWith("Z") ? account.created_at : account.created_at + "Z").toLocaleDateString(undefined, { timeZone: account.timezone ?? undefined })}
                 </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Pending Connection Requests</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4 max-w-lg">
+                <p className="text-sm text-muted-foreground">
+                  Fetch the live count from LinkedIn, then withdraw a batch of the oldest or newest pending requests.
+                </p>
+
+                {/* Count fetch */}
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      setInvCountLoading(true);
+                      setInvCount(null);
+                      try {
+                        const res = await fetchInvitationCount(id);
+                        setInvCount(res.count);
+                      } catch (err: unknown) {
+                        toast.error(err instanceof Error ? err.message : "Failed to fetch count");
+                      } finally {
+                        setInvCountLoading(false);
+                      }
+                    }}
+                    disabled={invCountLoading || withdrawStatus?.status === "running"}
+                  >
+                    {invCountLoading ? (
+                      <span className="flex items-center gap-2">
+                        <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Fetching…
+                      </span>
+                    ) : invCount !== null ? "Refresh count" : "Check pending count"}
+                  </Button>
+                  {invCount !== null && (
+                    <span className="text-sm font-semibold">
+                      {invCount.toLocaleString()} pending
+                    </span>
+                  )}
+                </div>
+
+                {/* Withdraw controls — only shown once count is known */}
+                {invCount !== null && (
+                  <div className="space-y-3 border-t border-border pt-4">
+                    <div className="flex items-end gap-3">
+                      <div>
+                        <label className="text-xs text-muted-foreground">Number to withdraw</label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={100}
+                          value={withdrawCount}
+                          onChange={(e) => setWithdrawCount(e.target.value)}
+                          className="w-24 mt-1"
+                          disabled={withdrawStatus?.status === "running"}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground">Order</label>
+                        <select
+                          className="mt-1 w-28 rounded-md border border-border bg-background px-3 py-2 text-sm"
+                          value={withdrawOrder}
+                          onChange={(e) => setWithdrawOrder(e.target.value as "oldest" | "newest")}
+                          disabled={withdrawStatus?.status === "running"}
+                        >
+                          <option value="oldest">Oldest</option>
+                          <option value="newest">Newest</option>
+                        </select>
+                      </div>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        disabled={withdrawStatus?.status === "running"}
+                        onClick={async () => {
+                          const n = parseInt(withdrawCount, 10);
+                          if (!n || n < 1 || n > 100) {
+                            toast.error("Enter a number between 1 and 100");
+                            return;
+                          }
+                          if (!confirm(`Withdraw ${n} ${withdrawOrder} pending connection requests?`)) return;
+                          setWithdrawStatus(null);
+                          setWithdrawTaskId(null);
+                          try {
+                            const res = await startWithdrawal(id, n, withdrawOrder);
+                            setWithdrawTaskId(res.task_id);
+                            setWithdrawStatus({ status: "running", withdrawn: [], db_updated: 0, error: null });
+
+                            // Poll until done
+                            const poll = async () => {
+                              try {
+                                const s = await pollWithdrawalStatus(id, res.task_id);
+                                setWithdrawStatus(s);
+                                if (s.status === "running") setTimeout(poll, 3000);
+                                else if (s.status === "done") {
+                                  setInvCount(prev => prev !== null ? Math.max(0, prev - s.withdrawn.length) : null);
+                                  toast.success(`Withdrew ${s.withdrawn.length} requests · ${s.db_updated} leads updated`);
+                                } else {
+                                  toast.error(`Withdrawal failed: ${s.error}`);
+                                }
+                              } catch { setTimeout(poll, 3000); }
+                            };
+                            setTimeout(poll, 3000);
+                          } catch (err: unknown) {
+                            toast.error(err instanceof Error ? err.message : "Failed to start withdrawal");
+                          }
+                        }}
+                      >
+                        Withdraw
+                      </Button>
+                    </div>
+
+                    {/* Progress / result */}
+                    {withdrawStatus?.status === "running" && (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <svg className="h-4 w-4 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Withdrawing — this may take a few minutes…
+                      </div>
+                    )}
+                    {withdrawStatus?.status === "done" && (
+                      <div className="rounded-md border border-green-500/30 bg-green-500/10 px-4 py-3">
+                        <p className="text-sm font-medium text-green-400">
+                          Withdrew {withdrawStatus.withdrawn.length} requests
+                          {withdrawStatus.db_updated > 0 && ` · ${withdrawStatus.db_updated} leads marked withdrawn`}
+                        </p>
+                      </div>
+                    )}
+                    {withdrawStatus?.status === "error" && (
+                      <div className="rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3">
+                        <p className="text-sm text-red-400">{withdrawStatus.error}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </CardContent>
             </Card>
 

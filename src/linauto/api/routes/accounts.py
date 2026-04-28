@@ -805,3 +805,124 @@ async def account_stats(
     start = date.today() - timedelta(days=days)
     stats = await repo.get_daily_stats_range(account_id, start, date.today())
     return [DailyStatOut.model_validate(s) for s in stats]
+
+
+# ── Invitation withdrawal ─────────────────────────────────────────────────────
+
+import uuid as _uuid
+
+# In-memory task store: task_id → result dict. Lives for the container lifetime.
+_withdrawal_tasks: dict = {}
+
+
+@router.post("/accounts/{account_id}/invitations/count")
+async def get_invitation_count(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """Navigate to LinkedIn invitation manager and return the People count. ~5-10s."""
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    from linauto.linkedin.pool import get_browser_pool
+    from linauto.linkedin.actions import LinkedInActions
+
+    pool = get_browser_pool()
+    try:
+        pool_context = await pool.acquire(account)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Browser pool unavailable: {e}")
+
+    try:
+        page = await pool_context.new_page()
+        try:
+            actions = LinkedInActions(page)
+            count = await actions.get_pending_invitation_count()
+        finally:
+            await page.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if count == -1:
+        raise HTTPException(status_code=503, detail="Session invalid or navigation failed")
+
+    return {"count": count, "account_id": account_id}
+
+
+@router.post("/accounts/{account_id}/invitations/withdraw")
+async def start_withdrawal(
+    account_id: str,
+    body: dict,
+    background_tasks: BackgroundTasks,
+    repo: Repository = Depends(get_repo),
+):
+    """
+    Start a background withdrawal job. Returns task_id immediately.
+    body: { "count": int (1-100), "order": "oldest" | "newest" }
+    """
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    count = int(body.get("count", 10))
+    order = body.get("order", "oldest")
+    if count < 1 or count > 100:
+        raise HTTPException(status_code=422, detail="count must be between 1 and 100")
+    if order not in ("oldest", "newest"):
+        raise HTTPException(status_code=422, detail="order must be 'oldest' or 'newest'")
+
+    task_id = f"wd-{_uuid.uuid4().hex[:8]}"
+    _withdrawal_tasks[task_id] = {"status": "running", "withdrawn": [], "db_updated": 0, "error": None}
+
+    async def _run(tid: str, acct, n: int, ord_: str):
+        from linauto.linkedin.pool import get_browser_pool
+        from linauto.linkedin.actions import LinkedInActions
+        import re as re_
+
+        try:
+            pool = get_browser_pool()
+            pool_context = await pool.acquire(acct)
+            page = await pool_context.new_page()
+            try:
+                actions = LinkedInActions(page)
+                urls = await actions.withdraw_invitations(n, order=ord_)
+            finally:
+                await page.close()
+
+            # Sync withdrawn URLs to DB leads
+            db_updated = 0
+            for url in urls:
+                m = re_.search(r'/in/([^/?#\s]+)', url)
+                if not m:
+                    continue
+                slug = m.group(1).rstrip('/')
+                updated = await repo.mark_lead_withdrawn_by_slug(slug)
+                if updated:
+                    db_updated += 1
+
+            _withdrawal_tasks[tid] = {
+                "status": "done",
+                "withdrawn": urls,
+                "db_updated": db_updated,
+                "error": None,
+            }
+        except Exception as e:
+            _withdrawal_tasks[tid] = {
+                "status": "error",
+                "withdrawn": [],
+                "db_updated": 0,
+                "error": str(e),
+            }
+
+    background_tasks.add_task(_run, task_id, account, count, order)
+    return {"task_id": task_id}
+
+
+@router.get("/accounts/{account_id}/invitations/withdraw/{task_id}")
+async def get_withdrawal_status(account_id: str, task_id: str):
+    """Poll for withdrawal task status."""
+    task = _withdrawal_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task

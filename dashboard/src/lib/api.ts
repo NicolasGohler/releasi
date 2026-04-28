@@ -344,6 +344,25 @@ export const fetchAvatar = (accountId: string) =>
 export const replanAccount = (id: string) =>
   apiFetch<{ ok: boolean; scheduled: number }>(`/accounts/${id}/replan`, { method: "POST" });
 
+// ── Invitation Withdrawal ────────────────────────────────────────────────
+
+export const fetchInvitationCount = (accountId: string) =>
+  apiFetch<{ count: number; account_id: string }>(
+    `/accounts/${accountId}/invitations/count`,
+    { method: "POST" }
+  );
+
+export const startWithdrawal = (accountId: string, count: number, order: "oldest" | "newest") =>
+  apiFetch<{ task_id: string }>(
+    `/accounts/${accountId}/invitations/withdraw`,
+    { method: "POST", body: JSON.stringify({ count, order }) }
+  );
+
+export const pollWithdrawalStatus = (accountId: string, taskId: string) =>
+  apiFetch<{ status: "running" | "done" | "error"; withdrawn: string[]; db_updated: number; error: string | null }>(
+    `/accounts/${accountId}/invitations/withdraw/${taskId}`
+  );
+
 // ── Connection Check ────────────────────────────────────────────────────
 
 export const checkConnection = (accountId: string) =>

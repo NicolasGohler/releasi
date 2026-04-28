@@ -1129,6 +1129,25 @@ class Repository:
         await self.session.refresh(lead)
         return lead
 
+    async def mark_lead_withdrawn_by_slug(self, slug: str) -> bool:
+        """
+        Mark any CONNECTION_REQUESTED lead whose URL contains slug as WITHDRAWN.
+        Returns True if at least one lead was updated.
+        """
+        result = await self.session.execute(
+            select(Lead).where(
+                Lead.linkedin_url.contains(slug),
+                Lead.status == LeadStatus.CONNECTION_REQUESTED,
+            )
+        )
+        leads = result.scalars().all()
+        if not leads:
+            return False
+        for lead in leads:
+            lead.status = LeadStatus.WITHDRAWN
+        await self.session.commit()
+        return True
+
     async def requeue_lead(self, lead_id: str) -> Lead | None:
         """Re-queue a lead back to PENDING — valid from ERROR, WITHDRAWN, SKIPPED."""
         from linauto.campaign.state_machine import validate_transition, InvalidTransition
