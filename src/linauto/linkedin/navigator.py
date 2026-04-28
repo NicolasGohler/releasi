@@ -168,7 +168,13 @@ class LinkedInNavigator:
             )
 
     async def go_to_invitation_manager(self) -> NavigationResult:
-        """Navigate to the sent invitations page."""
+        """Navigate to sent invitations filtered to People (connection requests).
+
+        LinkedIn's invitation manager is a SPA.  Navigating directly to
+        /sent/CONNECTION/ gets redirected back to /sent/ with no cards.
+        The correct flow is: load /sent/, then click the "People (N)" filter
+        pill — that triggers the SPA to load connection-request cards.
+        """
         try:
             await self._random_delay(0.5, 2.0)
             await self.page.goto(
@@ -176,7 +182,28 @@ class LinkedInNavigator:
                 wait_until="domcontentloaded",
                 timeout=15000,
             )
-            await self._random_delay()
+            await asyncio.sleep(2)
+
+            if not self._check_session(self.page.url):
+                return NavigationResult(
+                    success=True, url=self.page.url, session_valid=False
+                )
+
+            # Click the "People (N)" filter pill to show connection invites only.
+            people_el = await self.page.evaluate_handle("""
+            () => {
+                const all = document.querySelectorAll('a, li, span, button, [role="tab"]');
+                for (const el of all) {
+                    if (/^People\\s*\\(/.test((el.textContent || '').trim())) return el;
+                }
+                return null;
+            }
+            """)
+            el = people_el.as_element()
+            if el:
+                await el.click()
+                await asyncio.sleep(3)
+
             return NavigationResult(
                 success=True,
                 url=self.page.url,

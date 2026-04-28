@@ -187,9 +187,15 @@ MESSAGE_SEND_BUTTON = [
 
 INVITATION_MANAGER_URL = "https://www.linkedin.com/mynetwork/invitation-manager/sent/"
 
+# Withdraw anchors on the invitation manager page (2026+ DOM).
+# LinkedIn renders each "Withdraw" action as an <a> with a specific aria-label.
+# This is the primary selector — use it to find and click the withdraw trigger.
+# After clicking, a confirmation overlay appears with a plain <button>Withdraw</button>.
+INVITATION_WITHDRAW_ANCHOR = 'a[aria-label^="Withdraw invitation"]'
+
 # Invitation cards on the sent invitations page.
-# Primary: any li that contains a Withdraw button (content-based, survives class renames).
-# Fallbacks: legacy class-based selectors.
+# The cards are <div> containers found by traversing up from INVITATION_WITHDRAW_ANCHOR.
+# These CSS selectors are kept for legacy fallback / URL extraction only.
 INVITATION_CARDS = [
     "li:has(button:has-text('Withdraw'))",
     "li.invitation-card",
@@ -208,15 +214,19 @@ INVITATION_CARD_PROFILE_LINK = [
     "a[href*='/in/']",
 ]
 
-# "Withdraw" button on each invitation card
+# "Withdraw" button on each invitation card (legacy — superseded by INVITATION_WITHDRAW_ANCHOR)
 INVITATION_WITHDRAW_BUTTON = [
     "button:has-text('Withdraw')",
     "button[aria-label*='Withdraw']",
     ".invitation-card__action-btn",
 ]
 
-# Confirm withdrawal in modal dialog
+# Confirm withdrawal in modal/overlay.
+# The overlay does NOT have role="dialog" — it is a plain overlay div.
+# The confirm button has innerText "Withdraw" and is visible (offsetParent != null).
+# Matched via JS in withdraw_invitations() — these CSS selectors are fallback only.
 INVITATION_WITHDRAW_CONFIRM = [
+    'button:has-text("Withdraw")',
     '[role="dialog"] button:has-text("Withdraw")',
     'button[aria-label="Withdraw invitation"]',
     '.artdeco-modal button:has-text("Withdraw")',
@@ -234,10 +244,12 @@ INVITATION_PENDING_COUNT = [
 # Returns the integer count, or null if not found.
 INVITATION_PENDING_COUNT_JS = """
 () => {
-    const btns = document.querySelectorAll('button, [role="tab"]');
-    for (const btn of btns) {
-        const text = btn.textContent || '';
-        const m = text.match(/People\\s*\\((\\d[\\d,]*)\\)/i);
+    // Search all elements for "People (N)" — the pill can be an <a>, <li>, <span>, or <button>
+    const all = document.querySelectorAll('a, li, span, button, [role="tab"]');
+    for (const el of all) {
+        // Only leaf-ish elements whose own text (not descendants combined) contains the pattern
+        const text = el.textContent || '';
+        const m = text.match(/^\\s*People\\s*\\((\\d[\\d,]*)\\)\\s*$/i);
         if (m) return parseInt(m[1].replace(/,/g, ''), 10);
     }
     return null;

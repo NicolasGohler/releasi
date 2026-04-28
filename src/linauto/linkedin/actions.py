@@ -977,25 +977,22 @@ class LinkedInActions:
         return "not_connected"
 
     async def get_pending_invitation_count(self) -> int:
-        """Navigate to invitation manager and return the People count from the filter pill."""
+        """Navigate to invitation manager and return the People count from the filter pill.
+
+        go_to_invitation_manager() already clicks the People pill and waits 3s,
+        so the pill text is available immediately after navigation returns.
+        """
         nav = await self.navigator.go_to_invitation_manager()
         if not nav.success or not nav.session_valid:
             return -1
 
-        # Primary: read the "People (N)" filter pill via JS — survives class renames.
-        await self.page.wait_for_load_state("domcontentloaded")
-        await self.delay.micro_delay(1.0, 2.0)
         count = await self.page.evaluate(selectors.INVITATION_PENDING_COUNT_JS)
         if count is not None:
             return count
 
-        # Fallback: count visible cards on the first page only (approximate).
-        for sel in selectors.INVITATION_CARDS:
-            n = await self.page.locator(sel).count()
-            if n > 0:
-                return n
-
-        return 0
+        # Fallback: count visible withdraw anchors on the first loaded page
+        n = await self.page.locator(selectors.INVITATION_WITHDRAW_ANCHOR).count()
+        return n if n > 0 else 0
 
     async def _extract_invitation_urls(self) -> list:
         """Extract all /in/ profile URLs from the currently loaded invitation manager page."""
@@ -1395,80 +1392,101 @@ class LinkedInActions:
         order='oldest'  → withdraws from the bottom of the list (oldest sent first).
         order='newest'  → withdraws from the top of the list (most recently sent first).
         Returns list of profile URLs that were withdrawn.
+
+        DOM strategy (2026+):
+        - Each invite card has an <a aria-label="Withdraw invitation sent to X"> anchor.
+        - Clicking that anchor opens an overlay (no role="dialog") with a plain
+          <button>Withdraw</button> that must be clicked to confirm.
+        - Pagination is pure infinite scroll — no "Load more" button.
         """
         if not already_on_page:
             nav = await self.navigator.go_to_invitation_manager()
             if not nav.success or not nav.session_valid:
                 return []
 
-        withdrawn_urls = []
-
-        if not already_on_page and order == "oldest":
-            # Load all pages so older invitations are visible.
-            for _ in range(50):
+        # For oldest order, scroll to load ALL cards so the oldest (bottom) are visible.
+        if order == "oldest":
+            prev_count = 0
+            for _ in range(60):
                 await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await self.delay.micro_delay(0.5, 1.0)
-                load_more = await self._find_element(selectors.INVITATION_LOAD_MORE, timeout_ms=3000)
-                if not load_more:
+                await self.delay.micro_delay(1.0, 2.0)
+                cur_count = await self.page.locator(selectors.INVITATION_WITHDRAW_ANCHOR).count()
+                # Also try clicking "Show more" if it appears
+                await self.page.evaluate("""
+                () => {
+                    const btn = Array.from(document.querySelectorAll('button'))
+                        .find(b => b.textContent.includes('Show more') || b.textContent.includes('Load more'));
+                    if (btn) btn.click();
+                }
+                """)
+                if cur_count == prev_count:
+                    logger.debug("action.withdraw_scroll_stale", count=cur_count, scrolls=_)
                     break
-                await load_more.click()
-                await self.delay.micro_delay(2.0, 3.5)
+                prev_count = cur_count
 
-        # Find all invitation cards
-        cards = None
-        card_count = 0
-        for sel in selectors.INVITATION_CARDS:
-            loc = self.page.locator(sel)
-            c = await loc.count()
-            if c > 0:
-                cards = loc
-                card_count = c
-                break
-
-        if not cards or card_count == 0:
+        total = await self.page.locator(selectors.INVITATION_WITHDRAW_ANCHOR).count()
+        if total == 0:
+            logger.warning("action.withdraw_no_anchors")
             return []
 
-        # Build iteration order: oldest → last card downward; newest → first card upward
+        withdrawn_urls = []
+
+        # Build iteration indices
         if order == "oldest":
-            indices = range(card_count - 1, max(card_count - 1 - count, -1), -1)
+            indices = range(total - 1, max(total - 1 - count, -1), -1)
         else:
-            indices = range(0, min(count, card_count))
+            indices = range(0, min(count, total))
 
         for i in indices:
             if len(withdrawn_urls) >= count:
                 break
 
-            card = cards.nth(i)
+            anchor = self.page.locator(selectors.INVITATION_WITHDRAW_ANCHOR).nth(i)
+            await anchor.scroll_into_view_if_needed()
+            await self.delay.micro_delay(0.3, 0.8)
 
-            # Extract profile URL
-            href = None
-            for link_sel in selectors.INVITATION_CARD_PROFILE_LINK:
-                link = card.locator(link_sel).first
-                if await link.count() > 0:
-                    href = await link.get_attribute("href")
-                    break
+            # Extract the profile URL from the ancestor card container
+            href = await self.page.evaluate("""
+            (idx) => {
+                const anchors = Array.from(document.querySelectorAll('a[aria-label^="Withdraw invitation"]'));
+                if (idx >= anchors.length) return null;
+                let el = anchors[idx];
+                for (let j = 0; j < 10; j++) {
+                    el = el.parentElement;
+                    if (!el) break;
+                    const link = el.querySelector('a[href*="/in/"]');
+                    if (link) return link.href;
+                }
+                return null;
+            }
+            """, i)
 
-            # Click Withdraw button
-            withdraw_btn = None
-            for btn_sel in selectors.INVITATION_WITHDRAW_BUTTON:
-                btn = card.locator(btn_sel).first
-                if await btn.count() > 0:
-                    withdraw_btn = btn
-                    break
-
-            if not withdraw_btn:
+            # Click the Withdraw anchor to open the confirmation overlay
+            try:
+                await anchor.click(timeout=5000)
+            except Exception as e:
+                logger.warning("action.withdraw_anchor_click_failed", index=i, error=str(e))
                 continue
 
-            await self._hover_and_click(withdraw_btn)
-            await self.delay.micro_delay(0.5, 1.0)
+            await self.delay.micro_delay(1.0, 1.5)
 
-            # Confirm in modal
-            confirm = await self._find_element(selectors.INVITATION_WITHDRAW_CONFIRM, timeout_ms=3000)
-            if confirm:
-                await self._hover_and_click(confirm)
+            # Confirm via JS: find the visible Withdraw button in the overlay.
+            # The overlay has no role="dialog" — match by innerText + visibility.
+            confirmed = await self.page.evaluate("""
+            () => {
+                const btn = Array.from(document.querySelectorAll('button'))
+                    .find(b => b.innerText.trim() === 'Withdraw' && b.offsetParent !== null);
+                if (btn) { btn.click(); return true; }
+                return false;
+            }
+            """)
+
+            if confirmed:
                 await self.delay.micro_delay(1.0, 2.0)
                 if href:
                     withdrawn_urls.append(href)
-                logger.info("action.invitation_withdrawn", url=href, order=order)
+                logger.info("action.invitation_withdrawn", url=href, order=order, index=i)
+            else:
+                logger.warning("action.withdraw_confirm_not_found", index=i, href=href)
 
         return withdrawn_urls
