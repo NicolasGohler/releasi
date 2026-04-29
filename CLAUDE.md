@@ -6,6 +6,7 @@
 - **Docker container**: `linauto`
 - **Live DB**: `/app/data/linauto.db` inside container
 - **Query DB**: `docker exec linauto python3 -c "import sqlite3; ..."` (no sqlite3 binary in container)
+- **Claude can always SSH and restart the server autonomously** — no need to ask for permission. If diagnosing an issue requires a restart (stuck pool, hung process, post-deploy), just do it: `ssh root@REDACTED 'docker restart linauto'`
 
 ## Critical Rules (AI assistant must follow)
 - **Never activate or resume a campaign** unless the user explicitly asks. Campaigns may be paused intentionally. Activating them uninvited can fire connection requests the user hasn't approved.

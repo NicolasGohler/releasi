@@ -843,6 +843,8 @@ async def get_invitation_count(
             await page.close()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await pool.release_idle(account.id)
 
     if count == -1:
         raise HTTPException(status_code=503, detail="Session invalid or navigation failed")
@@ -883,12 +885,15 @@ async def start_withdrawal(
         try:
             pool = get_browser_pool()
             pool_context = await pool.acquire(acct)
-            page = await pool_context.new_page()
             try:
-                actions = LinkedInActions(page)
-                urls = await actions.withdraw_invitations(n, order=ord_)
+                page = await pool_context.new_page()
+                try:
+                    actions = LinkedInActions(page)
+                    urls = await actions.withdraw_invitations(n, order=ord_)
+                finally:
+                    await page.close()
             finally:
-                await page.close()
+                await pool.release_idle(acct.id)
 
             # Sync withdrawn URLs to DB leads
             db_updated = 0
