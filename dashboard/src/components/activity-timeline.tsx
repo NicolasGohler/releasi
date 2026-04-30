@@ -39,6 +39,11 @@ function formatSkipReason(reason: string | undefined): string {
   return reason;
 }
 
+function formatSkipReasonAggregate(reason: string | undefined): string {
+  if (reason?.startsWith("filter_low_connections:")) return "Too few connections";
+  return formatSkipReason(reason);
+}
+
 function formatActionType(type: string) {
   return type
     .replace(/_/g, " ")
@@ -259,7 +264,7 @@ export function ActivityTimeline({ logs, timezone }: { logs: ActionLog[]; timezo
       if (l.action_type.toUpperCase() !== "CONNECTION_REQUEST") continue;
       if (l.status.toUpperCase() !== "SKIPPED") continue;
       const reason = ((l.details ?? {}) as Record<string, unknown>).reason as string | undefined;
-      const label = formatSkipReason(reason) || "Unknown";
+      const label = formatSkipReasonAggregate(reason) || "Unknown";
       counts[label] = (counts[label] ?? 0) + 1;
     }
     const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
