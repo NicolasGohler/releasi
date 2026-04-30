@@ -160,7 +160,7 @@ export function DailyChart({ accountId }: DailyChartProps) {
                 <CustomTooltip
                   active={props.active}
                   payload={props.payload as TooltipProps["payload"]}
-                  label={props.label}
+                  label={props.label as string | undefined}
                 />
               )}
               cursor={{ fill: "hsl(var(--muted))", opacity: 0.4 }}
