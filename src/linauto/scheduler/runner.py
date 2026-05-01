@@ -1339,14 +1339,14 @@ async def start_scheduler():
         replace_existing=True,
     )
 
-    # Daily summary Slack notification at 21:00 EDT (01:00 UTC, ±5 min jitter)
-    scheduler.add_job(
-        daily_summary,
-        CronTrigger(hour=1, minute=0, jitter=300),
-        id="daily_summary",
-        name="Daily Slack Summary",
-        replace_existing=True,
-    )
+    # Daily summary Slack notification disabled
+    # scheduler.add_job(
+    #     daily_summary,
+    #     CronTrigger(hour=1, minute=0, jitter=300),
+    #     id="daily_summary",
+    #     name="Daily Slack Summary",
+    #     replace_existing=True,
+    # )
 
     scheduler.start()
     logger.info("scheduler.started", jobs=len(scheduler.get_jobs()))
