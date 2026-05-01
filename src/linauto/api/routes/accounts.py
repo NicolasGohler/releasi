@@ -649,6 +649,11 @@ async def replan_account(
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    # Continuous-mode accounts have no plan to regenerate — leads stay PENDING
+    # and the dispatcher picks them up organically.
+    if account.dispatch_mode == "continuous":
+        return {"ok": True, "scheduled": 0, "mode": "continuous"}
+
     campaigns = await repo.get_active_campaigns(account.id)
     total_scheduled = 0
 

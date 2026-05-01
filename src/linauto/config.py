@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     intra_session_delay: list[int] = Field(default=[120, 480])   # seconds between actions in same session
     inter_session_delay: list[int] = Field(default=[2700, 7200]) # seconds between sessions (45min-2hr)
 
+    # Continuous dispatch mode (dispatch_mode='continuous' on Account)
+    # Gap between sessions is calculated dynamically from daily_limit; batch size is randomized.
+    continuous_batch_size: list[int] = Field(default=[6, 10])    # leads per session [min, max]
+
     # Per-account limits (set on Account model; these are fallback defaults)
     default_daily_limit: int = 20
     default_weekly_limit: int = 80

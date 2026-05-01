@@ -303,7 +303,7 @@ export default function CampaignDetailPage({
 
       <div className="space-y-6">
         {/* Summary strip — always visible above tabs */}
-        <div className="grid grid-cols-3 gap-3 md:grid-cols-6">
+        <div className={`grid gap-3 ${campaign.account_dispatch_mode === "continuous" ? "grid-cols-3 md:grid-cols-7" : "grid-cols-3 md:grid-cols-6"}`}>
           <StatCard label="Total Leads" value={totalLeads} />
           <StatCard label="Pending" value={pending} />
           <StatCard label="Sent" value={sent} />
@@ -313,6 +313,12 @@ export default function CampaignDetailPage({
             value={acceptRate !== null ? `${acceptRate}%` : "—"}
           />
           <StatCard label="Errors" value={errors} />
+          {campaign.account_dispatch_mode === "continuous" && (
+            <StatCard
+              label="Expected Today"
+              value={campaign.estimated_remaining_today ?? "—"}
+            />
+          )}
         </div>
 
         {account?.paused_until && new Date(account.paused_until) > new Date() && (

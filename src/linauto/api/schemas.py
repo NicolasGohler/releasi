@@ -28,6 +28,7 @@ class AccountOut(BaseModel):
     withdraw_threshold: Optional[int] = None
     pending_requests: Optional[int] = None
     avatar_path: Optional[str] = None
+    dispatch_mode: Optional[str] = None
     archived: bool = False
     # Global scheduler work-window (sourced from settings.yaml at enrich time).
     # Exposed per-account so the UI can render the local "are we in the work
@@ -73,6 +74,7 @@ class AccountUpdate(BaseModel):
     daily_limit: Optional[int] = None
     weekly_limit: Optional[int] = None
     withdraw_threshold: Optional[int] = None
+    dispatch_mode: Optional[str] = None
 
 
 class ProxyTestRequest(BaseModel):
@@ -122,6 +124,8 @@ class CampaignOut(BaseModel):
     account_status: Optional[str] = None
     account_paused_until: Optional[datetime] = None
     account_timezone: Optional[str] = None
+    account_dispatch_mode: Optional[str] = None
+    estimated_remaining_today: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 

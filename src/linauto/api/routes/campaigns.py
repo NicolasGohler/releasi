@@ -26,6 +26,12 @@ async def _enrich_campaign(repo: Repository, campaign) -> CampaignOut:
         out.account_status = account.status.value if hasattr(account.status, 'value') else account.status
         out.account_paused_until = account.paused_until
         out.account_timezone = account.timezone
+        out.account_dispatch_mode = account.dispatch_mode
+        if account.dispatch_mode == "continuous":
+            sent_today = await repo.get_daily_requests_sent(account.id)
+            pending_count = out.status_counts.get("pending", 0) if out.status_counts else 0
+            remaining_budget = max(0, account.daily_limit - sent_today)
+            out.estimated_remaining_today = min(pending_count, remaining_budget)
     # Add assigned lead lists
     links = await repo.get_campaign_lists(campaign.id)
     assigned = []

@@ -70,6 +70,8 @@ export interface Campaign {
   account_status: string | null;
   account_paused_until: string | null;
   account_timezone: string | null;
+  account_dispatch_mode: string | null;
+  estimated_remaining_today: number | null;
   created_at: string;
   updated_at: string;
 }

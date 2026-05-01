@@ -38,6 +38,11 @@ _last_session_end: dict = {}
 _keepalive_ran: dict = {}      # keep_alive: only once per local day, morning window
 _acceptance_checked: dict = {} # check_acceptances: only once per local day
 
+# Continuous dispatch mode — per-account daily state.
+# Resets automatically when the account's local date changes.
+# {account_id: {state_date, work_start, work_end, target_gap_sec, next_gap_sec}}
+_continuous_state: dict = {}
+
 
 def _acct_local_now(account):
     """Return current datetime in the account's timezone (aware), or UTC if unset/invalid."""
@@ -112,6 +117,250 @@ async def _get_repo() -> tuple:
     return Repository(session), session
 
 
+def _continuous_day_state(account, now_utc: datetime) -> dict:
+    """Return (and lazily initialise) today's continuous dispatch state for account.
+
+    Work-window boundaries and target gap are generated once per local calendar
+    day with random variation, then held in memory for the rest of that day.
+    On container restart the dict is empty — state regenerates on first call,
+    which is safe: next_gap_sec starts at 0 so the first post-restart session
+    fires immediately (gap elapsed = infinite).
+    """
+    from zoneinfo import ZoneInfo
+
+    acct_now = _acct_local_now(account)
+    acct_today = acct_now.date()
+    existing = _continuous_state.get(account.id)
+    if existing and existing["state_date"] == acct_today:
+        return existing
+
+    settings = get_settings()
+    rng = random.Random()  # unseeded — fresh randomness each day
+
+    # Work-window variation (same ranges as the planner, ±30-45 min)
+    start_offset = rng.randint(settings.work_start_variation[0], settings.work_start_variation[1])
+    end_offset = rng.randint(settings.work_end_variation[0], settings.work_end_variation[1])
+
+    try:
+        tz = ZoneInfo(account.timezone or "UTC")
+        base_start = datetime(
+            acct_today.year, acct_today.month, acct_today.day,
+            settings.work_start_hour, 0, tzinfo=tz,
+        ).astimezone(_dt_tz.utc).replace(tzinfo=None)
+        base_end = datetime(
+            acct_today.year, acct_today.month, acct_today.day,
+            settings.work_end_hour, 0, tzinfo=tz,
+        ).astimezone(_dt_tz.utc).replace(tzinfo=None)
+    except Exception:
+        base_start = datetime.combine(acct_today, datetime.min.time().replace(hour=settings.work_start_hour))
+        base_end = datetime.combine(acct_today, datetime.min.time().replace(hour=settings.work_end_hour))
+
+    work_start = base_start + timedelta(minutes=start_offset)
+    work_end = base_end + timedelta(minutes=end_offset)
+
+    # Dynamic gap: spread daily_limit evenly across the work window.
+    # avg_batch = midpoint of continuous_batch_size range.
+    avg_batch = (settings.continuous_batch_size[0] + settings.continuous_batch_size[1]) / 2
+    work_window_min = max(1.0, (work_end - work_start).total_seconds() / 60)
+    sessions_needed = max(1.0, account.daily_limit / avg_batch)
+    target_gap_sec = (work_window_min / sessions_needed) * 60  # seconds
+
+    state = {
+        "state_date": acct_today,
+        "work_start": work_start,
+        "work_end": work_end,
+        "target_gap_sec": target_gap_sec,
+        "next_gap_sec": 0.0,  # first session fires as soon as work window opens
+    }
+    _continuous_state[account.id] = state
+
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        _tz = _ZI(account.timezone or "UTC")
+        _ws_lbl = work_start.replace(tzinfo=_dt_tz.utc).astimezone(_tz).strftime("%H:%M %Z")
+        _we_lbl = work_end.replace(tzinfo=_dt_tz.utc).astimezone(_tz).strftime("%H:%M %Z")
+    except Exception:
+        _ws_lbl = work_start.strftime("%H:%M UTC")
+        _we_lbl = work_end.strftime("%H:%M UTC")
+
+    logger.info(
+        "dispatch.continuous_day_init",
+        account=account.name,
+        work_start=_ws_lbl,
+        work_end=_we_lbl,
+        target_gap_min=round(target_gap_sec / 60, 1),
+        daily_limit=account.daily_limit,
+    )
+    return state
+
+
+def _next_continuous_gap(target_gap_sec: float) -> float:
+    """Randomise ±15 % around the target gap. Returns seconds."""
+    return random.uniform(target_gap_sec * 0.85, target_gap_sec * 1.15)
+
+
+async def _dispatch_continuous(
+    account,
+    repo: "Repository",
+    pool_context,
+    remaining: int,
+) -> int:
+    """Run one continuous-mode dispatch session. Returns number of successful sends."""
+    from linauto.campaign.executor import CampaignExecutor
+    from linauto.linkedin.noise import BrowsingNoise
+
+    settings = get_settings()
+    batch_size = random.randint(settings.continuous_batch_size[0], settings.continuous_batch_size[1])
+    batch_size = min(batch_size, remaining)
+    if batch_size <= 0:
+        return 0
+
+    campaigns = await repo.get_active_campaigns(account.id)
+    total_sent = 0
+    remaining_batch = batch_size
+    stop_account = False
+
+    for campaign in campaigns:
+        if stop_account or remaining_batch <= 0:
+            break
+
+        pending = list(await repo.get_pending_leads(campaign.id, limit=remaining_batch * 4))
+        if not pending:
+            continue
+
+        executor = CampaignExecutor(repo, browser_context=pool_context)
+        successful_sends = 0
+        consecutive_session_errors = 0
+        consecutive_network_errors = 0
+        max_attempts = remaining_batch * 4
+        lead_queue = list(pending)
+        attempts = 0
+
+        while lead_queue and successful_sends < remaining_batch and attempts < max_attempts:
+            attempts += 1
+            lead = lead_queue.pop(0)
+            result = await executor.execute_single_lead(account, campaign, lead)
+
+            if result.get("soft_limit_reached"):
+                backoff_hours = random.uniform(2, 4)
+                resume = datetime.utcnow() + timedelta(hours=backoff_hours)
+                await repo.update_account(account, paused_until=resume)
+                await repo.log_action(
+                    account_id=account.id,
+                    campaign_id=campaign.id,
+                    action_type=ActionType.COOLDOWN_STARTED,
+                    status=ActionLogStatus.SUCCESS,
+                    details={"paused_until": str(resume), "reason": "rate_limit_modal", "backoff_hours": round(backoff_hours, 1)},
+                )
+                logger.warning("dispatch.continuous_soft_limit", account=account.name, resume=str(resume))
+                stop_account = True
+                break
+
+            if result.get("limit_reached"):
+                resume = calculate_cooldown_resume(account.timezone)
+                await repo.update_account(account, paused_until=resume)
+                await repo.log_action(
+                    account_id=account.id,
+                    campaign_id=campaign.id,
+                    action_type=ActionType.COOLDOWN_STARTED,
+                    status=ActionLogStatus.SUCCESS,
+                    details={"paused_until": str(resume)},
+                )
+                logger.warning("dispatch.continuous_cooldown_started", account=account.name, resume=str(resume))
+                stop_account = True
+                break
+
+            if result.get("fatal"):
+                stop_account = True
+                break
+
+            if result.get("success"):
+                successful_sends += 1
+                total_sent += 1
+                consecutive_session_errors = 0
+                consecutive_network_errors = 0
+                await repo.add_proxy_mb(account.id, 2.0)
+
+            elif result.get("skipped"):
+                # No backfill in continuous mode — next session picks fresh pending leads
+                consecutive_session_errors = 0
+                consecutive_network_errors = 0
+
+            elif result.get("network_error"):
+                consecutive_network_errors += 1
+                consecutive_session_errors = 0
+                if consecutive_network_errors >= 3:
+                    logger.warning(
+                        "dispatch.continuous_proxy_issues",
+                        account=account.name,
+                        campaign=campaign.name,
+                        consecutive=consecutive_network_errors,
+                    )
+                    stop_account = True
+                    break
+
+            else:
+                consecutive_session_errors += 1
+                consecutive_network_errors = 0
+                if consecutive_session_errors >= 3:
+                    logger.error(
+                        "dispatch.continuous_consecutive_errors",
+                        account=account.name,
+                        campaign=campaign.name,
+                        consecutive=consecutive_session_errors,
+                    )
+                    await repo.update_account(account, status="cookie_expired")
+                    await slack_notify(
+                        f":warning: *Cookie expired* — account *{account.name}* "
+                        f"({consecutive_session_errors} consecutive errors on *{campaign.name}*)."
+                    )
+                    await repo.bulk_update_lead_status(
+                        campaign.id,
+                        from_status=LeadStatus.SCHEDULED,
+                        to_status=LeadStatus.PENDING,
+                    )
+                    stop_account = True
+                    break
+
+        remaining_batch -= successful_sends
+
+        if successful_sends > 0:
+            sent_today = await repo.get_daily_requests_sent(account.id)
+            logger.info(
+                "dispatch.continuous_cycle_complete",
+                campaign=campaign.name,
+                cycle_sent=successful_sends,
+                day_sent=sent_today,
+                daily_limit=account.daily_limit,
+                batch_size=batch_size,
+            )
+
+    # Post-session noise: 1-2 actions in the same browser context
+    if total_sent > 0 and not stop_account:
+        noise_page = None
+        try:
+            noise_page = await pool_context.new_page()
+            noise = BrowsingNoise(noise_page)
+            noise_count = random.randint(1, 2)
+            for _ in range(noise_count):
+                action = random.choice(["profile", "feed"])
+                if action == "profile":
+                    await noise.view_random_profile()
+                else:
+                    await noise.like_feed_post()
+                await asyncio.sleep(random.uniform(3, 8))
+        except Exception as e:
+            logger.debug("dispatch.continuous_noise_failed", error=str(e))
+        finally:
+            if noise_page:
+                try:
+                    await noise_page.close()
+                except Exception:
+                    pass
+
+    return total_sent
+
+
 async def daily_planning_sweep():
     """
     Generate today's plan for all active accounts/campaigns.
@@ -130,6 +379,10 @@ async def daily_planning_sweep():
     try:
         accounts = await repo.list_active_accounts()
         for account in accounts:
+            # Continuous-mode accounts manage their own scheduling — no planning needed.
+            if account.dispatch_mode == "continuous":
+                continue
+
             if account.paused_until and not is_cooldown_expired(account.paused_until):
                 logger.info(
                     "planner.account_paused",
@@ -274,23 +527,41 @@ async def dispatch():
             if account.paused_until and not is_cooldown_expired(account.paused_until):
                 continue
 
-            # Enforce minimum inter-session gap to prevent rapid-fire bursts.
-            # After any session that sent ≥1 lead, we wait at least
-            # inter_session_delay[0] seconds before starting the next session.
-            _min_gap = get_settings().inter_session_delay[0]  # e.g. 2700s = 45 min
-            _last_end = _last_session_end.get(account.id)
-            if _last_end is not None:
-                _elapsed = (now - _last_end).total_seconds()
-                if _elapsed < _min_gap:
-                    logger.debug(
-                        "dispatch.inter_session_gap_enforced",
-                        account=account.name,
-                        elapsed_min=round(_elapsed / 60, 1),
-                        gap_min=round(_min_gap / 60, 1),
-                    )
-                    continue
+            _is_continuous = account.dispatch_mode == "continuous"
 
-            # Check daily limits
+            if _is_continuous:
+                # ── Continuous mode: dynamic gap + work-window guard ──────────
+                _state = _continuous_day_state(account, now)
+                if now < _state["work_start"] or now >= _state["work_end"]:
+                    continue  # outside today's work window
+                _last_end = _last_session_end.get(account.id)
+                if _last_end is not None:
+                    _elapsed = (now - _last_end).total_seconds()
+                    _gap = _state["next_gap_sec"]
+                    if _elapsed < _gap:
+                        logger.debug(
+                            "dispatch.continuous_gap_enforced",
+                            account=account.name,
+                            elapsed_min=round(_elapsed / 60, 1),
+                            gap_min=round(_gap / 60, 1),
+                        )
+                        continue
+            else:
+                # ── Planned mode: fixed minimum inter-session gap ─────────────
+                _min_gap = get_settings().inter_session_delay[0]  # e.g. 2700s = 45 min
+                _last_end = _last_session_end.get(account.id)
+                if _last_end is not None:
+                    _elapsed = (now - _last_end).total_seconds()
+                    if _elapsed < _min_gap:
+                        logger.debug(
+                            "dispatch.inter_session_gap_enforced",
+                            account=account.name,
+                            elapsed_min=round(_elapsed / 60, 1),
+                            gap_min=round(_min_gap / 60, 1),
+                        )
+                        continue
+
+            # Check daily limits (both modes)
             sent_today_count = await repo.get_daily_requests_sent(account.id)
             can_send, remaining = await rate_limits.can_send_today(
                 account.id,
@@ -302,15 +573,22 @@ async def dispatch():
                 logger.info("dispatch.daily_limit_reached", account=account.name)
                 continue
 
-            # Quick DB pre-check: skip browser entirely if no leads are due.
-            # Avoids loading LinkedIn pages (and burning proxy bandwidth) when
-            # the scheduler fires outside of the account's work window.
+            # Quick DB pre-check: skip browser entirely if no work to do.
             campaigns_preview = await repo.get_active_campaigns(account.id)
             any_due = False
-            for _c in campaigns_preview:
-                if await repo.get_scheduled_leads(_c.id, before=now):
-                    any_due = True
-                    break
+            if _is_continuous:
+                # Continuous: look for any PENDING leads
+                for _c in campaigns_preview:
+                    _pending_check = await repo.get_pending_leads(_c.id, limit=1)
+                    if _pending_check:
+                        any_due = True
+                        break
+            else:
+                # Planned: look for SCHEDULED leads past their slot time
+                for _c in campaigns_preview:
+                    if await repo.get_scheduled_leads(_c.id, before=now):
+                        any_due = True
+                        break
             if not any_due:
                 continue
 
@@ -372,6 +650,17 @@ async def dispatch():
                         account=account.name,
                         seconds_since_check=round(_seconds_since_check),
                     )
+
+                # ── Route to continuous or planned dispatch ───────────────
+                if _is_continuous:
+                    sent = await _dispatch_continuous(account, repo, pool_context, remaining)
+                    if sent > 0:
+                        pool.confirm_session(account.id)
+                        _last_session_end[account.id] = datetime.utcnow()
+                        # Compute gap to next session now, so it's stable for the
+                        # entire waiting period rather than re-randomised each poll.
+                        _state["next_gap_sec"] = _next_continuous_gap(_state["target_gap_sec"])
+                    continue  # skip the planned-mode campaign loop below
 
                 campaigns = await repo.get_active_campaigns(account.id)
                 for campaign in campaigns:

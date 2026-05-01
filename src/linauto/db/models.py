@@ -101,6 +101,7 @@ class Account(Base):
     paused_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     withdraw_threshold: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     avatar_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    dispatch_mode: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
