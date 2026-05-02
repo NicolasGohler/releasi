@@ -168,9 +168,17 @@ PROFILE_ACTION_BUTTONS = [
 # The follow-up flow navigates directly to /messaging/compose/?recipient=<URN>
 # (see actions.send_message).
 #
-# LinkedIn's compose page (as of 2026-04) renders a Send button that is
-# disabled until text is typed.  Pressing Enter creates a new line — it does
-# NOT send the message.  We must click the Send button explicitly.
+# LinkedIn has two compose modes (toggled per-account by msg-form__send-toggle):
+#
+#   "Click to Send" mode  — button.msg-form__send-button is present (disabled
+#     until text is typed).  Enter inserts a newline.  This was the default as
+#     of 2026-04.
+#
+#   "Press Enter to Send" mode — no send button rendered; msg-form__hint-text
+#     reads "Press Enter to Send".  Confirmed active as of 2026-05.
+#
+# actions.send_message tries MESSAGE_SEND_BUTTON first (3 s timeout), then
+# falls back to pressing Enter if the hint text confirms the mode.
 
 MESSAGE_INPUT = [
     'div.msg-form__contenteditable[role="textbox"]',

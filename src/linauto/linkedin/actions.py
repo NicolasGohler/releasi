@@ -844,16 +844,37 @@ class LinkedInActions:
         await self.delay.type_text(msg_input, message)
         await self.delay.micro_delay(0.6, 1.2)
 
-        # ── 4. Click the Send button ──
-        # LinkedIn's compose page (2026-04+) renders a dedicated Send button
-        # (msg-form__send-button) that is disabled until text is typed.
-        # Pressing Enter inserts a newline and does NOT send the message.
-        send_btn = await self._find_element(selectors.MESSAGE_SEND_BUTTON, timeout_ms=5000)
-        if not send_btn:
-            logger.error("action.send_btn_not_found", url=profile_url)
-            return ActionResult(ActionStatus.ERROR, reason="message_send_btn_not_found")
-
-        await self._hover_and_click(send_btn)
+        # ── 4. Send the message ──
+        # LinkedIn has two compose modes that change which send mechanism works:
+        #
+        #   "Click to Send" mode  — renders button.msg-form__send-button (disabled
+        #     until text is typed).  Enter inserts a newline.
+        #   "Press Enter to Send" mode — no dedicated send button visible.
+        #     The msg-form__hint-text reads "Press Enter to Send".
+        #     Enter submits the message.  The toggle button (msg-form__send-toggle)
+        #     switches between modes.
+        #
+        # LinkedIn sometimes changes the per-account default.  We try the button
+        # first (short timeout), then fall back to pressing Enter.
+        send_btn = await self._find_element(selectors.MESSAGE_SEND_BUTTON, timeout_ms=3000)
+        if send_btn:
+            await self._hover_and_click(send_btn)
+            logger.debug("action.send_via_button", url=profile_url)
+        else:
+            # No dedicated send button — check we're in "Press Enter to Send" mode
+            # before committing to pressing Enter (guards against selector rot).
+            in_enter_mode = await self.page.evaluate("""() => {
+                const hint = document.querySelector('.msg-form__hint-text');
+                if (!hint) return false;
+                const txt = (hint.innerText || hint.textContent || '').toLowerCase();
+                return txt.includes('enter') && txt.includes('send');
+            }""")
+            if not in_enter_mode:
+                logger.error("action.send_btn_not_found", url=profile_url)
+                return ActionResult(ActionStatus.ERROR, reason="message_send_btn_not_found")
+            await self.delay.micro_delay(0.3, 0.6)
+            await self.page.keyboard.press("Enter")
+            logger.debug("action.send_via_enter", url=profile_url)
 
         # ── 5. Verify submission ──
         # PRIMARY signal: LinkedIn navigates from /messaging/compose/ → /messaging/thread/<id>/
