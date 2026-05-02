@@ -12,6 +12,7 @@ class InvalidTransition(Exception):
 VALID_TRANSITIONS = {
     LeadStatus.PENDING: [
         LeadStatus.SCHEDULED,
+        LeadStatus.CONNECTION_REQUESTED,  # Continuous dispatch mode: no pre-scheduling step
         LeadStatus.SKIPPED,
         LeadStatus.INVALID,
         LeadStatus.ERROR,
