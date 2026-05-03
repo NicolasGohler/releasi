@@ -525,6 +525,22 @@ async def start_browse_session(
     return {"novnc_url": novnc_path, "account_id": account_id}
 
 
+@router.get("/accounts/{account_id}/browse-session/status")
+async def browse_session_status(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """Check if a browse session is currently active for this account."""
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    from linauto.linkedin.login_session import LoginSessionManager
+    manager = LoginSessionManager.get_instance()
+    active = manager.is_active and manager._account_id == account_id
+    return {"active": active}
+
+
 @router.post("/accounts/{account_id}/browse-session/close")
 async def close_browse_session(
     account_id: str,

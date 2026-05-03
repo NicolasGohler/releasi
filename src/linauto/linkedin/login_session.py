@@ -311,23 +311,24 @@ class LoginSessionManager:
 
         if self._context:
             try:
-                await self._context.close()
+                await asyncio.wait_for(self._context.close(), timeout=5)
             except Exception:
                 pass
             self._context = None
 
         if self._playwright:
             try:
-                await self._playwright.stop()
+                await asyncio.wait_for(self._playwright.stop(), timeout=5)
             except Exception:
                 pass
             self._playwright = None
 
         # Kill all spawned processes (Xvfb, x11vnc, websockify)
+        loop = asyncio.get_event_loop()
         for proc in self._processes:
             try:
                 proc.terminate()
-                proc.wait(timeout=5)
+                await asyncio.wait_for(loop.run_in_executor(None, proc.wait), timeout=3)
             except Exception:
                 try:
                     proc.kill()

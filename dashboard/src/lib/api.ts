@@ -118,6 +118,9 @@ export const closeBrowseSession = (id: string) =>
     method: "POST",
   });
 
+export const getBrowseSessionStatus = (id: string) =>
+  apiFetch<{ active: boolean }>(`/accounts/${id}/browse-session/status`);
+
 export const fetchAccountActivity = (id: string, limit = 500) =>
   apiFetch<ActionLog[]>(`/accounts/${id}/activity?limit=${limit}`);
 

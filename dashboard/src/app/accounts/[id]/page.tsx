@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   useAccount,
@@ -25,7 +25,7 @@ import { ActivityTimeline } from "@/components/activity-timeline";
 import { LocalTimeCard } from "@/components/accounts/local-time-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { startLoginSession, finishLoginSession, cancelLoginSession, startBrowseSession, closeBrowseSession, getAvatarUrl, checkConnection, replanAccount, fetchInvitationCount, startWithdrawal, pollWithdrawalStatus } from "@/lib/api";
+import { startLoginSession, finishLoginSession, cancelLoginSession, startBrowseSession, closeBrowseSession, getBrowseSessionStatus, getAvatarUrl, checkConnection, replanAccount, fetchInvitationCount, startWithdrawal, pollWithdrawalStatus } from "@/lib/api";
 import { ProxySettings, emptyProxyForm, type ProxyFormValue } from "@/components/proxy-settings";
 
 export default function AccountDetailPage({
@@ -57,6 +57,12 @@ export default function AccountDetailPage({
   const [loginLoading, setLoginLoading] = useState(false);
   const [browseSessionActive, setBrowseSessionActive] = useState(false);
   const [browseLoading, setBrowseLoading] = useState(false);
+
+  useEffect(() => {
+    getBrowseSessionStatus(id)
+      .then(({ active }) => setBrowseSessionActive(active))
+      .catch(() => {});
+  }, [id]);
   const [connectionChecking, setConnectionChecking] = useState(false);
   const [connectionResult, setConnectionResult] = useState<{
     valid: boolean;
