@@ -225,7 +225,13 @@ class LoginSessionManager:
 
         # The token is part of the WebSocket path that noVNC connects to.
         # Without the correct token the WebSocket handshake is rejected by websockify.
-        return f"/vnc.html?path=websockify/{self._token}&autoconnect=true&resize=scale"
+        # The websockify TokenFile plugin reads the token from the ?token= query
+        # parameter on the WebSocket request, not from the URL path. Embed it
+        # in the noVNC `path` value (URL-encode the `?` and `=` so they survive
+        # the outer query string parsing and get passed verbatim to noVNC, which
+        # then uses the value as the WebSocket path).
+        encoded_path = f"websockify%3Ftoken%3D{self._token}"
+        return f"/vnc.html?path={encoded_path}&autoconnect=true&resize=scale"
 
     async def finish_session(self) -> dict:
         """
