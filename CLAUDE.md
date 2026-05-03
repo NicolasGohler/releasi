@@ -269,9 +269,13 @@ LinkedIn profiles that are already 1st-degree connections must be caught before 
 
 ## noVNC Login Flow
 - `POST /api/v1/accounts/{id}/login-session` → starts ephemeral Xvfb + x11vnc + websockify on port 6080.
-- User navigates to `http://SERVER_IP:6080/vnc.html`, logs in manually.
+- `POST /api/v1/accounts/{id}/browse-session` → same stack but injects the stored `li_at` cookie so the user lands on the feed (no cookies saved on close).
+- `GET /api/v1/accounts/{id}/browse-session/status` → returns `{"active": bool}` — dashboard checks this on mount to restore button state after reload.
+- Dashboard opens noVNC via `http://SERVER_IP:6080/vnc.html?path=websockify%3Ftoken%3D{token}&autoconnect=true&resize=scale&quality=3&compression=9`.
+- **websockify token format**: `--token-plugin TokenFile --token-source <file>` where the file contains `<token>: localhost:5999`. Do NOT pass a directory as `--token-source` (causes "Syntax error on line 1"). Do NOT put the token in the URL path segment (causes "Token not present"); it must be a `?token=` query param on the WebSocket upgrade.
 - `POST /api/v1/accounts/{id}/login-session/finish` → extracts cookies, copies browser profile, evicts stale pool slot, triggers background health check.
-- noVNC is **ephemeral** — torn down after finish. "Disconnection" after saving is expected.
+- noVNC is **ephemeral** — torn down after finish or close. "Disconnection" after saving is expected.
+- `_cleanup()` uses `asyncio.wait_for(timeout=5)` around Playwright close calls so a frozen browser can't block the Close Session button indefinitely.
 
 ## Running
 ```bash
