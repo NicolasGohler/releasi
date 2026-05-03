@@ -85,9 +85,10 @@ class LoginSessionManager:
         self._processes.append(proc)
         logger.info("login_session.vnc_started", port=VNC_PORT)
 
-    def _start_websockify(self, token_dir: str):
+    def _start_websockify(self, token_file: str):
         """Start websockify with token auth so each session requires a secret token.
 
+        token_file must be a text file with lines: <token>: <host>:<port>
         websockify 0.12 ships the plugin as 'TokenFile' (not 'FileTokenPlugin').
         """
         novnc_dir = "/usr/share/novnc"
@@ -98,7 +99,7 @@ class LoginSessionManager:
                 "websockify",
                 "--web", novnc_dir,
                 "--token-plugin", "TokenFile",
-                "--token-source", token_dir,
+                "--token-source", token_file,
                 str(NOVNC_PORT),
             ],
             stdout=log_fd,
@@ -154,10 +155,13 @@ class LoginSessionManager:
         # websockify FileTokenPlugin maps the token to the VNC target so only
         # a client that knows the token can connect — port 6080 alone is not enough.
         self._token = secrets.token_urlsafe(24)
-        token_dir = os.path.join(self._temp_dir, "tokens")
-        os.makedirs(token_dir, exist_ok=True)
-        with open(os.path.join(token_dir, self._token), "w") as f:
-            f.write(f"localhost:{VNC_PORT}")
+        # websockify TokenFile plugin expects a text file with lines:
+        #   <token>: <host>:<port>
+        # Passing a directory as --token-source causes it to try reading the
+        # directory entry as a text file, producing a "Syntax error on line 1".
+        token_file = os.path.join(self._temp_dir, "tokens.cfg")
+        with open(token_file, "w") as f:
+            f.write(f"{self._token}: localhost:{VNC_PORT}\n")
 
         # Start display stack
         os.environ["DISPLAY"] = DISPLAY
@@ -165,7 +169,7 @@ class LoginSessionManager:
         await asyncio.sleep(1)
         self._start_vnc()
         await asyncio.sleep(0.5)
-        self._start_websockify(token_dir)
+        self._start_websockify(token_file)
         await asyncio.sleep(0.5)
 
         # Use the same deterministic UA as the pool browser
