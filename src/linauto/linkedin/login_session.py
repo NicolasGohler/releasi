@@ -91,6 +91,8 @@ class LoginSessionManager:
         websockify 0.12 ships the plugin as 'TokenFile' (not 'FileTokenPlugin').
         """
         novnc_dir = "/usr/share/novnc"
+        log_path = "/tmp/linauto_websockify.log"
+        log_fd = open(log_path, "ab")
         proc = subprocess.Popen(
             [
                 "websockify",
@@ -99,11 +101,11 @@ class LoginSessionManager:
                 "--token-source", token_dir,
                 str(NOVNC_PORT),
             ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_fd,
+            stderr=log_fd,
         )
         self._processes.append(proc)
-        logger.info("login_session.websockify_started", port=NOVNC_PORT)
+        logger.info("login_session.websockify_started", port=NOVNC_PORT, log=log_path)
 
     async def _idle_timeout_task(self):
         """Auto-terminate the session after IDLE_TIMEOUT_SECONDS."""
