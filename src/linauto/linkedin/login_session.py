@@ -235,7 +235,7 @@ class LoginSessionManager:
         # the outer query string parsing and get passed verbatim to noVNC, which
         # then uses the value as the WebSocket path).
         encoded_path = f"websockify%3Ftoken%3D{self._token}"
-        return f"/vnc.html?path={encoded_path}&autoconnect=true&resize=scale"
+        return f"/vnc.html?path={encoded_path}&autoconnect=true&resize=scale&quality=3&compression=9"
 
     async def finish_session(self) -> dict:
         """
