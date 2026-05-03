@@ -86,13 +86,16 @@ class LoginSessionManager:
         logger.info("login_session.vnc_started", port=VNC_PORT)
 
     def _start_websockify(self, token_dir: str):
-        """Start websockify with FileTokenPlugin so each session requires a secret token."""
+        """Start websockify with token auth so each session requires a secret token.
+
+        websockify 0.12 ships the plugin as 'TokenFile' (not 'FileTokenPlugin').
+        """
         novnc_dir = "/usr/share/novnc"
         proc = subprocess.Popen(
             [
                 "websockify",
                 "--web", novnc_dir,
-                "--token-plugin", "FileTokenPlugin",
+                "--token-plugin", "TokenFile",
                 "--token-source", token_dir,
                 str(NOVNC_PORT),
             ],
