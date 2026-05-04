@@ -246,6 +246,12 @@ export const createLeadList = (data: { name: string }) =>
 export const deleteLeadList = (id: string) =>
   apiFetch<{ ok: boolean }>(`/lead-lists/${id}`, { method: "DELETE" });
 
+export const archiveLeadList = (id: string) =>
+  apiFetch<LeadList>(`/lead-lists/${id}/archive`, { method: "POST" });
+
+export const unarchiveLeadList = (id: string) =>
+  apiFetch<LeadList>(`/lead-lists/${id}/unarchive`, { method: "POST" });
+
 export const importCSVToList = async (listId: string, file: File): Promise<ImportResponse> => {
   const formData = new FormData();
   formData.append("file", file);
