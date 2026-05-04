@@ -45,6 +45,11 @@ async def _extract_profile_urls(page: Page) -> List[str]:
 
     Scopes to <main> and .search-results-container to avoid picking up sidebar
     or nav links. Deduplicates by slug within the page.
+
+    LinkedIn renders each result card with two anchors for the same person:
+    one on the name (public slug, e.g. /in/john-doe) and one on the profile
+    photo (internal member ID, e.g. /in/ACoAABxxxxxxx). Skipping internal IDs
+    prevents double-counting.
     """
     urls: List[str] = await page.evaluate("""
         () => {
@@ -60,6 +65,9 @@ async def _extract_profile_urls(page: Page) -> List[str]:
                 const m = href.match(/\\/in\\/([^/?#\\s]+)/);
                 if (!m) continue;
                 const slug = m[1].replace(/\\/$/, '');
+                // Skip LinkedIn internal member IDs (ACoA... pattern) — these are
+                // photo anchor duplicates of the name anchor on the same card.
+                if (/^ACoA/i.test(slug)) continue;
                 if (slug.length < 3 || seen.has(slug)) continue;
                 seen.add(slug);
                 results.push('https://www.linkedin.com/in/' + slug);
