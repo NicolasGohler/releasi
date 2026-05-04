@@ -43,35 +43,62 @@ async def _extract_profile_urls(page: Page) -> List[str]:
     """
     Extract canonical profile URLs from the current search results page via JS.
 
-    Scopes to <main> and .search-results-container to avoid picking up sidebar
-    or nav links. Deduplicates by slug within the page.
+    Strategy: find the <ul> with the most direct-child <li> elements that each
+    contain a /in/ link — that is the main results list. Take only the FIRST
+    /in/ anchor from each <li> (the name link). This naturally excludes:
+      - Photo links (ACoA internal IDs, or public-slug duplicates on the same card)
+      - "People you might know" suggestions in the sidebar (different <ul>)
+      - Nav / header profile links (not inside any <li>)
 
-    LinkedIn renders each result card with two anchors for the same person:
-    one on the name (public slug, e.g. /in/john-doe) and one on the profile
-    photo (internal member ID, e.g. /in/ACoAABxxxxxxx). Skipping internal IDs
-    prevents double-counting.
+    Falls back to the old all-anchors approach if no qualifying <ul> is found,
+    keeping the ACoA filter as a safety net.
     """
     urls: List[str] = await page.evaluate("""
         () => {
             const seen = new Set();
             const results = [];
-            // Prefer scoped selectors; fall back to full main if container absent
+
             const scope = document.querySelector('.search-results-container')
                        || document.querySelector('main')
                        || document.body;
-            const anchors = scope.querySelectorAll('a[href*="/in/"]');
-            for (const a of anchors) {
-                const href = a.getAttribute('href') || '';
-                const m = href.match(/\\/in\\/([^/?#\\s]+)/);
-                if (!m) continue;
-                const slug = m[1].replace(/\\/$/, '');
-                // Skip LinkedIn internal member IDs (ACoA... pattern) — these are
-                // photo anchor duplicates of the name anchor on the same card.
-                if (/^ACoA/i.test(slug)) continue;
-                if (slug.length < 3 || seen.has(slug)) continue;
-                seen.add(slug);
-                results.push('https://www.linkedin.com/in/' + slug);
+
+            // Find the UL whose direct LI children most often contain /in/ links.
+            // That is the main results list; sidebar / suggestion ULs have fewer.
+            let bestUl = null;
+            let bestCount = 0;
+            for (const ul of scope.querySelectorAll('ul')) {
+                const n = ul.querySelectorAll(':scope > li a[href*="/in/"]').length;
+                if (n > bestCount) { bestCount = n; bestUl = ul; }
             }
+
+            if (bestUl && bestCount >= 3) {
+                // One URL per result card — take the FIRST /in/ link in each LI.
+                for (const li of bestUl.querySelectorAll(':scope > li')) {
+                    const a = li.querySelector('a[href*="/in/"]');
+                    if (!a) continue;
+                    const href = a.getAttribute('href') || '';
+                    const m = href.match(/\\/in\\/([^/?#\\s]+)/);
+                    if (!m) continue;
+                    const slug = m[1].replace(/\\/$/, '');
+                    if (/^ACoA/i.test(slug)) continue;
+                    if (slug.length < 3 || seen.has(slug)) continue;
+                    seen.add(slug);
+                    results.push('https://www.linkedin.com/in/' + slug);
+                }
+            } else {
+                // Fallback: all anchors in scope (pre-UL-detection behaviour).
+                for (const a of scope.querySelectorAll('a[href*="/in/"]')) {
+                    const href = a.getAttribute('href') || '';
+                    const m = href.match(/\\/in\\/([^/?#\\s]+)/);
+                    if (!m) continue;
+                    const slug = m[1].replace(/\\/$/, '');
+                    if (/^ACoA/i.test(slug)) continue;
+                    if (slug.length < 3 || seen.has(slug)) continue;
+                    seen.add(slug);
+                    results.push('https://www.linkedin.com/in/' + slug);
+                }
+            }
+
             return results;
         }
     """)
@@ -111,7 +138,13 @@ async def scrape_event_attendees(
         logger.info("scraper.loading_page", page=page_num, url=url)
 
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await asyncio.wait_for(
+                page.goto(url, wait_until="domcontentloaded", timeout=15000),
+                timeout=30.0,  # asyncio-level safety net if Playwright's browser freezes
+            )
+        except asyncio.TimeoutError:
+            logger.error("scraper.page_frozen", page=page_num)
+            break
         except Exception as e:
             logger.error("scraper.navigation_failed", page=page_num, error=str(e))
             break
