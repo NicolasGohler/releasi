@@ -62,44 +62,44 @@ async def _extract_profile_urls(page: Page) -> List[str]:
                        || document.querySelector('main')
                        || document.body;
 
-            // Find the UL whose direct LI children most often contain /in/ links.
-            // That is the main results list; sidebar / suggestion ULs have fewer.
-            let bestUl = null;
-            let bestCount = 0;
-            for (const ul of scope.querySelectorAll('ul')) {
-                const n = ul.querySelectorAll(':scope > li a[href*="/in/"]').length;
-                if (n > bestCount) { bestCount = n; bestUl = ul; }
+            // LinkedIn renders each result card as a large outer <a href="/in/slug">
+            // that wraps the whole card. Inside that outer anchor there are 2-3 more
+            // /in/ links: a name link (same person) and 1-2 "people also viewed"
+            // suggestions (different people). The diagnostic confirmed this structure:
+            //
+            //   A.outerCard href="/in/thomas-stray"   ← the real result (outermost)
+            //     └── A.nameLink href="/in/thomas-stray"   ← duplicate, skip
+            //     └── A.suggestion href="/in/jihanesadiq"  ← extra person, skip
+            //     └── A.suggestion href="/in/reneegtouma"  ← extra person, skip
+            //
+            // Fix: keep only /in/ anchors that have NO /in/ ancestor within scope.
+            // That selects exactly the outer card anchor per result (one per card).
+            // This is class-name-independent and survives LinkedIn DOM changes.
+
+            for (const a of scope.querySelectorAll('a[href*="/in/"]')) {
+                // Walk up — if any ancestor within scope is also a /in/ anchor, skip.
+                let nested = false;
+                let el = a.parentElement;
+                while (el && el !== scope) {
+                    if (el.tagName === 'A' && (el.getAttribute('href') || '').includes('/in/')) {
+                        nested = true;
+                        break;
+                    }
+                    el = el.parentElement;
+                }
+                if (nested) continue;
+
+                const href = a.getAttribute('href') || '';
+                const m = href.match(/\\/in\\/([^/?#\\s]+)/);
+                if (!m) continue;
+                const slug = m[1].replace(/\\/$/, '');
+                if (/^ACoA/i.test(slug)) continue;
+                if (slug.length < 3 || seen.has(slug)) continue;
+                seen.add(slug);
+                results.push('https://www.linkedin.com/in/' + slug);
             }
 
-            if (bestUl && bestCount >= 3) {
-                // One URL per result card — take the FIRST /in/ link in each LI.
-                for (const li of bestUl.querySelectorAll(':scope > li')) {
-                    const a = li.querySelector('a[href*="/in/"]');
-                    if (!a) continue;
-                    const href = a.getAttribute('href') || '';
-                    const m = href.match(/\\/in\\/([^/?#\\s]+)/);
-                    if (!m) continue;
-                    const slug = m[1].replace(/\\/$/, '');
-                    if (/^ACoA/i.test(slug)) continue;
-                    if (slug.length < 3 || seen.has(slug)) continue;
-                    seen.add(slug);
-                    results.push('https://www.linkedin.com/in/' + slug);
-                }
-                return { method: 'ul', ul_li_count: bestCount, results };
-            } else {
-                // Fallback: all anchors in scope (pre-UL-detection behaviour).
-                for (const a of scope.querySelectorAll('a[href*="/in/"]')) {
-                    const href = a.getAttribute('href') || '';
-                    const m = href.match(/\\/in\\/([^/?#\\s]+)/);
-                    if (!m) continue;
-                    const slug = m[1].replace(/\\/$/, '');
-                    if (/^ACoA/i.test(slug)) continue;
-                    if (slug.length < 3 || seen.has(slug)) continue;
-                    seen.add(slug);
-                    results.push('https://www.linkedin.com/in/' + slug);
-                }
-                return { method: 'fallback', ul_li_count: bestCount, results };
-            }
+            return { method: 'outer-anchor', ul_li_count: 0, results };
         }
     """)
     if not payload:
