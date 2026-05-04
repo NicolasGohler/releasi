@@ -1511,3 +1511,87 @@ class LinkedInActions:
                 logger.warning("action.withdraw_confirm_not_found", index=i, href=href)
 
         return withdrawn_urls
+
+    async def get_contact_info(self, slug: str) -> dict:
+        """
+        Extract email and phone from a LinkedIn profile's Contact Info overlay.
+
+        Navigates to /in/{slug}/overlay/contact-info/ (requires 1st-degree connection
+        or public visibility). Returns a dict with keys "email" and "phone" (both
+        Optional[str]). Returns empty dict on any failure — caller should treat this
+        as non-fatal.
+
+        LinkedIn renders the contact info as a structured modal with sections.
+        Email: <a href="mailto:user@example.com"> — the href is the most reliable.
+        Phone: plain text inside a section labelled "Phone".
+        """
+        from linauto.linkedin.selectors import LOGIN_URL_PATTERNS, CONTACT_INFO_URL_TEMPLATE
+
+        slug = slug.lstrip("/").replace("in/", "").strip("/")
+        url = CONTACT_INFO_URL_TEMPLATE.format(slug=slug)
+
+        result: dict = {"email": None, "phone": None}
+
+        try:
+            await asyncio.wait_for(
+                self.page.goto(url, wait_until="domcontentloaded", timeout=15000),
+                timeout=20.0,
+            )
+        except Exception as e:
+            logger.warning("contact_info.nav_failed", slug=slug, error=str(e))
+            return result
+
+        # Session check
+        if any(p in self.page.url for p in LOGIN_URL_PATTERNS):
+            logger.warning("contact_info.session_expired", slug=slug)
+            return result
+
+        # Brief wait for modal content to render
+        await asyncio.sleep(0.8)
+
+        # Extract email + phone via JS — more resilient than CSS selectors against
+        # LinkedIn's obfuscated/rotating class names.
+        data = await self.page.evaluate("""
+        () => {
+            const result = { email: null, phone: null };
+
+            // Email: look for the first mailto: link anywhere in the page
+            const mailtoLink = document.querySelector('a[href^="mailto:"]');
+            if (mailtoLink) {
+                result.email = mailtoLink.href.replace('mailto:', '').trim();
+            }
+
+            // Phone: LinkedIn renders phones in a section with a header containing "Phone".
+            // Walk all section/div elements; find one whose header text includes "Phone".
+            const allSections = document.querySelectorAll('section, div[class*="contact"]');
+            for (const sec of allSections) {
+                const hdr = sec.querySelector('h3, h4, span[class*="header"]');
+                if (hdr && hdr.innerText && hdr.innerText.toLowerCase().includes('phone')) {
+                    // The value is in a sibling/child element — grab the first text node
+                    // that looks like a phone number (contains digit + optional +/-)
+                    const spans = sec.querySelectorAll('span, a');
+                    for (const s of spans) {
+                        const t = (s.innerText || '').trim();
+                        if (/[0-9]/.test(t) && t.length >= 6) {
+                            result.phone = t;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            return result;
+        }
+        """)
+
+        if data:
+            result["email"] = data.get("email") or None
+            result["phone"] = data.get("phone") or None
+
+        logger.info(
+            "contact_info.extracted",
+            slug=slug,
+            has_email=bool(result["email"]),
+            has_phone=bool(result["phone"]),
+        )
+        return result

@@ -100,6 +100,8 @@ export interface Lead {
   last_name: string | null;
   company: string | null;
   title: string | null;
+  email: string | null;
+  phone: string | null;
   extra_data: Record<string, unknown> | null;
   status: string;
   connection_requested_at: string | null;

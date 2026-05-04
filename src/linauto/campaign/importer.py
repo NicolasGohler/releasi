@@ -71,10 +71,26 @@ _COLUMN_MAP = {
     "role": "title",
     "designation": "title",
     "titel": "title",
+    # email
+    "email": "email",
+    "e-mail": "email",
+    "email_address": "email",
+    "emailaddress": "email",
+    "mail": "email",
+    "courriel": "email",
+    # phone
+    "phone": "phone",
+    "phone_number": "phone",
+    "phonenumber": "phone",
+    "mobile": "phone",
+    "mobile_number": "phone",
+    "tel": "phone",
+    "telephone": "phone",
+    "telefon": "phone",
 }
 
 # Standard fields that map directly to Lead model columns
-_STANDARD_FIELDS = {"first_name", "last_name", "company", "title"}
+_STANDARD_FIELDS = {"first_name", "last_name", "company", "title", "email", "phone"}
 
 
 @dataclass
@@ -255,6 +271,8 @@ def parse_csv(
             last_name = None
             company = None
             title = None
+            email = None
+            phone = None
             extra_data = {}
 
             for header in headers:
@@ -273,6 +291,10 @@ def parse_csv(
                     company = value
                 elif mapped_field == "title":
                     title = value
+                elif mapped_field == "email":
+                    email = value
+                elif mapped_field == "phone":
+                    phone = value
                 elif header != url_column:
                     extra_data[header] = value
 
@@ -282,6 +304,8 @@ def parse_csv(
                 last_name=last_name,
                 company=company,
                 title=title,
+                email=email,
+                phone=phone,
                 extra_data=extra_data if extra_data else None,
             )
             if campaign_id:

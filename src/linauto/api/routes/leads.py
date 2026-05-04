@@ -83,6 +83,7 @@ async def export_campaign_leads_csv(
     writer = csv.writer(buf)
     writer.writerow([
         "linkedin_url", "first_name", "last_name", "company", "title",
+        "email", "phone",
         "status", "connection_requested_at", "connection_accepted_at",
         "followup_sent_at", "error_message", "created_at",
     ])
@@ -93,6 +94,8 @@ async def export_campaign_leads_csv(
             lead.last_name or "",
             lead.company or "",
             lead.title or "",
+            lead.email or "",
+            lead.phone or "",
             lead.status or "",
             lead.connection_requested_at.isoformat() if lead.connection_requested_at else "",
             lead.connection_accepted_at.isoformat() if lead.connection_accepted_at else "",

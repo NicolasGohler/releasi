@@ -178,6 +178,7 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
               <TableHead>Name</TableHead>
               <TableHead>Company</TableHead>
               <TableHead>Title</TableHead>
+              <TableHead>Email</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Requested</TableHead>
               <TableHead className="text-right">Actions</TableHead>
@@ -186,7 +187,7 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
           <TableBody>
             {data?.items.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
                   No leads found
                 </TableCell>
               </TableRow>
@@ -208,6 +209,17 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
                   {lead.title || "—"}
+                </TableCell>
+                <TableCell className="text-sm text-muted-foreground">
+                  {lead.email ? (
+                    <a
+                      href={`mailto:${lead.email}`}
+                      className="hover:underline"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {lead.email}
+                    </a>
+                  ) : "—"}
                 </TableCell>
                 <TableCell>
                   {lead.error_message || (lead.status === "scheduled" && lead.scheduled_at) ? (

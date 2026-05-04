@@ -173,6 +173,8 @@ class LeadOut(BaseModel):
     last_name: Optional[str] = None
     company: Optional[str] = None
     title: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
     extra_data: Optional[Dict[str, Any]] = None
     status: str
     connection_requested_at: Optional[datetime] = None

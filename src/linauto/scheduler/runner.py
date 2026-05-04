@@ -1108,6 +1108,37 @@ async def check_acceptances():
                     },
                 )
 
+                # ── Step 1b: harvest Contact Info (email + phone) for newly connected leads ──
+                # One page load per accepted lead using the already-acquired browser context.
+                # Fail-open: any error is logged but does NOT abort the acceptance run.
+                if newly_connected:
+                    contact_page = await pool_context.new_page()
+                    contact_actions = LinkedInActions(contact_page)
+                    for lead, _campaign in newly_connected:
+                        try:
+                            slug = lead.linkedin_url.split("/in/")[-1].strip("/")
+                            info = await contact_actions.get_contact_info(slug)
+                            if info.get("email") or info.get("phone"):
+                                await repo.update_lead(
+                                    lead,
+                                    email=info.get("email"),
+                                    phone=info.get("phone"),
+                                )
+                                logger.info(
+                                    "acceptance.contact_info_saved",
+                                    url=lead.linkedin_url,
+                                    has_email=bool(info.get("email")),
+                                    has_phone=bool(info.get("phone")),
+                                )
+                            await asyncio.sleep(random.uniform(2.0, 3.5))
+                        except Exception as e:
+                            logger.warning(
+                                "acceptance.contact_info_failed",
+                                url=lead.linkedin_url,
+                                error=str(e),
+                            )
+                    await contact_page.close()
+
                 # ── Step 2: schedule follow-ups for newly connected leads ────
                 for lead, campaign in newly_connected:
                     if not campaign.followup_enabled:

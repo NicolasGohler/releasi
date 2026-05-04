@@ -353,6 +353,29 @@ SEARCH_NO_RESULTS = [
     ':has-text("No results found")',
 ]
 
+# ── Contact Info overlay ──────────────────────────────────────────────────
+# LinkedIn renders the Contact Info at /in/{slug}/overlay/contact-info/
+# The overlay is a modal with structured sections. Email is in an <a href="mailto:">
+# and phone in a <span> labelled "Phone". These selectors target the modal content.
+
+CONTACT_INFO_EMAIL = [
+    # Most reliable: actual mailto href
+    '.ci-email a[href^="mailto:"]',
+    'a[href^="mailto:"]',
+    # Fallback: section labelled "Email"
+    'section:has(h3:text-is("Email")) a',
+]
+
+CONTACT_INFO_PHONE = [
+    # The phone value lives in a <span> inside a .ci-phone section
+    '.ci-phone span.t-14',
+    'section:has(h3:text-is("Phone")) span.t-14',
+    'section:has(h3:text-is("Phone")) span',
+]
+
+# URL pattern for the Contact Info overlay page
+CONTACT_INFO_URL_TEMPLATE = "https://www.linkedin.com/in/{slug}/overlay/contact-info/"
+
 # ── Session validation ────────────────────────────────────────────────────
 
 FEED_URL = "https://www.linkedin.com/feed/"

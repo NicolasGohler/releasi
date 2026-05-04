@@ -267,7 +267,7 @@ async def export_lead_list_csv(lead_list_id: str, repo: Repository = Depends(get
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["linkedin_url", "first_name", "last_name", "company", "title"])
+    writer.writerow(["linkedin_url", "first_name", "last_name", "company", "title", "email", "phone"])
     for lead in leads:
         writer.writerow([
             lead.linkedin_url,
@@ -275,6 +275,8 @@ async def export_lead_list_csv(lead_list_id: str, repo: Repository = Depends(get
             lead.last_name or "",
             lead.company or "",
             lead.title or "",
+            lead.email or "",
+            lead.phone or "",
         ])
 
     buf.seek(0)
