@@ -53,7 +53,7 @@ async def _extract_profile_urls(page: Page) -> List[str]:
     Falls back to the old all-anchors approach if no qualifying <ul> is found,
     keeping the ACoA filter as a safety net.
     """
-    urls: List[str] = await page.evaluate("""
+    payload: dict = await page.evaluate("""
         () => {
             const seen = new Set();
             const results = [];
@@ -85,6 +85,7 @@ async def _extract_profile_urls(page: Page) -> List[str]:
                     seen.add(slug);
                     results.push('https://www.linkedin.com/in/' + slug);
                 }
+                return { method: 'ul', ul_li_count: bestCount, results };
             } else {
                 // Fallback: all anchors in scope (pre-UL-detection behaviour).
                 for (const a of scope.querySelectorAll('a[href*="/in/"]')) {
@@ -97,12 +98,19 @@ async def _extract_profile_urls(page: Page) -> List[str]:
                     seen.add(slug);
                     results.push('https://www.linkedin.com/in/' + slug);
                 }
+                return { method: 'fallback', ul_li_count: bestCount, results };
             }
-
-            return results;
         }
     """)
-    return urls or []
+    if not payload:
+        return []
+    logger.debug(
+        "scraper.extract",
+        method=payload.get("method"),
+        ul_li_count=payload.get("ul_li_count"),
+        found=len(payload.get("results") or []),
+    )
+    return payload.get("results") or []
 
 
 async def scrape_event_attendees(
