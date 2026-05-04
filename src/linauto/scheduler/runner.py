@@ -361,6 +361,275 @@ async def _dispatch_continuous(
     return total_sent
 
 
+async def _dispatch_planned(
+    account,
+    repo: "Repository",
+    pool_context,
+    pool,
+    remaining: int,
+    now: datetime,
+    sent_today_count: int,
+) -> None:
+    """Legacy planned-mode dispatch: execute SCHEDULED leads past their slot time.
+
+    Only called when account.dispatch_mode == 'planned'. Continuous mode (the
+    default for all accounts) uses _dispatch_continuous() instead.
+
+    Behaviour:
+    - Fetches SCHEDULED leads with scheduled_at <= now for each active campaign.
+    - Caps each cycle to actions_per_session[1] to prevent bursts on restart.
+    - Backfills skipped/errored leads into future slots (inter_session_delay ahead).
+    - Clamps backfill anchor to the account's work window (never schedules overnight).
+    """
+    from linauto.campaign.executor import CampaignExecutor
+
+    campaigns = await repo.get_active_campaigns(account.id)
+    for campaign in campaigns:
+        due_leads = list(await repo.get_scheduled_leads(campaign.id, before=now))
+        if not due_leads:
+            continue
+
+        # Target = how many *successful* sends we want this cycle.
+        # Cap to actions_per_session[1] so one dispatch cycle never
+        # sends more than one session's worth of leads — this prevents
+        # the "10+ connections in 10 minutes" burst when restarting
+        # mid-day with many slots clustered near now.
+        _max_per_session = get_settings().actions_per_session[1]
+        target = min(
+            remaining if remaining is not None else len(due_leads),
+            _max_per_session,
+        )
+
+        executor = CampaignExecutor(repo, browser_context=pool_context)
+
+        successful_sends = 0
+        attempts = 0
+        consecutive_session_errors = 0   # non-network failures → cookie suspect
+        consecutive_network_errors = 0   # timeouts/proxy → network suspect
+        max_attempts = target * 4  # Safety cap: allow skips+errors without infinite loop
+        lead_queue = list(due_leads)  # Fixed queue — no mid-session injections
+        stop_account = False
+        backfill_count = 0  # Skipped/errored leads needing future rescheduling
+
+        while lead_queue and successful_sends < target and attempts < max_attempts:
+            attempts += 1
+            lead = lead_queue.pop(0)
+            result = await executor.execute_single_lead(account, campaign, lead)
+
+            if result.get("soft_limit_reached"):
+                # Rate-limit modal (soft block) — short 2–4 hour backoff.
+                # SCHEDULED leads stay as-is; they'll be picked up on resume.
+                backoff_hours = random.uniform(2, 4)
+                resume = datetime.utcnow() + timedelta(hours=backoff_hours)
+                await repo.update_account(account, paused_until=resume)
+                await repo.log_action(
+                    account_id=account.id,
+                    campaign_id=campaign.id,
+                    action_type=ActionType.COOLDOWN_STARTED,
+                    status=ActionLogStatus.SUCCESS,
+                    details={"paused_until": str(resume), "reason": "rate_limit_modal", "backoff_hours": round(backoff_hours, 1)},
+                )
+                logger.warning(
+                    "dispatch.soft_limit_backoff",
+                    account=account.name,
+                    resume=str(resume),
+                    backoff_hours=round(backoff_hours, 1),
+                )
+                stop_account = True
+                break
+
+            if result.get("limit_reached"):
+                resume = calculate_cooldown_resume(account.timezone)
+                await repo.update_account(account, paused_until=resume)
+                await repo.bulk_update_lead_status(
+                    campaign.id,
+                    from_status=LeadStatus.SCHEDULED,
+                    to_status=LeadStatus.LIMIT_PAUSED,
+                )
+                await repo.log_action(
+                    account_id=account.id,
+                    campaign_id=campaign.id,
+                    action_type=ActionType.COOLDOWN_STARTED,
+                    status=ActionLogStatus.SUCCESS,
+                    details={"paused_until": str(resume)},
+                )
+                logger.warning(
+                    "dispatch.cooldown_started",
+                    account=account.name,
+                    resume=str(resume),
+                )
+                stop_account = True
+                break
+
+            if result.get("fatal"):
+                # CAPTCHA or session expired — stop this account
+                stop_account = True
+                break
+
+            if result.get("success"):
+                successful_sends += 1
+                consecutive_session_errors = 0
+                consecutive_network_errors = 0
+                await repo.add_proxy_mb(account.id, 2.0)  # ~2 MB per connection request
+            elif result.get("skipped"):
+                # Profile was skipped (already connected, already accepted,
+                # email required, etc.). Never counts against session health.
+                # Don't inject a replacement into this session — schedule it
+                # after the current day's last slot to avoid rapid-fire sends.
+                consecutive_session_errors = 0
+                consecutive_network_errors = 0
+                backfill_count += 1
+            elif result.get("network_error"):
+                # Proxy/timeout failure — don't penalise the session
+                consecutive_network_errors += 1
+                consecutive_session_errors = 0
+                if consecutive_network_errors >= 3:
+                    logger.warning(
+                        "dispatch.proxy_connectivity_issues",
+                        account=account.name,
+                        campaign=campaign.name,
+                        consecutive=consecutive_network_errors,
+                    )
+                    await repo.log_action(
+                        account_id=account.id,
+                        campaign_id=campaign.id,
+                        action_type=ActionType.ERROR,
+                        status=ActionLogStatus.FAILED,
+                        details={"reason": "consecutive_network_errors", "count": consecutive_network_errors},
+                    )
+                    stop_account = True
+                    break
+            else:
+                consecutive_session_errors += 1
+                consecutive_network_errors = 0
+
+                # 3+ consecutive session errors → cookie likely expired
+                if consecutive_session_errors >= 3:
+                    logger.error(
+                        "dispatch.consecutive_errors_detected",
+                        account=account.name,
+                        campaign=campaign.name,
+                        consecutive=consecutive_session_errors,
+                    )
+                    await repo.update_account(account, status="cookie_expired")
+                    await slack_notify(
+                        f":warning: *Cookie expired* — account *{account.name}* "
+                        f"({consecutive_session_errors} consecutive session errors on campaign *{campaign.name}*)."
+                    )
+                    # Reset SCHEDULED leads back to PENDING so they're
+                    # re-planned when the cookie is renewed
+                    await repo.bulk_update_lead_status(
+                        campaign.id,
+                        from_status=LeadStatus.SCHEDULED,
+                        to_status=LeadStatus.PENDING,
+                    )
+                    await repo.log_action(
+                        account_id=account.id,
+                        campaign_id=campaign.id,
+                        action_type=ActionType.ERROR,
+                        status=ActionLogStatus.FAILED,
+                        details={"reason": "consecutive_navigation_errors", "count": consecutive_session_errors},
+                    )
+                    stop_account = True
+                    break
+
+                # Lead errored — schedule a replacement later in the day
+                backfill_count += 1
+
+        # Post-session: schedule backfills for any skipped/errored leads.
+        # Anchor the first backfill after the last future scheduled slot +
+        # one inter-session gap, then space each subsequent backfill by
+        # intra_session_delay[0] — so they form a natural future session
+        # instead of firing immediately.
+        # Cap by remaining daily budget to prevent over-scheduling.
+        if backfill_count > 0 and not stop_account:
+            _settings = get_settings()
+            _inter_gap = _settings.inter_session_delay[0]   # seconds (e.g. 2700 = 45 min)
+            _intra_gap = _settings.intra_session_delay[0]   # seconds (e.g. 120 = 2 min)
+            _sent_today = await repo.get_daily_requests_sent(account.id)
+            _future_scheduled = await repo.count_future_scheduled_leads(campaign.id)
+            _available = max(0, account.daily_limit - _sent_today - _future_scheduled)
+            _actual_backfills = min(backfill_count, _available)
+            if _actual_backfills < backfill_count:
+                logger.info(
+                    "dispatch.backfills_budget_capped",
+                    campaign=campaign.name,
+                    requested=backfill_count,
+                    scheduled=_actual_backfills,
+                    daily_limit=account.daily_limit,
+                    sent_today=_sent_today,
+                    future_scheduled=_future_scheduled,
+                )
+            _anchor = datetime.utcnow() + timedelta(seconds=_inter_gap)
+            # Clamp backfill anchor to account's work window so leads are never
+            # scheduled overnight. If anchor falls before today's window, push
+            # to window start. If after today's window, push to tomorrow's start.
+            if account.timezone:
+                try:
+                    from zoneinfo import ZoneInfo
+                    _bkf_tz = ZoneInfo(account.timezone)
+                    _bkf_settings = get_settings()
+                    _bkf_day = _anchor.date()
+                    _ws = datetime(
+                        _bkf_day.year, _bkf_day.month, _bkf_day.day,
+                        _bkf_settings.work_start_hour, 0, tzinfo=_bkf_tz,
+                    ).astimezone(_dt_tz.utc).replace(tzinfo=None)
+                    _we = datetime(
+                        _bkf_day.year, _bkf_day.month, _bkf_day.day,
+                        _bkf_settings.work_end_hour, 0, tzinfo=_bkf_tz,
+                    ).astimezone(_dt_tz.utc).replace(tzinfo=None)
+                    if _anchor < _ws:
+                        _anchor = _ws
+                    elif _anchor >= _we:
+                        _tmrw = _bkf_day + timedelta(days=1)
+                        _anchor = datetime(
+                            _tmrw.year, _tmrw.month, _tmrw.day,
+                            _bkf_settings.work_start_hour, 0, tzinfo=_bkf_tz,
+                        ).astimezone(_dt_tz.utc).replace(tzinfo=None)
+                except Exception:
+                    pass  # keep original anchor if timezone logic fails
+            _scheduled = 0
+            for _i in range(_actual_backfills):
+                _pending = await repo.get_pending_leads(campaign.id, limit=1)
+                if not _pending:
+                    break
+                _bl = _pending[0]
+                _slot_time = _anchor + timedelta(seconds=_i * _intra_gap)
+                await repo.update_lead(
+                    _bl,
+                    status=LeadStatus.SCHEDULED,
+                    scheduled_at=_slot_time,
+                )
+                _scheduled += 1
+            if _scheduled:
+                logger.info(
+                    "dispatch.backfills_scheduled",
+                    campaign=campaign.name,
+                    count=_scheduled,
+                    first_slot=_anchor.strftime("%H:%M UTC"),
+                )
+
+        if successful_sends > 0:
+            # At least one lead went through — session is confirmed healthy.
+            # Record session end time so the inter-session gap is enforced
+            # before the next dispatch cycle processes this account.
+            pool.confirm_session(account.id)
+            _last_session_end[account.id] = datetime.utcnow()
+            day_sent = sent_today_count + successful_sends
+            day_target = target + sent_today_count  # target was remaining at cycle start
+            logger.info(
+                "dispatch.cycle_complete",
+                campaign=campaign.name,
+                cycle_sent=successful_sends,
+                day_sent=day_sent,
+                day_target=day_target,
+                day_remaining=max(0, day_target - day_sent),
+            )
+
+        if stop_account:
+            break
+
+
 async def daily_planning_sweep():
     """
     Generate today's plan for all active accounts/campaigns.
@@ -379,8 +648,9 @@ async def daily_planning_sweep():
     try:
         accounts = await repo.list_active_accounts()
         for account in accounts:
-            # Continuous-mode accounts manage their own scheduling — no planning needed.
-            if account.dispatch_mode == "continuous":
+            # Continuous-mode accounts (default) manage their own scheduling — no planning needed.
+            # Only accounts with an explicit 'planned' dispatch_mode use the pre-scheduled slot system.
+            if account.dispatch_mode != "planned":
                 continue
 
             if account.paused_until and not is_cooldown_expired(account.paused_until):
@@ -527,7 +797,8 @@ async def dispatch():
             if account.paused_until and not is_cooldown_expired(account.paused_until):
                 continue
 
-            _is_continuous = account.dispatch_mode == "continuous"
+            # Continuous is the default. Only 'planned' opts into the legacy pre-scheduled slot system.
+            _is_continuous = account.dispatch_mode != "planned"
 
             if _is_continuous:
                 # ── Continuous mode: dynamic gap + work-window guard ──────────
@@ -660,256 +931,9 @@ async def dispatch():
                         # Compute gap to next session now, so it's stable for the
                         # entire waiting period rather than re-randomised each poll.
                         _state["next_gap_sec"] = _next_continuous_gap(_state["target_gap_sec"])
-                    continue  # skip the planned-mode campaign loop below
-
-                campaigns = await repo.get_active_campaigns(account.id)
-                for campaign in campaigns:
-                    due_leads = list(await repo.get_scheduled_leads(campaign.id, before=now))
-                    if not due_leads:
-                        continue
-
-                    # Target = how many *successful* sends we want this cycle.
-                    # Cap to actions_per_session[1] so one dispatch cycle never
-                    # sends more than one session's worth of leads — this prevents
-                    # the "10+ connections in 10 minutes" burst when restarting
-                    # mid-day with many slots clustered near now.
-                    _max_per_session = get_settings().actions_per_session[1]
-                    target = min(
-                        remaining if remaining is not None else len(due_leads),
-                        _max_per_session,
-                    )
-
-                    from linauto.campaign.executor import CampaignExecutor
-                    executor = CampaignExecutor(repo, browser_context=pool_context)
-
-                    successful_sends = 0
-                    attempts = 0
-                    consecutive_session_errors = 0   # non-network failures → cookie suspect
-                    consecutive_network_errors = 0   # timeouts/proxy → network suspect
-                    max_attempts = target * 4  # Safety cap: allow skips+errors without loop
-                    lead_queue = list(due_leads)  # Fixed queue — no mid-session injections
-                    stop_account = False
-                    backfill_count = 0  # Skipped/errored leads needing future rescheduling
-
-                    while lead_queue and successful_sends < target and attempts < max_attempts:
-                        attempts += 1
-                        lead = lead_queue.pop(0)
-                        result = await executor.execute_single_lead(account, campaign, lead)
-
-                        if result.get("soft_limit_reached"):
-                            # Rate-limit modal (soft block) — short 2–4 hour backoff.
-                            # SCHEDULED leads stay as-is; they'll be picked up on resume.
-                            tz = account.timezone or "UTC"
-                            backoff_hours = random.uniform(2, 4)
-                            resume = datetime.utcnow() + timedelta(hours=backoff_hours)
-                            await repo.update_account(account, paused_until=resume)
-                            await repo.log_action(
-                                account_id=account.id,
-                                campaign_id=campaign.id,
-                                action_type=ActionType.COOLDOWN_STARTED,
-                                status=ActionLogStatus.SUCCESS,
-                                details={"paused_until": str(resume), "reason": "rate_limit_modal", "backoff_hours": round(backoff_hours, 1)},
-                            )
-                            logger.warning(
-                                "dispatch.soft_limit_backoff",
-                                account=account.name,
-                                resume=str(resume),
-                                backoff_hours=round(backoff_hours, 1),
-                            )
-                            stop_account = True
-                            break
-
-                        if result.get("limit_reached"):
-                            # Trigger cooldown
-                            resume = calculate_cooldown_resume(account.timezone)
-                            await repo.update_account(account, paused_until=resume)
-                            await repo.bulk_update_lead_status(
-                                campaign.id,
-                                from_status=LeadStatus.SCHEDULED,
-                                to_status=LeadStatus.LIMIT_PAUSED,
-                            )
-                            await repo.log_action(
-                                account_id=account.id,
-                                campaign_id=campaign.id,
-                                action_type=ActionType.COOLDOWN_STARTED,
-                                status=ActionLogStatus.SUCCESS,
-                                details={"paused_until": str(resume)},
-                            )
-                            logger.warning(
-                                "dispatch.cooldown_started",
-                                account=account.name,
-                                resume=str(resume),
-                            )
-                            stop_account = True
-                            break
-
-                        if result.get("fatal"):
-                            # CAPTCHA or session expired — stop this account
-                            stop_account = True
-                            break
-
-                        if result.get("success"):
-                            successful_sends += 1
-                            consecutive_session_errors = 0
-                            consecutive_network_errors = 0
-                            await repo.add_proxy_mb(account.id, 2.0)  # ~2 MB per connection request
-                        elif result.get("skipped"):
-                            # Profile was skipped (already connected, already accepted,
-                            # email required, etc.). Never counts against session health.
-                            # Don't inject a replacement into this session — schedule it
-                            # after the current day's last slot to avoid rapid-fire sends.
-                            consecutive_session_errors = 0
-                            consecutive_network_errors = 0
-                            backfill_count += 1
-                        elif result.get("network_error"):
-                            # Proxy/timeout failure — don't penalise the session
-                            consecutive_network_errors += 1
-                            consecutive_session_errors = 0
-                            if consecutive_network_errors >= 3:
-                                logger.warning(
-                                    "dispatch.proxy_connectivity_issues",
-                                    account=account.name,
-                                    campaign=campaign.name,
-                                    consecutive=consecutive_network_errors,
-                                )
-                                await repo.log_action(
-                                    account_id=account.id,
-                                    campaign_id=campaign.id,
-                                    action_type=ActionType.ERROR,
-                                    status=ActionLogStatus.FAILED,
-                                    details={"reason": "consecutive_network_errors", "count": consecutive_network_errors},
-                                )
-                                stop_account = True
-                                break
-                        else:
-                            consecutive_session_errors += 1
-                            consecutive_network_errors = 0
-
-                            # 3+ consecutive session errors → cookie likely expired
-                            if consecutive_session_errors >= 3:
-                                logger.error(
-                                    "dispatch.consecutive_errors_detected",
-                                    account=account.name,
-                                    campaign=campaign.name,
-                                    consecutive=consecutive_session_errors,
-                                )
-                                await repo.update_account(account, status="cookie_expired")
-                                await slack_notify(
-                                    f":warning: *Cookie expired* — account *{account.name}* "
-                                    f"({consecutive_session_errors} consecutive session errors on campaign *{campaign.name}*)."
-                                )
-                                # Reset SCHEDULED leads back to PENDING so they're
-                                # re-planned when the cookie is renewed
-                                await repo.bulk_update_lead_status(
-                                    campaign.id,
-                                    from_status=LeadStatus.SCHEDULED,
-                                    to_status=LeadStatus.PENDING,
-                                )
-                                await repo.log_action(
-                                    account_id=account.id,
-                                    campaign_id=campaign.id,
-                                    action_type=ActionType.ERROR,
-                                    status=ActionLogStatus.FAILED,
-                                    details={"reason": "consecutive_navigation_errors", "count": consecutive_session_errors},
-                                )
-                                stop_account = True
-                                break
-
-                            # Lead errored — schedule a replacement later in the day
-                            backfill_count += 1
-
-                    # Post-session: schedule backfills for any skipped/errored leads.
-                    # Anchor the first backfill after the last future scheduled slot +
-                    # one inter-session gap, then space each subsequent backfill by
-                    # intra_session_delay[0] — so they form a natural future session
-                    # instead of firing immediately.
-                    # Cap by remaining daily budget to prevent over-scheduling.
-                    if backfill_count > 0 and not stop_account:
-                        _settings = get_settings()
-                        _inter_gap = _settings.inter_session_delay[0]   # seconds (e.g. 2700 = 45 min)
-                        _intra_gap = _settings.intra_session_delay[0]   # seconds (e.g. 120 = 2 min)
-                        _sent_today = await repo.get_daily_requests_sent(account.id)
-                        _future_scheduled = await repo.count_future_scheduled_leads(campaign.id)
-                        _available = max(0, account.daily_limit - _sent_today - _future_scheduled)
-                        _actual_backfills = min(backfill_count, _available)
-                        if _actual_backfills < backfill_count:
-                            logger.info(
-                                "dispatch.backfills_budget_capped",
-                                campaign=campaign.name,
-                                requested=backfill_count,
-                                scheduled=_actual_backfills,
-                                daily_limit=account.daily_limit,
-                                sent_today=_sent_today,
-                                future_scheduled=_future_scheduled,
-                            )
-                        _anchor = datetime.utcnow() + timedelta(seconds=_inter_gap)
-                        # Clamp backfill anchor to account's work window so leads are never
-                        # scheduled overnight. If anchor falls before today's window, push
-                        # to window start. If after today's window, push to tomorrow's start.
-                        if account.timezone:
-                            try:
-                                from zoneinfo import ZoneInfo
-                                _bkf_tz = ZoneInfo(account.timezone)
-                                _bkf_settings = get_settings()
-                                _bkf_day = _anchor.date()
-                                _ws = datetime(
-                                    _bkf_day.year, _bkf_day.month, _bkf_day.day,
-                                    _bkf_settings.work_start_hour, 0, tzinfo=_bkf_tz,
-                                ).astimezone(_dt_tz.utc).replace(tzinfo=None)
-                                _we = datetime(
-                                    _bkf_day.year, _bkf_day.month, _bkf_day.day,
-                                    _bkf_settings.work_end_hour, 0, tzinfo=_bkf_tz,
-                                ).astimezone(_dt_tz.utc).replace(tzinfo=None)
-                                if _anchor < _ws:
-                                    _anchor = _ws
-                                elif _anchor >= _we:
-                                    _tmrw = _bkf_day + timedelta(days=1)
-                                    _anchor = datetime(
-                                        _tmrw.year, _tmrw.month, _tmrw.day,
-                                        _bkf_settings.work_start_hour, 0, tzinfo=_bkf_tz,
-                                    ).astimezone(_dt_tz.utc).replace(tzinfo=None)
-                            except Exception:
-                                pass  # keep original anchor if timezone logic fails
-                        _scheduled = 0
-                        for _i in range(_actual_backfills):
-                            _pending = await repo.get_pending_leads(campaign.id, limit=1)
-                            if not _pending:
-                                break
-                            _bl = _pending[0]
-                            _slot_time = _anchor + timedelta(seconds=_i * _intra_gap)
-                            await repo.update_lead(
-                                _bl,
-                                status=LeadStatus.SCHEDULED,
-                                scheduled_at=_slot_time,
-                            )
-                            _scheduled += 1
-                        if _scheduled:
-                            logger.info(
-                                "dispatch.backfills_scheduled",
-                                campaign=campaign.name,
-                                count=_scheduled,
-                                first_slot=_anchor.strftime("%H:%M UTC"),
-                            )
-
-                    if successful_sends > 0:
-                        # At least one lead went through — session is confirmed healthy.
-                        # Record session end time so the inter-session gap is enforced
-                        # before the next dispatch cycle processes this account.
-                        pool.confirm_session(account.id)
-                        _last_session_end[account.id] = datetime.utcnow()
-                        day_sent = sent_today_count + successful_sends
-                        day_target = target + sent_today_count  # target was remaining at cycle start
-                        logger.info(
-                            "dispatch.cycle_complete",
-                            campaign=campaign.name,
-                            cycle_sent=successful_sends,
-                            day_sent=day_sent,
-                            day_target=day_target,
-                            day_remaining=max(0, day_target - day_sent),
-                        )
-
-                    if stop_account:
-                        break
+                else:
+                    # ── Legacy planned-mode dispatch (explicit dispatch_mode='planned' only) ──
+                    await _dispatch_planned(account, repo, pool_context, pool, remaining, now, sent_today_count)
             finally:
                 await pool.release_idle(account.id)
 
