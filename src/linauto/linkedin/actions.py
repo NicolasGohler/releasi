@@ -1552,25 +1552,31 @@ class LinkedInActions:
 
         await asyncio.sleep(1.0)
 
-        # ── Step 2: find Contact Info link ────────────────────────────────
-        # LinkedIn renders a "Contact info" anchor in the profile header.
-        # It's typically <a id="top-card-text-details-contact-info"> or
-        # an anchor with text "Contact info".
-        contact_link = await self.page.evaluate("""
-        () => {
-            // Try by ID first (most stable)
-            const byId = document.getElementById('top-card-text-details-contact-info');
-            if (byId) { byId.click(); return 'clicked-by-id'; }
-            // Fallback: find by link text
-            for (const a of document.querySelectorAll('a, button, span')) {
-                if ((a.innerText || '').trim().toLowerCase() === 'contact info') {
-                    a.click();
-                    return 'clicked-by-text';
-                }
-            }
-            return null;
-        }
-        """)
+        # ── Step 2: find Contact Info link and click with native Playwright ─
+        # LinkedIn uses React synthetic events; JS element.click() from evaluate()
+        # does NOT reliably trigger SPA navigation. Use Playwright's native click
+        # which simulates a real mouse event and fires React handlers correctly.
+        contact_link = None
+        # Try by ID first (most stable when present)
+        try:
+            id_loc = self.page.locator("#top-card-text-details-contact-info")
+            if await id_loc.count() > 0 and await id_loc.first.is_visible():
+                await id_loc.first.scroll_into_view_if_needed()
+                await id_loc.first.click()
+                contact_link = "clicked-by-id"
+        except Exception:
+            pass
+
+        if not contact_link:
+            # Fallback: find by visible text "Contact info"
+            try:
+                text_loc = self.page.get_by_text("Contact info", exact=True).first
+                if await text_loc.is_visible():
+                    await text_loc.scroll_into_view_if_needed()
+                    await text_loc.click()
+                    contact_link = "clicked-by-text"
+            except Exception:
+                pass
 
         if not contact_link:
             logger.debug("contact_info.no_contact_link", slug=slug)
