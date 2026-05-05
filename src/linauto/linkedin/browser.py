@@ -91,6 +91,62 @@ _TIMEZONE_LOCALE_MAP = {
 }
 
 
+# Most-common/capital timezone per proxy_country code.
+# Used to align browser timezone_id with the proxy IP location.
+_COUNTRY_TIMEZONE: dict = {
+    "us": "America/New_York",
+    "ca": "America/Toronto",
+    "gb": "Europe/London",
+    "ie": "Europe/Dublin",
+    "au": "Australia/Sydney",
+    "nz": "Pacific/Auckland",
+    "de": "Europe/Berlin",
+    "fr": "Europe/Paris",
+    "nl": "Europe/Amsterdam",
+    "be": "Europe/Brussels",
+    "ch": "Europe/Zurich",
+    "at": "Europe/Vienna",
+    "es": "Europe/Madrid",
+    "it": "Europe/Rome",
+    "pt": "Europe/Lisbon",
+    "se": "Europe/Stockholm",
+    "no": "Europe/Oslo",
+    "dk": "Europe/Copenhagen",
+    "fi": "Europe/Helsinki",
+    "pl": "Europe/Warsaw",
+    "cz": "Europe/Prague",
+    "ro": "Europe/Bucharest",
+    "hu": "Europe/Budapest",
+    "gr": "Europe/Athens",
+    "tr": "Europe/Istanbul",
+    "ru": "Europe/Moscow",
+    "ua": "Europe/Kyiv",
+    "ae": "Asia/Dubai",
+    "sa": "Asia/Riyadh",
+    "in": "Asia/Kolkata",
+    "sg": "Asia/Singapore",
+    "jp": "Asia/Tokyo",
+    "cn": "Asia/Shanghai",
+    "kr": "Asia/Seoul",
+    "hk": "Asia/Hong_Kong",
+    "br": "America/Sao_Paulo",
+    "mx": "America/Mexico_City",
+    "ar": "America/Argentina/Buenos_Aires",
+    "za": "Africa/Johannesburg",
+    "ng": "Africa/Lagos",
+    "eg": "Africa/Cairo",
+    "il": "Asia/Jerusalem",
+}
+
+
+def _proxy_country_to_timezone(proxy_country: Optional[str]) -> Optional[str]:
+    """Return the canonical timezone for a proxy_country code, or None if unknown."""
+    if not proxy_country:
+        return None
+    country_base = proxy_country.split("-")[0].lower()
+    return _COUNTRY_TIMEZONE.get(country_base)
+
+
 def _timezone_to_locale(timezone_str: Optional[str]) -> str:
     """Always use en-US. LinkedIn UI language is controlled by account settings,
     not browser locale, so non-English locales just break our selectors."""
@@ -191,7 +247,18 @@ class LinkedInBrowser:
         self._playwright = await async_playwright().start()
 
         ua = user_agent or _deterministic_ua(account_id, proxy_country)
-        tz = timezone or settings.default_timezone
+        # Browser timezone must match proxy country to avoid IP/timezone mismatch.
+        # Precedence: proxy_country-derived > explicit timezone arg > account default.
+        proxy_tz = _proxy_country_to_timezone(proxy_country)
+        tz = proxy_tz or timezone or settings.default_timezone
+        if proxy_tz and timezone and proxy_tz != timezone:
+            logger.warning(
+                "browser.timezone_proxy_mismatch",
+                account_id=account_id,
+                account_tz=timezone,
+                proxy_country=proxy_country,
+                using_tz=proxy_tz,
+            )
         locale = _timezone_to_locale(tz)
 
         # Deterministic viewport — consistent fingerprint per account, realistic sizes
