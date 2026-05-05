@@ -17,6 +17,74 @@ import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { FastForward, RotateCcw, Trash2, Undo2, Mail, Check } from "lucide-react";
+
+const STATUS_LABELS: Record<string, string> = {
+  connection_requested: "requested",
+};
+
+function relativeDate(dateStr: string): { label: string; title: string } {
+  const date = new Date(dateStr.endsWith("Z") ? dateStr : dateStr + "Z");
+  const diffDays = Math.floor((Date.now() - date.getTime()) / 86400000);
+  const label =
+    diffDays === 0 ? "today" :
+    diffDays === 1 ? "yesterday" :
+    diffDays < 7 ? `${diffDays}d ago` :
+    diffDays < 30 ? `${Math.floor(diffDays / 7)}w ago` :
+    `${Math.floor(diffDays / 30)}mo ago`;
+  return { label, title: date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) };
+}
+
+function EmailCopyButton({ email }: { email: string }) {
+  const [copied, setCopied] = useState(false);
+  function handleCopy(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    navigator.clipboard.writeText(email).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button onClick={handleCopy} className="ml-1.5 inline-flex items-center text-muted-foreground/60 hover:text-muted-foreground transition-colors">
+            {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Mail className="h-3 w-3" />}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="text-xs">{copied ? "Copied!" : email}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+function ActionIcon({ icon, label, onClick, disabled, destructive }: {
+  icon: React.ReactNode; label: string; onClick: () => void; disabled?: boolean; destructive?: boolean;
+}) {
+  return (
+    <TooltipProvider delayDuration={300}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost" size="icon"
+            className={`h-7 w-7 ${destructive ? "text-muted-foreground hover:text-destructive hover:bg-destructive/10" : ""}`}
+            onClick={onClick} disabled={disabled}
+          >
+            {icon}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="text-xs">{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
 
 export default function GlobalLeadsPage() {
   const [page, setPage] = useState(1);
@@ -26,8 +94,7 @@ export default function GlobalLeadsPage() {
   const [campaignFilter, setCampaignFilter] = useState<string | undefined>();
 
   const { data: leadsData, isLoading } = useGlobalLeads({
-    page,
-    per_page: 50,
+    page, per_page: 50,
     search: search || undefined,
     status: statusFilter,
     lead_list_id: listFilter,
@@ -40,98 +107,57 @@ export default function GlobalLeadsPage() {
   const skipLead = useSkipLead();
   const requeueLead = useRequeueLead();
 
-  const totalPages = leadsData
-    ? Math.ceil(leadsData.total / leadsData.per_page)
-    : 1;
+  const totalPages = leadsData ? Math.ceil(leadsData.total / leadsData.per_page) : 1;
 
-  const statuses = [
-    "pending",
-    "scheduled",
-    "connection_requested",
-    "connected",
-    "completed",
-    "skipped",
-    "error",
-    "removed",
-  ];
+  const statuses = ["pending", "scheduled", "connection_requested", "connected", "completed", "skipped", "error", "removed"];
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Lead Library"
-        description="All leads across all lists and campaigns"
-      />
+      <PageHeader title="Lead Library" description="All leads across all lists and campaigns" />
 
-      {/* Filters */}
       <div className="flex flex-wrap gap-3">
         <Input
           placeholder="Search leads..."
           value={search}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            setPage(1);
-          }}
+          onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           className="max-w-xs"
         />
         <select
           className="rounded-md border border-border bg-background px-3 py-2 text-sm"
           value={statusFilter ?? ""}
-          onChange={(e) => {
-            setStatusFilter(e.target.value || undefined);
-            setPage(1);
-          }}
+          onChange={(e) => { setStatusFilter(e.target.value || undefined); setPage(1); }}
         >
           <option value="">All statuses</option>
           {statuses.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
+            <option key={s} value={s}>{STATUS_LABELS[s] ?? s.replace(/_/g, " ")}</option>
           ))}
         </select>
         <select
           className="rounded-md border border-border bg-background px-3 py-2 text-sm"
           value={listFilter ?? ""}
-          onChange={(e) => {
-            setListFilter(e.target.value || undefined);
-            setPage(1);
-          }}
+          onChange={(e) => { setListFilter(e.target.value || undefined); setPage(1); }}
         >
           <option value="">All lists</option>
-          {lists?.map((ll) => (
-            <option key={ll.id} value={ll.id}>
-              {ll.name}
-            </option>
-          ))}
+          {lists?.map((ll) => <option key={ll.id} value={ll.id}>{ll.name}</option>)}
         </select>
         <select
           className="rounded-md border border-border bg-background px-3 py-2 text-sm"
           value={campaignFilter ?? ""}
-          onChange={(e) => {
-            setCampaignFilter(e.target.value || undefined);
-            setPage(1);
-          }}
+          onChange={(e) => { setCampaignFilter(e.target.value || undefined); setPage(1); }}
         >
           <option value="">All campaigns</option>
-          {campaigns?.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
+          {campaigns?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>
-            Leads {leadsData ? `(${leadsData.total})` : ""}
-          </CardTitle>
+          <CardTitle>Leads {leadsData ? `(${leadsData.total})` : ""}</CardTitle>
         </CardHeader>
         <CardContent>
           {isLoading ? (
             <div className="space-y-2">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <Skeleton key={i} className="h-10" />
-              ))}
+              {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10" />)}
             </div>
           ) : !leadsData || leadsData.items.length === 0 ? (
             <p className="text-sm text-muted-foreground">No leads found</p>
@@ -143,7 +169,6 @@ export default function GlobalLeadsPage() {
                     <tr className="border-b text-left text-muted-foreground">
                       <th className="pb-2 font-medium">Name</th>
                       <th className="pb-2 font-medium">Company</th>
-                      <th className="pb-2 font-medium">Email</th>
                       <th className="pb-2 font-medium">Campaign</th>
                       <th className="pb-2 font-medium">Status</th>
                       <th className="pb-2 font-medium text-right">Actions</th>
@@ -153,83 +178,53 @@ export default function GlobalLeadsPage() {
                     {leadsData.items.map((lead) => (
                       <tr key={lead.id} className="border-b last:border-0">
                         <td className="py-2">
-                          <a
-                            href={lead.linkedin_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="font-medium hover:underline"
-                          >
-                            {[lead.first_name, lead.last_name]
-                              .filter(Boolean)
-                              .join(" ") || "—"}
-                          </a>
+                          <div className="flex items-center gap-0.5">
+                            <a
+                              href={lead.linkedin_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="font-medium hover:underline"
+                            >
+                              {[lead.first_name, lead.last_name].filter(Boolean).join(" ") || "—"}
+                            </a>
+                            {lead.email && <EmailCopyButton email={lead.email} />}
+                          </div>
                         </td>
                         <td className="py-2 text-muted-foreground max-w-[160px]">
                           <span className="block truncate" title={lead.company ?? undefined}>{lead.company ?? "—"}</span>
-                        </td>
-                        <td className="py-2 text-sm text-muted-foreground">
-                          {lead.email ? (
-                            <a href={`mailto:${lead.email}`} className="hover:underline" onClick={(e) => e.stopPropagation()}>
-                              {lead.email}
-                            </a>
-                          ) : "—"}
                         </td>
                         <td className="py-2 text-muted-foreground">{lead.campaign_name ?? "—"}</td>
                         <td className="py-2">
                           <StatusBadge status={lead.status} />
                         </td>
                         <td className="py-2 text-right">
-                          <div className="flex items-center justify-end gap-1">
+                          <div className="flex items-center justify-end gap-0.5">
                             {(lead.status === "pending" || lead.status === "scheduled") && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 text-xs"
-                                onClick={() => skipLead.mutate(lead.id, {
-                                  onSuccess: () => toast.success("Lead skipped"),
-                                  onError: (err) => toast.error(err.message),
-                                })}
-                              >
-                                Skip
-                              </Button>
+                              <ActionIcon
+                                icon={<FastForward className="h-3.5 w-3.5" />} label="Skip"
+                                onClick={() => skipLead.mutate(lead.id, { onSuccess: () => toast.success("Lead skipped"), onError: (e) => toast.error(e.message) })}
+                                disabled={skipLead.isPending}
+                              />
                             )}
                             {(lead.status === "error" || lead.status === "withdrawn" || lead.status === "skipped") && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 text-xs"
-                                onClick={() => requeueLead.mutate(lead.id, {
-                                  onSuccess: () => toast.success("Lead re-queued"),
-                                  onError: (err) => toast.error(err.message),
-                                })}
-                              >
-                                Re-queue
-                              </Button>
+                              <ActionIcon
+                                icon={<RotateCcw className="h-3.5 w-3.5" />} label="Re-queue"
+                                onClick={() => requeueLead.mutate(lead.id, { onSuccess: () => toast.success("Lead re-queued"), onError: (e) => toast.error(e.message) })}
+                                disabled={requeueLead.isPending}
+                              />
                             )}
                             {lead.status === "removed" ? (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 text-xs"
-                                onClick={() => restoreLead.mutate(lead.id, {
-                                  onSuccess: () => toast.success("Lead restored"),
-                                  onError: (err) => toast.error(err.message),
-                                })}
-                              >
-                                Restore
-                              </Button>
+                              <ActionIcon
+                                icon={<Undo2 className="h-3.5 w-3.5" />} label="Restore"
+                                onClick={() => restoreLead.mutate(lead.id, { onSuccess: () => toast.success("Lead restored"), onError: (e) => toast.error(e.message) })}
+                                disabled={restoreLead.isPending}
+                              />
                             ) : (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 text-xs text-muted-foreground hover:text-destructive"
-                                onClick={() => deleteLead.mutate(lead.id, {
-                                  onSuccess: () => toast.success("Lead removed"),
-                                  onError: (err) => toast.error(err.message),
-                                })}
-                              >
-                                Remove
-                              </Button>
+                              <ActionIcon
+                                icon={<Trash2 className="h-3.5 w-3.5" />} label="Remove"
+                                onClick={() => deleteLead.mutate(lead.id, { onSuccess: () => toast.success("Lead removed"), onError: (e) => toast.error(e.message) })}
+                                disabled={deleteLead.isPending} destructive
+                              />
                             )}
                           </div>
                         </td>
@@ -241,25 +236,9 @@ export default function GlobalLeadsPage() {
 
               {totalPages > 1 && (
                 <div className="flex items-center justify-between mt-4">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={page <= 1}
-                    onClick={() => setPage(page - 1)}
-                  >
-                    Previous
-                  </Button>
-                  <span className="text-sm text-muted-foreground">
-                    Page {page} of {totalPages}
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={page >= totalPages}
-                    onClick={() => setPage(page + 1)}
-                  >
-                    Next
-                  </Button>
+                  <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</Button>
+                  <span className="text-sm text-muted-foreground">Page {page} of {totalPages}</span>
+                  <Button size="sm" variant="outline" disabled={page >= totalPages} onClick={() => setPage(page + 1)}>Next</Button>
                 </div>
               )}
             </>

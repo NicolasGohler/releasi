@@ -1,3 +1,5 @@
+"use client";
+
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
@@ -20,13 +22,20 @@ const statusColors: Record<string, string> = {
   cookie_expired: "bg-red-500/15 text-red-400 border-red-500/30",
 };
 
+// Display labels — overrides the default underscore→space transform.
+const statusLabels: Record<string, string> = {
+  connection_requested: "requested",
+  limit_paused: "limit paused",
+  cookie_expired: "session expired",
+};
+
 export function StatusBadge({ status }: { status: string }) {
   return (
     <Badge
       variant="outline"
       className={cn("text-[11px] font-medium", statusColors[status] ?? "")}
     >
-      {status.replace(/_/g, " ")}
+      {statusLabels[status] ?? status.replace(/_/g, " ")}
     </Badge>
   );
 }

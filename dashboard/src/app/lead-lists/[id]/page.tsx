@@ -1,6 +1,13 @@
 "use client";
 
 import { use, useState, useCallback, useTransition } from "react";
+import { Mail, Check } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   useLeadList,
   useLeadListLeads,
@@ -16,6 +23,30 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useDropzone } from "react-dropzone";
 import { exportLeadListCSV } from "@/lib/api";
+
+function EmailCopyButton({ email }: { email: string }) {
+  const [copied, setCopied] = useState(false);
+  function handleCopy(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    navigator.clipboard.writeText(email).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button onClick={handleCopy} className="ml-1.5 inline-flex items-center text-muted-foreground/60 hover:text-muted-foreground transition-colors">
+            {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Mail className="h-3 w-3" />}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="text-xs">{copied ? "Copied!" : email}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
 
 export default function LeadListDetailPage({
   params,
@@ -215,7 +246,6 @@ export default function LeadListDetailPage({
                       <th className="pb-2 font-medium">Name</th>
                       <th className="pb-2 font-medium">Company</th>
                       <th className="pb-2 font-medium">Title</th>
-                      <th className="pb-2 font-medium">Email</th>
                       <th className="pb-2 font-medium">LinkedIn</th>
                     </tr>
                   </thead>
@@ -223,9 +253,10 @@ export default function LeadListDetailPage({
                     {leadsData.items.map((lead) => (
                       <tr key={lead.id} className="border-b last:border-0">
                         <td className="py-2">
-                          {[lead.first_name, lead.last_name]
-                            .filter(Boolean)
-                            .join(" ") || "—"}
+                          <div className="flex items-center gap-0.5">
+                            {[lead.first_name, lead.last_name].filter(Boolean).join(" ") || "—"}
+                            {lead.email && <EmailCopyButton email={lead.email} />}
+                          </div>
                         </td>
                         <td className="py-2 max-w-[160px]">
                           <span className="block truncate" title={lead.company ?? undefined}>{lead.company ?? "—"}</span>
@@ -233,24 +264,14 @@ export default function LeadListDetailPage({
                         <td className="py-2 max-w-[180px]">
                           <span className="block truncate" title={lead.title ?? undefined}>{lead.title ?? "—"}</span>
                         </td>
-                        <td className="py-2 text-sm text-muted-foreground">
-                          {lead.email ? (
-                            <a href={`mailto:${lead.email}`} className="hover:underline" onClick={(e) => e.stopPropagation()}>
-                              {lead.email}
-                            </a>
-                          ) : "—"}
-                        </td>
                         <td className="py-2">
                           <a
                             href={lead.linkedin_url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-blue-500 hover:underline truncate block max-w-[200px]"
+                            className="text-blue-500 hover:underline truncate block max-w-[200px] text-xs"
                           >
-                            {lead.linkedin_url.replace(
-                              "https://www.linkedin.com/in/",
-                              ""
-                            )}
+                            {lead.linkedin_url.replace("https://www.linkedin.com/in/", "")}
                           </a>
                         </td>
                       </tr>
