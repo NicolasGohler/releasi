@@ -708,6 +708,11 @@ class Repository:
         search: str | None = None,
         exclude_removed: bool = False,
         lead_list_id: str | None = None,
+        sort_by: str | None = None,
+        sort_dir: str = "asc",
+        requested_after: str | None = None,
+        requested_before: str | None = None,
+        skip_reason: str | None = None,
     ) -> tuple:
         """Return (leads, total_count) with pagination, optional status filter and search."""
         stmt = select(Lead).where(Lead.campaign_id == campaign_id)
@@ -736,9 +741,29 @@ class Repository:
             stmt = stmt.where(search_filter)
             count_stmt = count_stmt.where(search_filter)
 
+        if requested_after:
+            stmt = stmt.where(Lead.connection_requested_at >= requested_after)
+            count_stmt = count_stmt.where(Lead.connection_requested_at >= requested_after)
+        if requested_before:
+            stmt = stmt.where(Lead.connection_requested_at <= requested_before)
+            count_stmt = count_stmt.where(Lead.connection_requested_at <= requested_before)
+
+        if skip_reason:
+            stmt = stmt.where(Lead.error_message == skip_reason)
+            count_stmt = count_stmt.where(Lead.error_message == skip_reason)
+
         total = (await self.session.execute(count_stmt)).scalar_one()
 
-        stmt = stmt.order_by(Lead.created_at).offset((page - 1) * per_page).limit(per_page)
+        _SORT_COLS = {
+            "name": Lead.first_name,
+            "company": Lead.company,
+            "status": Lead.status,
+            "requested_at": Lead.connection_requested_at,
+            "created_at": Lead.created_at,
+        }
+        col = _SORT_COLS.get(sort_by or "created_at", Lead.created_at)
+        order_col = col.desc() if sort_dir == "desc" else col.asc()
+        stmt = stmt.order_by(order_col).offset((page - 1) * per_page).limit(per_page)
         result = await self.session.execute(stmt)
         return result.scalars().all(), total
 
@@ -1184,6 +1209,36 @@ class Repository:
         await self.session.refresh(lead)
         return lead
 
+    async def bulk_skip_leads(self, lead_ids: list) -> int:
+        """Skip multiple leads (PENDING/SCHEDULED → SKIPPED). Returns count updated."""
+        result = await self.session.execute(
+            update(Lead)
+            .where(Lead.id.in_(lead_ids), Lead.status.in_(["pending", "scheduled"]))
+            .values(status=LeadStatus.SKIPPED, error_message="skipped_manually")
+        )
+        await self.session.commit()
+        return result.rowcount
+
+    async def bulk_remove_leads(self, lead_ids: list) -> int:
+        """Soft-delete multiple leads. Returns count updated."""
+        result = await self.session.execute(
+            update(Lead)
+            .where(Lead.id.in_(lead_ids), Lead.status != LeadStatus.REMOVED)
+            .values(status=LeadStatus.REMOVED)
+        )
+        await self.session.commit()
+        return result.rowcount
+
+    async def bulk_requeue_leads(self, lead_ids: list) -> int:
+        """Re-queue multiple leads (ERROR/WITHDRAWN/SKIPPED → PENDING). Returns count updated."""
+        result = await self.session.execute(
+            update(Lead)
+            .where(Lead.id.in_(lead_ids), Lead.status.in_(["error", "withdrawn", "skipped"]))
+            .values(status=LeadStatus.PENDING, error_message=None, retry_count=0, scheduled_at=None)
+        )
+        await self.session.commit()
+        return result.rowcount
+
     # ── Global Leads (Lead Library) ───────────────────────────────────────
 
     async def list_leads_global(
@@ -1194,6 +1249,11 @@ class Repository:
         campaign_id: str | None = None,
         status_filter: str | None = None,
         search: str | None = None,
+        sort_by: str | None = None,
+        sort_dir: str = "desc",
+        requested_after: str | None = None,
+        requested_before: str | None = None,
+        skip_reason: str | None = None,
     ) -> tuple:
         """Return (leads, total_count) across all lists/campaigns."""
         stmt = select(Lead)
@@ -1223,7 +1283,28 @@ class Repository:
             stmt = stmt.where(search_filter)
             count_stmt = count_stmt.where(search_filter)
 
+        if requested_after:
+            stmt = stmt.where(Lead.connection_requested_at >= requested_after)
+            count_stmt = count_stmt.where(Lead.connection_requested_at >= requested_after)
+        if requested_before:
+            stmt = stmt.where(Lead.connection_requested_at <= requested_before)
+            count_stmt = count_stmt.where(Lead.connection_requested_at <= requested_before)
+
+        if skip_reason:
+            stmt = stmt.where(Lead.error_message == skip_reason)
+            count_stmt = count_stmt.where(Lead.error_message == skip_reason)
+
         total = (await self.session.execute(count_stmt)).scalar_one()
-        stmt = stmt.order_by(Lead.created_at.desc()).offset((page - 1) * per_page).limit(per_page)
+
+        _SORT_COLS = {
+            "name": Lead.first_name,
+            "company": Lead.company,
+            "status": Lead.status,
+            "requested_at": Lead.connection_requested_at,
+            "created_at": Lead.created_at,
+        }
+        col = _SORT_COLS.get(sort_by or "created_at", Lead.created_at)
+        order_col = col.desc() if sort_dir == "desc" else col.asc()
+        stmt = stmt.order_by(order_col).offset((page - 1) * per_page).limit(per_page)
         result = await self.session.execute(stmt)
         return result.scalars().all(), total

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile, 
 
 from linauto.api.auth import require_api_key
 from linauto.api.deps import get_repo
-from linauto.api.schemas import LeadOut, LeadPage, ImportResponse
+from linauto.api.schemas import LeadOut, LeadPage, ImportResponse, BulkLeadRequest, BulkLeadResponse
 from linauto.db.repository import Repository
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
@@ -23,6 +23,11 @@ async def list_leads(
     search: Optional[str] = Query(None),
     exclude_removed: bool = Query(False),
     lead_list_id: Optional[str] = Query(None),
+    sort_by: Optional[str] = Query(None),
+    sort_dir: str = Query("asc"),
+    requested_after: Optional[str] = Query(None),
+    requested_before: Optional[str] = Query(None),
+    skip_reason: Optional[str] = Query(None),
     repo: Repository = Depends(get_repo),
 ):
     campaign = await repo.get_campaign(campaign_id)
@@ -37,6 +42,11 @@ async def list_leads(
         search=search,
         exclude_removed=exclude_removed,
         lead_list_id=lead_list_id,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        requested_after=requested_after,
+        requested_before=requested_before,
+        skip_reason=skip_reason,
     )
     return LeadPage(
         items=[LeadOut.model_validate(l) for l in leads],
@@ -200,6 +210,11 @@ async def list_leads_global(
     campaign_id: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    sort_by: Optional[str] = Query(None),
+    sort_dir: str = Query("desc"),
+    requested_after: Optional[str] = Query(None),
+    requested_before: Optional[str] = Query(None),
+    skip_reason: Optional[str] = Query(None),
     repo: Repository = Depends(get_repo),
 ):
     leads, total = await repo.list_leads_global(
@@ -209,6 +224,11 @@ async def list_leads_global(
         campaign_id=campaign_id,
         status_filter=status,
         search=search,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        requested_after=requested_after,
+        requested_before=requested_before,
+        skip_reason=skip_reason,
     )
 
     # Enrich with campaign names
@@ -274,3 +294,23 @@ async def requeue_lead(lead_id: str, repo: Repository = Depends(get_repo)):
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
     return LeadOut.model_validate(lead)
+
+
+# ── Bulk Actions ─────────────────────────────────────────────────────────
+
+@router.post("/leads/bulk/skip", response_model=BulkLeadResponse)
+async def bulk_skip_leads(body: BulkLeadRequest, repo: Repository = Depends(get_repo)):
+    updated = await repo.bulk_skip_leads(body.lead_ids)
+    return BulkLeadResponse(updated=updated)
+
+
+@router.post("/leads/bulk/remove", response_model=BulkLeadResponse)
+async def bulk_remove_leads(body: BulkLeadRequest, repo: Repository = Depends(get_repo)):
+    updated = await repo.bulk_remove_leads(body.lead_ids)
+    return BulkLeadResponse(updated=updated)
+
+
+@router.post("/leads/bulk/requeue", response_model=BulkLeadResponse)
+async def bulk_requeue_leads(body: BulkLeadRequest, repo: Repository = Depends(get_repo)):
+    updated = await repo.bulk_requeue_leads(body.lead_ids)
+    return BulkLeadResponse(updated=updated)

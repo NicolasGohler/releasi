@@ -212,6 +212,14 @@ class ImportResponse(BaseModel):
     errors: List[str]
 
 
+class BulkLeadRequest(BaseModel):
+    lead_ids: List[str]
+
+
+class BulkLeadResponse(BaseModel):
+    updated: int
+
+
 # ── Lead Lists ────────────────────────────────────────────────────────
 
 class LeadListOut(BaseModel):
