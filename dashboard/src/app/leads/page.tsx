@@ -143,9 +143,9 @@ export default function GlobalLeadsPage() {
                     <tr className="border-b text-left text-muted-foreground">
                       <th className="pb-2 font-medium">Name</th>
                       <th className="pb-2 font-medium">Company</th>
+                      <th className="pb-2 font-medium">Email</th>
                       <th className="pb-2 font-medium">Campaign</th>
                       <th className="pb-2 font-medium">Status</th>
-                      <th className="pb-2 font-medium">LinkedIn</th>
                       <th className="pb-2 font-medium text-right">Actions</th>
                     </tr>
                   </thead>
@@ -165,17 +165,16 @@ export default function GlobalLeadsPage() {
                           </a>
                         </td>
                         <td className="py-2 text-muted-foreground">{lead.company ?? "—"}</td>
+                        <td className="py-2 text-sm text-muted-foreground">
+                          {lead.email ? (
+                            <a href={`mailto:${lead.email}`} className="hover:underline" onClick={(e) => e.stopPropagation()}>
+                              {lead.email}
+                            </a>
+                          ) : "—"}
+                        </td>
                         <td className="py-2 text-muted-foreground">{lead.campaign_name ?? "—"}</td>
                         <td className="py-2">
                           <StatusBadge status={lead.status} />
-                        </td>
-                        <td className="py-2">
-                          <span className="text-muted-foreground truncate block max-w-[180px] text-xs">
-                            {lead.linkedin_url.replace(
-                              "https://www.linkedin.com/in/",
-                              ""
-                            )}
-                          </span>
                         </td>
                         <td className="py-2 text-right">
                           <div className="flex items-center justify-end gap-1">

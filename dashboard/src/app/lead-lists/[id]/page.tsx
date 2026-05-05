@@ -215,6 +215,7 @@ export default function LeadListDetailPage({
                       <th className="pb-2 font-medium">Name</th>
                       <th className="pb-2 font-medium">Company</th>
                       <th className="pb-2 font-medium">Title</th>
+                      <th className="pb-2 font-medium">Email</th>
                       <th className="pb-2 font-medium">LinkedIn</th>
                     </tr>
                   </thead>
@@ -228,6 +229,13 @@ export default function LeadListDetailPage({
                         </td>
                         <td className="py-2">{lead.company ?? "—"}</td>
                         <td className="py-2">{lead.title ?? "—"}</td>
+                        <td className="py-2 text-sm text-muted-foreground">
+                          {lead.email ? (
+                            <a href={`mailto:${lead.email}`} className="hover:underline" onClick={(e) => e.stopPropagation()}>
+                              {lead.email}
+                            </a>
+                          ) : "—"}
+                        </td>
                         <td className="py-2">
                           <a
                             href={lead.linkedin_url}
