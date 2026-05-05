@@ -254,6 +254,26 @@ async def list_leads_global(
     )
 
 
+# ── Bulk Actions (must be before /{lead_id} routes to avoid path collision) ──
+
+@router.post("/leads/bulk/skip", response_model=BulkLeadResponse)
+async def bulk_skip_leads(body: BulkLeadRequest, repo: Repository = Depends(get_repo)):
+    updated = await repo.bulk_skip_leads(body.lead_ids)
+    return BulkLeadResponse(updated=updated)
+
+
+@router.post("/leads/bulk/remove", response_model=BulkLeadResponse)
+async def bulk_remove_leads(body: BulkLeadRequest, repo: Repository = Depends(get_repo)):
+    updated = await repo.bulk_remove_leads(body.lead_ids)
+    return BulkLeadResponse(updated=updated)
+
+
+@router.post("/leads/bulk/requeue", response_model=BulkLeadResponse)
+async def bulk_requeue_leads(body: BulkLeadRequest, repo: Repository = Depends(get_repo)):
+    updated = await repo.bulk_requeue_leads(body.lead_ids)
+    return BulkLeadResponse(updated=updated)
+
+
 # ── Soft Delete / Restore ────────────────────────────────────────────
 
 @router.delete("/leads/{lead_id}", response_model=LeadOut)
@@ -294,23 +314,3 @@ async def requeue_lead(lead_id: str, repo: Repository = Depends(get_repo)):
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
     return LeadOut.model_validate(lead)
-
-
-# ── Bulk Actions ─────────────────────────────────────────────────────────
-
-@router.post("/leads/bulk/skip", response_model=BulkLeadResponse)
-async def bulk_skip_leads(body: BulkLeadRequest, repo: Repository = Depends(get_repo)):
-    updated = await repo.bulk_skip_leads(body.lead_ids)
-    return BulkLeadResponse(updated=updated)
-
-
-@router.post("/leads/bulk/remove", response_model=BulkLeadResponse)
-async def bulk_remove_leads(body: BulkLeadRequest, repo: Repository = Depends(get_repo)):
-    updated = await repo.bulk_remove_leads(body.lead_ids)
-    return BulkLeadResponse(updated=updated)
-
-
-@router.post("/leads/bulk/requeue", response_model=BulkLeadResponse)
-async def bulk_requeue_leads(body: BulkLeadRequest, repo: Repository = Depends(get_repo)):
-    updated = await repo.bulk_requeue_leads(body.lead_ids)
-    return BulkLeadResponse(updated=updated)
