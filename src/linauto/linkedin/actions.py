@@ -1582,10 +1582,11 @@ class LinkedInActions:
             logger.debug("contact_info.no_contact_link", slug=slug)
             return result
 
-        # ── Step 3: wait for overlay URL then extract from DOM ───────────
+        # ── Step 3: wait for overlay URL then wait for content to render ───
         # LinkedIn uses SPA routing: clicking "Contact info" changes the URL to
-        # /overlay/contact-info/ and renders email/phone inline — no separate
-        # API call. We wait for the URL change, then read the mailto: link.
+        # /overlay/contact-info/ and renders email/phone inline.
+        # The URL changes BEFORE content is fully rendered, so we wait for the
+        # mailto: link to appear in the DOM rather than using a fixed sleep.
         try:
             await self.page.wait_for_url(
                 lambda u: "overlay/contact-info" in u,
@@ -1595,7 +1596,17 @@ class LinkedInActions:
             # Some profiles render contact info without a URL change
             pass
 
-        await asyncio.sleep(0.8)
+        # Wait for the overlay content (mailto link) to render.
+        # Fixed 0.8s sleep is not enough — content can lag the URL change.
+        try:
+            await self.page.wait_for_selector(
+                'a[href^="mailto:"]',
+                timeout=4000,
+                state="attached",
+            )
+        except PlaywrightTimeout:
+            # Profile may not have a public email — still attempt phone extraction
+            await asyncio.sleep(1.0)
 
         data = await self.page.evaluate("""
         () => {
