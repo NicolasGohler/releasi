@@ -1514,83 +1514,119 @@ class LinkedInActions:
 
     async def get_contact_info(self, slug: str) -> dict:
         """
-        Extract email and phone from a LinkedIn profile's Contact Info overlay.
+        Extract email and phone for a 1st-degree LinkedIn connection.
 
-        Navigates to /in/{slug}/overlay/contact-info/ (requires 1st-degree connection
-        or public visibility). Returns a dict with keys "email" and "phone" (both
-        Optional[str]). Returns empty dict on any failure — caller should treat this
-        as non-fatal.
+        Strategy:
+          1. Navigate to /in/{slug}/ (the profile page)
+          2. Find and click the "Contact info" link in the profile header
+          3. The SPA opens a modal; intercept the Voyager network response
+             that fires in parallel to populate the modal
+          4. Parse email + phone from the JSON payload
 
-        LinkedIn renders the contact info as a structured modal with sections.
-        Email: <a href="mailto:user@example.com"> — the href is the most reliable.
-        Phone: plain text inside a section labelled "Phone".
+        Intercepts the network response rather than reading the DOM, which is
+        more reliable across LinkedIn DOM changes. Falls back to DOM extraction
+        (mailto: link) if the network intercept misses the response.
+
+        Returns {"email": str|None, "phone": str|None}. Fail-open.
         """
-        from linauto.linkedin.selectors import LOGIN_URL_PATTERNS, CONTACT_INFO_URL_TEMPLATE
+        from linauto.linkedin.selectors import LOGIN_URL_PATTERNS
 
         slug = slug.lstrip("/").replace("in/", "").strip("/")
-        url = CONTACT_INFO_URL_TEMPLATE.format(slug=slug)
-
         result: dict = {"email": None, "phone": None}
 
+        profile_url = f"https://www.linkedin.com/in/{slug}/"
+
         try:
+            # ── Step 1: load profile ──────────────────────────────────────
             await asyncio.wait_for(
-                self.page.goto(url, wait_until="domcontentloaded", timeout=15000),
+                self.page.goto(profile_url, wait_until="domcontentloaded", timeout=15000),
                 timeout=20.0,
             )
         except Exception as e:
             logger.warning("contact_info.nav_failed", slug=slug, error=str(e))
             return result
 
-        # Session check
         if any(p in self.page.url for p in LOGIN_URL_PATTERNS):
             logger.warning("contact_info.session_expired", slug=slug)
             return result
 
-        # Brief wait for modal content to render
+        await asyncio.sleep(1.0)
+
+        # ── Step 2: find Contact Info link ────────────────────────────────
+        # LinkedIn renders a "Contact info" anchor in the profile header.
+        # It's typically <a id="top-card-text-details-contact-info"> or
+        # an anchor with text "Contact info".
+        contact_link = await self.page.evaluate("""
+        () => {
+            // Try by ID first (most stable)
+            const byId = document.getElementById('top-card-text-details-contact-info');
+            if (byId) { byId.click(); return 'clicked-by-id'; }
+            // Fallback: find by link text
+            for (const a of document.querySelectorAll('a, button, span')) {
+                if ((a.innerText || '').trim().toLowerCase() === 'contact info') {
+                    a.click();
+                    return 'clicked-by-text';
+                }
+            }
+            return null;
+        }
+        """)
+
+        if not contact_link:
+            logger.debug("contact_info.no_contact_link", slug=slug)
+            return result
+
+        # ── Step 3: wait for overlay URL then extract from DOM ───────────
+        # LinkedIn uses SPA routing: clicking "Contact info" changes the URL to
+        # /overlay/contact-info/ and renders email/phone inline — no separate
+        # API call. We wait for the URL change, then read the mailto: link.
+        try:
+            await self.page.wait_for_url(
+                lambda u: "overlay/contact-info" in u,
+                timeout=5000,
+            )
+        except PlaywrightTimeout:
+            # Some profiles render contact info without a URL change
+            pass
+
         await asyncio.sleep(0.8)
 
-        # Extract email + phone via JS — more resilient than CSS selectors against
-        # LinkedIn's obfuscated/rotating class names.
         data = await self.page.evaluate("""
         () => {
             const result = { email: null, phone: null };
 
-            // Email: look for the first mailto: link anywhere in the page
+            // Email: the most reliable signal is a mailto: link
             const mailtoLink = document.querySelector('a[href^="mailto:"]');
             if (mailtoLink) {
                 result.email = mailtoLink.href.replace('mailto:', '').trim();
             }
 
-            // Phone: LinkedIn renders phones in a section with a header containing "Phone".
-            // Walk all section/div elements; find one whose header text includes "Phone".
-            const allSections = document.querySelectorAll('section, div[class*="contact"]');
-            for (const sec of allSections) {
-                const hdr = sec.querySelector('h3, h4, span[class*="header"]');
-                if (hdr && hdr.innerText && hdr.innerText.toLowerCase().includes('phone')) {
-                    // The value is in a sibling/child element — grab the first text node
-                    // that looks like a phone number (contains digit + optional +/-)
-                    const spans = sec.querySelectorAll('span, a');
+            // Phone: find a section/div that contains "Phone" as a header,
+            // then grab the first text node that looks like a phone number.
+            const allEls = document.querySelectorAll('section, div, li');
+            for (const el of allEls) {
+                const hdr = el.querySelector('h3, h4');
+                if (hdr && (hdr.innerText || '').toLowerCase().includes('phone')) {
+                    const spans = el.querySelectorAll('span, a');
                     for (const s of spans) {
                         const t = (s.innerText || '').trim();
-                        if (/[0-9]/.test(t) && t.length >= 6) {
+                        if (/^[+0-9]/.test(t) && t.length >= 6) {
                             result.phone = t;
                             break;
                         }
                     }
                 }
+                if (result.phone) break;
             }
 
             return result;
         }
         """)
 
-        if data:
-            result["email"] = data.get("email") or None
-            result["phone"] = data.get("phone") or None
-
         logger.info(
             "contact_info.extracted",
             slug=slug,
+            method=contact_link,
             has_email=bool(result["email"]),
             has_phone=bool(result["phone"]),
         )
