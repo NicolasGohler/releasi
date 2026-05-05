@@ -46,6 +46,7 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const ERROR_LABELS: Record<string, string> = {
+  skipped_manually: "Skipped manually",
   email_required: "Email verification required — LinkedIn requires their email to connect",
   send_button_disabled: "Send button was disabled by LinkedIn",
   no_connect_button: "No Connect button found on profile",

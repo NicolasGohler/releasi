@@ -1125,6 +1125,7 @@ class Repository:
         validate_transition(lead.status, LeadStatus.SKIPPED)
         lead.status = LeadStatus.SKIPPED
         lead.scheduled_at = None
+        lead.error_message = "skipped_manually"
         await self.session.commit()
         await self.session.refresh(lead)
         return lead
