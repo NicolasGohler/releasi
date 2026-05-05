@@ -755,7 +755,7 @@ class LinkedInActions:
         logger.info("action.connection_request_sent", url=profile_url, with_note=bool(message))
         return ActionResult(ActionStatus.SUCCESS)
 
-    async def send_message(self, profile_url: str, message: str) -> ActionResult:
+    async def send_message(self, profile_url: str, message: str, skip_prior_conversation_check: bool = False) -> ActionResult:
         """
         Send a direct message to a 1st-degree connection.
 
@@ -813,8 +813,11 @@ class LinkedInActions:
         # compose form.  If any are present we have already exchanged messages
         # with this person (inside or outside our system) and should not send
         # another automated one.
-        try:
-            has_prior_messages = await self.page.evaluate("""
+        # skip_prior_conversation_check=True when this is not the first message
+        # in a multi-message sequence — the bubbles are ones we just sent.
+        if not skip_prior_conversation_check:
+            try:
+                has_prior_messages = await self.page.evaluate("""
 () => {
     const bubbles = document.querySelectorAll(
         '.msg-s-event-listitem, [class*="msg-s-event-listitem"]'
@@ -822,17 +825,17 @@ class LinkedInActions:
     return bubbles.length > 0;
 }
 """)
-            if has_prior_messages:
-                logger.info(
-                    "action.message_skipped_existing_conversation",
-                    url=profile_url,
-                )
-                return ActionResult(
-                    ActionStatus.SKIPPED,
-                    reason="existing_conversation",
-                )
-        except Exception:
-            pass  # Fail open — don't block the send if the check errors
+                if has_prior_messages:
+                    logger.info(
+                        "action.message_skipped_existing_conversation",
+                        url=profile_url,
+                    )
+                    return ActionResult(
+                        ActionStatus.SKIPPED,
+                        reason="existing_conversation",
+                    )
+            except Exception:
+                pass  # Fail open — don't block the send if the check errors
 
         # ── 3. Find message input ──
         msg_input = await self._find_element(selectors.MESSAGE_INPUT, timeout_ms=8000)

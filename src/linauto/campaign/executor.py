@@ -305,7 +305,11 @@ class CampaignExecutor:
             for i, msg_template in enumerate(messages):
                 msg = render_template(msg_template, lead)
 
-                action_result = await actions.send_message(lead.linkedin_url, msg)
+                action_result = await actions.send_message(
+                    lead.linkedin_url,
+                    msg,
+                    skip_prior_conversation_check=(i > 0),
+                )
 
                 if action_result.status == ActionStatus.SKIPPED:
                     # Prior conversation detected — treat the whole sequence as skipped.
