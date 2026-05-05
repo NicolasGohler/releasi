@@ -52,6 +52,7 @@ export default function AccountDetailPage({
   const [settingsInitialized, setSettingsInitialized] = useState(false);
   const [loginSessionActive, setLoginSessionActive] = useState(false);
   const [editWithdrawThreshold, setEditWithdrawThreshold] = useState("");
+  const [editAutoWithdrawInterval, setEditAutoWithdrawInterval] = useState("30");
   const [proxyForm, setProxyForm] = useState<ProxyFormValue>(emptyProxyForm);
   const [passwordEditing, setPasswordEditing] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
@@ -88,6 +89,7 @@ export default function AccountDetailPage({
     setEditDailyLimit(String(account.daily_limit));
     setEditWeeklyLimit(String(account.weekly_limit));
     setEditWithdrawThreshold(account.withdraw_threshold ? String(account.withdraw_threshold) : "");
+    setEditAutoWithdrawInterval(String(account.auto_withdraw_interval_days ?? 30));
     setProxyForm({
       host: account.proxy_host ?? "",
       port: account.proxy_port != null ? String(account.proxy_port) : "",
@@ -146,6 +148,8 @@ export default function AccountDetailPage({
     if (Number(editWeeklyLimit) !== account!.weekly_limit) data.weekly_limit = Number(editWeeklyLimit);
     const newThreshold = editWithdrawThreshold ? Number(editWithdrawThreshold) : null;
     if (newThreshold !== (account!.withdraw_threshold ?? null)) data.withdraw_threshold = newThreshold;
+    const newInterval = editAutoWithdrawInterval ? Number(editAutoWithdrawInterval) : 30;
+    if (newInterval !== (account!.auto_withdraw_interval_days ?? 30)) data.auto_withdraw_interval_days = newInterval;
     const newCountry = proxyForm.country.trim() || null;
     if (newCountry !== (account!.proxy_country ?? null)) data.proxy_country = newCountry;
 
@@ -627,19 +631,41 @@ export default function AccountDetailPage({
                   </div>
                 </div>
 
-                {/* Auto-withdraw threshold */}
-                <div>
-                  <label className="text-xs text-muted-foreground">Auto-withdraw threshold</label>
-                  <Input
-                    type="number"
-                    value={editWithdrawThreshold}
-                    onChange={(e) => setEditWithdrawThreshold(e.target.value)}
-                    placeholder="e.g. 1500 — leave empty to disable"
-                    className="mt-1"
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    When the LinkedIn total exceeds this number, the 10 oldest are withdrawn automatically each day during the acceptance check.
+                {/* Scheduled auto-withdraw */}
+                <div className="space-y-3">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Scheduled Auto-Withdraw</p>
+                  <div className="flex items-end gap-3">
+                    <div className="flex-1">
+                      <label className="text-xs text-muted-foreground">Threshold</label>
+                      <Input
+                        type="number"
+                        value={editWithdrawThreshold}
+                        onChange={(e) => setEditWithdrawThreshold(e.target.value)}
+                        placeholder="e.g. 2000 — leave empty to disable"
+                        className="mt-1"
+                      />
+                    </div>
+                    <div className="w-28">
+                      <label className="text-xs text-muted-foreground">Interval (days)</label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={editAutoWithdrawInterval}
+                        onChange={(e) => setEditAutoWithdrawInterval(e.target.value)}
+                        placeholder="30"
+                        className="mt-1"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    When the live count exceeds the threshold, the scheduler withdraws oldest requests down to a random target within 5% of the threshold (capped at 200/session). Set threshold to enable; interval controls how often it may run.
                   </p>
+                  {account.auto_withdraw_last_run && (
+                    <p className="text-xs text-muted-foreground">
+                      Last run: {new Date(account.auto_withdraw_last_run).toLocaleString()}
+                      {account.pending_invitations_count != null && ` · count at run: ${account.pending_invitations_count.toLocaleString()}`}
+                    </p>
+                  )}
                 </div>
 
                 {/* Manual withdraw — only shown once live count is known */}

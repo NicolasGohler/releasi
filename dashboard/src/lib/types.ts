@@ -12,6 +12,9 @@ export interface Account {
   proxy_password_set: boolean;
   paused_until: string | null;
   withdraw_threshold: number | null;
+  auto_withdraw_interval_days: number;
+  auto_withdraw_last_run: string | null;
+  pending_invitations_count: number | null;
   pending_requests: number | null;
   avatar_path: string | null;
   archived: boolean;

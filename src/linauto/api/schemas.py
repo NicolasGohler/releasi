@@ -26,6 +26,9 @@ class AccountOut(BaseModel):
     proxy_password_set: bool = False
     paused_until: Optional[datetime] = None
     withdraw_threshold: Optional[int] = None
+    auto_withdraw_interval_days: int = 30
+    auto_withdraw_last_run: Optional[datetime] = None
+    pending_invitations_count: Optional[int] = None
     pending_requests: Optional[int] = None
     avatar_path: Optional[str] = None
     dispatch_mode: Optional[str] = None
@@ -74,6 +77,7 @@ class AccountUpdate(BaseModel):
     daily_limit: Optional[int] = None
     weekly_limit: Optional[int] = None
     withdraw_threshold: Optional[int] = None
+    auto_withdraw_interval_days: Optional[int] = None
     dispatch_mode: Optional[str] = None
 
 

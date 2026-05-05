@@ -380,12 +380,27 @@ A manual withdrawal panel lives in the account Settings tab. It lets you:
 - API endpoints: `POST /accounts/{id}/invitations/count`, `POST /accounts/{id}/invitations/withdraw`, `GET /accounts/{id}/invitations/withdraw/{task_id}`.
 - Safe limit: 100 per session (LinkedIn tolerates this without triggering automation signals).
 
-## Scheduled Auto-Withdraw (future feature — not yet built)
-Foundation is in place. To add scheduled daily withdrawal:
-1. Add `auto_withdraw_count: Optional[int]` and `auto_withdraw_order: str` columns to the `Account` model (migration required).
-2. Add a `withdraw_invitations_sweep` APScheduler job in `runner.py` (same per-account pattern as `check_acceptances`) — reads those columns, skips accounts where `auto_withdraw_count` is NULL.
-3. Expose the two new fields in the dashboard Account Settings form.
-4. Register the job in `start_scheduler()` with e.g. `CronTrigger(hour=11, minute=0)`.
+## Scheduled Auto-Withdraw
+
+`withdraw_invitations_sweep` APScheduler job fires hourly; per-account logic enforces the configured interval.
+
+**How it works:**
+1. Skips accounts where `withdraw_threshold` is NULL (feature disabled).
+2. Checks if `auto_withdraw_interval_days` have elapsed since `auto_withdraw_last_run` (or never run).
+3. Navigates to the invitation manager via browser+proxy and reads the live pending count.
+4. Caches the count as `pending_invitations_count` on the account row.
+5. If `live_count > withdraw_threshold`: picks a random target in `[threshold*0.95, threshold]`, withdraws `min(live_count - target, 200)` oldest invitations in a single session.
+6. Stamps `auto_withdraw_last_run = now` regardless of whether withdrawal was needed.
+
+**Account model fields** (migration 017):
+- `withdraw_threshold: Optional[int]` — trigger threshold; NULL = disabled (existing field)
+- `auto_withdraw_interval_days: int` — default 30; how often the sweep may fire per account
+- `auto_withdraw_last_run: Optional[datetime]` — last successful sweep timestamp
+- `pending_invitations_count: Optional[int]` — cached count from last sweep run
+
+**Dashboard:** Account Settings → Invitations panel. Threshold + interval inputs save via the standard PUT `/accounts/{id}` endpoint. Last-run timestamp + cached count are shown read-only below the inputs.
+
+**Design rationale:** Single session per run (never spreads across days). Hard 200/session cap for safety. Organic target randomisation (within 5% of threshold) avoids a predictable pattern. Interval-based rather than daily so infrequent LinkedIn users (e.g. once a month) don't get daily withdrawals.
 
 ## Database Backup
 
@@ -403,4 +418,3 @@ To run a one-off offsite backup: `ssh root@REDACTED 'bash /root/linauto/scripts/
 - Phase 1 (Foundation): COMPLETE — CLI, CSV import, template rendering, browser module
 - Phase 2 (Scheduling & Safety): COMPLETE — Clustered planner, warmup, cooldown, APScheduler, stealth, noise, proxy/timezone
 - Phase 3 (Follow-ups): IN PROGRESS — executor.execute_followup_sequence() implemented, dispatcher wired
-- Phase 4 (Polish): NOT STARTED
