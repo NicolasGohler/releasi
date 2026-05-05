@@ -63,6 +63,7 @@ export interface Campaign {
   weekend_enabled: boolean;
   filter_no_photo: boolean;
   filter_min_connections: number | null;
+  filter_exclude_open_to_work: boolean;
   csv_filename: string | null;
   total_leads: number;
   status_counts: Record<string, number> | null;

@@ -376,6 +376,15 @@ CONTACT_INFO_PHONE = [
 # URL pattern for the Contact Info overlay page
 CONTACT_INFO_URL_TEMPLATE = "https://www.linkedin.com/in/{slug}/overlay/contact-info/"
 
+# ── Profile page: Open to Work ───────────────────────────────────────────
+# CSS fallbacks for _is_open_to_work(); the primary detection uses JS text scan.
+# Profile photo alt text reliably contains "open to work" when the green frame is set.
+# aria-label on the photo SVG frame is a secondary signal.
+OPEN_TO_WORK = [
+    'img[alt*="open to work" i]',
+    'svg[aria-label*="open to work" i]',
+]
+
 # ── Session validation ────────────────────────────────────────────────────
 
 FEED_URL = "https://www.linkedin.com/feed/"

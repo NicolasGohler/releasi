@@ -103,6 +103,7 @@ class CampaignExecutor:
             filters = ProfileFilters(
                 no_photo=campaign.filter_no_photo,
                 min_connections=campaign.filter_min_connections,
+                exclude_open_to_work=campaign.filter_exclude_open_to_work,
             )
 
             # Execute
@@ -428,6 +429,7 @@ class CampaignExecutor:
             filters = ProfileFilters(
                 no_photo=campaign.filter_no_photo,
                 min_connections=campaign.filter_min_connections,
+                exclude_open_to_work=campaign.filter_exclude_open_to_work,
             )
 
             for i, lead in enumerate(leads):

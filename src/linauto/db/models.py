@@ -136,6 +136,7 @@ class Campaign(Base):
     weekend_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     filter_no_photo: Mapped[bool] = mapped_column(Boolean, default=False)
     filter_min_connections: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    filter_exclude_open_to_work: Mapped[bool] = mapped_column(Boolean, default=False)
     csv_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     total_leads: Mapped[int] = mapped_column(Integer, default=0)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)

@@ -116,6 +116,7 @@ class CampaignOut(BaseModel):
     weekend_enabled: bool = False
     filter_no_photo: bool
     filter_min_connections: Optional[int] = None
+    filter_exclude_open_to_work: bool = False
     csv_filename: Optional[str] = None
     total_leads: int
     archived: bool = False
@@ -146,6 +147,7 @@ class CampaignCreate(BaseModel):
     weekend_enabled: bool = False
     filter_no_photo: bool = False
     filter_min_connections: Optional[int] = None
+    filter_exclude_open_to_work: bool = False
 
 
 class CampaignUpdate(BaseModel):
@@ -160,6 +162,7 @@ class CampaignUpdate(BaseModel):
     weekend_enabled: Optional[bool] = None
     filter_no_photo: Optional[bool] = None
     filter_min_connections: Optional[int] = None
+    filter_exclude_open_to_work: Optional[bool] = None
 
 
 # ── Leads ─────────────────────────────────────────────────────────────────

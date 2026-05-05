@@ -18,10 +18,11 @@ class ProfileFilters:
     """Per-campaign filter configuration."""
     no_photo: bool = False
     min_connections: Optional[int] = None
+    exclude_open_to_work: bool = False
 
     @property
     def any_enabled(self) -> bool:
-        return self.no_photo or self.min_connections is not None
+        return self.no_photo or self.min_connections is not None or self.exclude_open_to_work
 
 
 class ProfileFilter:
@@ -47,6 +48,10 @@ class ProfileFilter:
             if count < filters.min_connections:
                 logger.info("profile_filter.low_connections", count=count, min=filters.min_connections)
                 return f"filter_low_connections:{count}"
+
+        if filters.exclude_open_to_work and await self._is_open_to_work(page):
+            logger.info("profile_filter.open_to_work")
+            return "filter_open_to_work"
 
         return None
 
@@ -125,6 +130,42 @@ class ProfileFilter:
             except Exception:
                 continue
         return None
+
+    async def _is_open_to_work(self, page: Page) -> bool:
+        """
+        Detect the LinkedIn "Open to Work" badge on a profile page.
+
+        Primary: JS content scan — find any element whose trimmed text is exactly
+        "Open to work" (case-insensitive). Robust against obfuscated class names.
+        Fallback: img alt attribute and aria-label attribute selectors.
+        Fails open (returns False) if detection is uncertain.
+        """
+        try:
+            found = await page.evaluate("""
+                () => {
+                    // Badge text in the profile intro section
+                    const els = document.querySelectorAll('div, span, p');
+                    for (const el of els) {
+                        const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                        if (t === 'open to work') return true;
+                    }
+                    return false;
+                }
+            """)
+            if found:
+                return True
+        except Exception:
+            pass
+
+        # Fallback: profile photo alt text includes "open to work"
+        for sel in selectors.OPEN_TO_WORK:
+            try:
+                if await page.locator(sel).count() > 0:
+                    return True
+            except Exception:
+                continue
+
+        return False
 
     @staticmethod
     def _parse_count(text: str) -> Optional[int]:

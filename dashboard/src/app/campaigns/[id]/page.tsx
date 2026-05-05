@@ -95,6 +95,7 @@ export default function CampaignDetailPage({
   const [editConnMsg, setEditConnMsg] = useState("");
   const [editFilterNoPhoto, setEditFilterNoPhoto] = useState(false);
   const [editMinConnections, setEditMinConnections] = useState("");
+  const [editExcludeOpenToWork, setEditExcludeOpenToWork] = useState(false);
   const [editFollowupEnabled, setEditFollowupEnabled] = useState(false);
   const [editFollowupDelayHours, setEditFollowupDelayHours] = useState("");
   const [editFollowupMsg1, setEditFollowupMsg1] = useState("");
@@ -140,6 +141,7 @@ export default function CampaignDetailPage({
     setEditConnMsg(campaign.connection_message_template ?? "");
     setEditFilterNoPhoto(campaign.filter_no_photo);
     setEditMinConnections(campaign.filter_min_connections != null ? String(campaign.filter_min_connections) : "");
+    setEditExcludeOpenToWork(campaign.filter_exclude_open_to_work);
     setEditFollowupEnabled(campaign.followup_enabled);
     setEditFollowupDelayHours(String(campaign.followup_delay_hours));
     setEditFollowupMsg1(campaign.followup_message_1 ?? "");
@@ -177,6 +179,7 @@ export default function CampaignDetailPage({
     if (editFilterNoPhoto !== campaign!.filter_no_photo) data.filter_no_photo = editFilterNoPhoto;
     const minConn = editMinConnections ? Number(editMinConnections) : null;
     if (minConn !== campaign!.filter_min_connections) data.filter_min_connections = minConn;
+    if (editExcludeOpenToWork !== campaign!.filter_exclude_open_to_work) data.filter_exclude_open_to_work = editExcludeOpenToWork;
     if (editFollowupEnabled !== campaign!.followup_enabled) data.followup_enabled = editFollowupEnabled;
     const delayHours = editFollowupDelayHours ? Number(editFollowupDelayHours) : 0;
     if (delayHours !== campaign!.followup_delay_hours) data.followup_delay_hours = delayHours;
@@ -588,6 +591,15 @@ export default function CampaignDetailPage({
                       onChange={(e) => setEditMinConnections(e.target.value)}
                       placeholder="No minimum"
                     />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="filterExcludeOpenToWork"
+                      checked={editExcludeOpenToWork}
+                      onChange={(e) => setEditExcludeOpenToWork(e.target.checked)}
+                    />
+                    <label htmlFor="filterExcludeOpenToWork" className="text-sm">Skip &ldquo;Open to Work&rdquo; profiles</label>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
