@@ -23,6 +23,8 @@ cd /root/linauto && git pull && docker restart linauto
 
 Or use the deploy script: `ssh root@REDACTED 'cd /root/linauto && bash scripts/deploy.sh'`
 
+The deploy script automatically pauses active accounts before the restart and resumes exactly those accounts after the container is healthy. This prevents missed dispatches mid-deploy.
+
 Only rebuild the image when changing **dependencies** (`pyproject.toml`) or **`config.py`/`models.py`** (pydantic/SQLAlchemy schema changes). `docker-compose build` is broken (v1.29 incompatibility) — use `docker run` directly:
 
 **Secrets are stored in `/root/linauto/.env`** (not inline in the command — keeps them out of `ps aux`). Create/update it once:
@@ -70,7 +72,7 @@ The dashboard (Vercel, Next.js) and backend API (FastAPI on `REDACTED:8000`) are
    - `DASHBOARD_PASSWORD` — the password shown at `/login`
    If either is unset, the password gate is disabled (safe for local dev). To force logout, rotate `DASHBOARD_SECRET`.
 
-5. **Adding a new API call in `lib/api.ts`**: use the existing `apiFetch` helper or fetch to `/api/v1/...` (same-origin). Never build absolute URLs to `REDACTED:8000` — that bypasses the proxy and would require re-exposing the key.
+6. **Adding a new API call in `lib/api.ts`**: use the existing `apiFetch` helper or fetch to `/api/v1/...` (same-origin). Never build absolute URLs to `REDACTED:8000` — that bypasses the proxy and would require re-exposing the key.
 
 ## Testing & Diagnostics on LinkedIn (CRITICAL)
 
@@ -174,6 +176,7 @@ All times are **in the account's configured timezone** (e.g. `America/New_York` 
 - **UA must match Chromium binary**: `_CHROMIUM_MAJOR = 145` — update when rebuilding with newer Playwright. Mismatch between `navigator.userAgent` and `navigator.userAgentData` is a strong bot signal.
   - Check actual version: `docker exec linauto /home/appuser/.cache/ms-playwright/chromium-*/chrome-linux64/chrome --version`
 - **Country-aware UA pool**: Mac UAs only for `{us, ca, gb, au, nz, ie}`; Windows-only for all other markets.
+- **Timezone derived from proxy country**: `browser.py` maps `proxy_country` → IANA timezone via `_COUNTRY_TIMEZONE` dict (40+ countries). The browser `timezone_id` is always set to match the proxy IP's country, regardless of the account's `timezone` field. If they differ, a warning is logged (`browser.timezone_proxy_mismatch`). This prevents the fingerprint mismatch where an IP geolocates to Germany but `navigator.timezone` reports America/New_York.
 - **Sec-CH-UA headers**: Set on context to align Client Hints with UA string.
 - **Deterministic viewport**: 5 realistic sizes `[(1366,768),(1440,900),(1920,1080),(1280,800),(1536,864)]`, hash-selected per account for consistent fingerprint.
 - **Residential proxy**: IPRoyal sticky sessions via `proxy_country` per account. Session ID derived from `account_id` hash for consistent IP.
@@ -185,6 +188,19 @@ All times are **in the account's configured timezone** (e.g. `America/New_York` 
 - **No DOM mutations**: JS finders use index-based `page.locator('button').nth(idx)` — no `data-*` attribute injection that LinkedIn's JS could observe.
 - **Focus clicks stay direct**: `note_field.click()`, `msg_input.click()` are focus actions, not button activations — left as-is.
 - **JS fallback**: `el.click()` only used when Playwright pointer events are intercepted by sticky nav bar.
+
+### Profile Filters (`profile_filter.py`)
+Per-campaign filters checked live on the profile page before a connection request is sent. All filters **fail open** — if detection is uncertain (LinkedIn DOM change, restricted profile), the lead is not blocked.
+
+| Filter | Campaign field | Skip reason logged |
+|--------|---------------|--------------------|
+| No profile photo | `filter_no_photo` | `filter_no_photo` |
+| Fewer than N connections | `filter_min_connections` | `filter_low_connections:<count>` |
+| "Open to Work" badge | `filter_exclude_open_to_work` | `filter_open_to_work` |
+
+**Open to Work detection**: Primary strategy is a JS text scan for any element whose trimmed text is exactly `"open to work"` (case-insensitive) — robust against LinkedIn's obfuscated class names. CSS fallbacks: `img[alt*="open to work" i]` and `svg[aria-label*="open to work" i]`. All three signals are stable across LinkedIn deploys.
+
+All three filters are toggleable per campaign from the dashboard Settings tab.
 
 ### Already-Connected Detection (`actions.py` → `send_connection_request`)
 LinkedIn profiles that are already 1st-degree connections must be caught before the connect flow is attempted. Detection runs in layers:
@@ -305,6 +321,25 @@ alembic downgrade -1      # Rollback one migration
 ```
 Migration files are in `alembic/versions/`. Follow the existing naming pattern (e.g., `003_add_campaign_filters.py`).
 
+**Critical**: `alembic/` is NOT volume-mounted — only `src/` and `data/` are. After a code-only deploy (`git pull` + container restart without rebuilding the image), `alembic upgrade head` inside the container uses the **baked-in** migration files from the old image and won't see new migration files from the pull. Two options:
+1. **Rebuild the image** (`docker-compose build` → `docker run ...`) — picks up the new migration files.
+2. **Apply the SQL directly + stamp alembic manually**:
+   ```bash
+   # Apply the schema change
+   docker exec linauto python3 -c "
+   import sqlite3; c = sqlite3.connect('/app/data/linauto.db')
+   c.execute('ALTER TABLE ... ADD COLUMN ...')
+   c.commit(); c.close()
+   "
+   # Tell alembic the new revision is applied
+   docker exec linauto python3 -c "
+   import sqlite3; c = sqlite3.connect('/app/data/linauto.db')
+   c.execute(\"INSERT OR REPLACE INTO alembic_version VALUES ('016_your_revision')\")
+   c.commit(); c.close()
+   "
+   ```
+Option 2 is fine for simple `ADD COLUMN` migrations. Use option 1 for complex migrations (data transforms, drops, renames).
+
 ## Conventions
 - **Python 3.9 compat**: `from __future__ import annotations` for function signatures, but use `Optional[X]` (not `X | None`) in SQLAlchemy `Mapped[]` type annotations.
 - **NullPool**: Using `sqlalchemy.pool.NullPool` to avoid GC warnings in CLI context.
@@ -336,7 +371,7 @@ c.commit(); c.close()
 "
 ```
 
-Context: ~510 pre-system invitations are sitting in LinkedIn. Setting threshold=300 would clean them up at 10/day over ~21 days. The withdrawal happens on the already-loaded invitation manager page (no extra navigation cost). Code is in `runner.py` → `check_acceptances()`, `actions.py` → `withdraw_oldest_invitations()`.
+The withdrawal happens on the already-loaded invitation manager page (no extra navigation cost). Code is in `runner.py` → `check_acceptances()`, `actions.py` → `withdraw_oldest_invitations()`.
 
 ## On-Demand Withdrawal (dashboard UI)
 A manual withdrawal panel lives in the account Settings tab. It lets you:
@@ -351,6 +386,18 @@ Foundation is in place. To add scheduled daily withdrawal:
 2. Add a `withdraw_invitations_sweep` APScheduler job in `runner.py` (same per-account pattern as `check_acceptances`) — reads those columns, skips accounts where `auto_withdraw_count` is NULL.
 3. Expose the two new fields in the dashboard Account Settings form.
 4. Register the job in `start_scheduler()` with e.g. `CronTrigger(hour=11, minute=0)`.
+
+## Database Backup
+
+`scripts/backup_db.sh` — uses the SQLite online backup API (`sqlite3.backup()`) which is WAL-safe and works on a live DB.
+
+- **Daily local backup**: keeps the 7 most recent snapshots in `/root/linauto/data/backups/` on the host (= `/app/data/backups/` inside container). Run as: `bash /root/linauto/scripts/backup_db.sh`
+- **Weekly offsite backup to Google Drive**: pass `--offsite` flag → `rclone copyto` uploads to `gdrive:linauto-backups/`. Cron on server: `0 3 * * 6` (Saturday 03:00 UTC).
+- rclone config lives at `/root/linauto/.config/rclone/rclone.conf` (server only, not in repo). Remote is named `gdrive`.
+- The backup script runs `docker exec -u root` (not the default appuser) because `/app/data/backups/` is owned by root:root and appuser (uid 1000) cannot write there.
+- Total runtime: ~3 seconds for a typical DB size.
+
+To run a one-off offsite backup: `ssh root@REDACTED 'bash /root/linauto/scripts/backup_db.sh --offsite'`
 
 ## Phase Status
 - Phase 1 (Foundation): COMPLETE — CLI, CSV import, template rendering, browser module
