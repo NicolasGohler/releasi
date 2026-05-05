@@ -398,23 +398,43 @@ class Repository:
         """Fetch a single lead by primary key (for pre-send status re-verification)."""
         return await self.session.get(Lead, lead_id)
 
-    async def has_successful_followup_log(self, lead_id: str) -> bool:
-        """Return True if a successful FOLLOWUP_MESSAGE action exists for this lead.
+    async def get_last_successful_followup_index(self, lead_id: str) -> int:
+        """Return the highest message_index (1-based) successfully sent for this lead.
 
-        Used as a belt-and-suspenders guard: if the lead status update after a
-        send failed (e.g. crash between browser action and DB write), the action
-        log still records the send so we don't resend to the same person.
+        Returns 0 if no successful FOLLOWUP_MESSAGE log exists. Used to resume
+        a partial sequence: if message 1 sent+logged but message 2 failed, the
+        next run skips index 0 and retries from index 1.
         """
         result = await self.session.execute(
-            select(ActionLog.id)
+            select(ActionLog.details)
             .where(
                 ActionLog.lead_id == lead_id,
                 ActionLog.action_type == ActionType.FOLLOWUP_MESSAGE,
                 ActionLog.status == ActionLogStatus.SUCCESS,
             )
-            .limit(1)
         )
-        return result.scalar_one_or_none() is not None
+        rows = result.scalars().all()
+        if not rows:
+            return 0
+        return max((r.get("message_index", 0) for r in rows if r), default=0)
+
+    async def get_followup_sequences_started_today(self, account_id: str) -> int:
+        """Count distinct leads with at least one successful FOLLOWUP_MESSAGE today (UTC).
+
+        Used as the daily cap check — counts sequences started, not individual
+        messages sent, so multi-message sequences don't eat double the budget.
+        """
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        result = await self.session.execute(
+            select(func.count(func.distinct(ActionLog.lead_id)))
+            .where(
+                ActionLog.account_id == account_id,
+                ActionLog.action_type == ActionType.FOLLOWUP_MESSAGE,
+                ActionLog.status == ActionLogStatus.SUCCESS,
+                ActionLog.created_at >= today_start,
+            )
+        )
+        return result.scalar_one() or 0
 
     async def count_leads_by_status(self, campaign_id: str, statuses: list) -> int:
         """Count leads in a campaign matching any of the given statuses."""

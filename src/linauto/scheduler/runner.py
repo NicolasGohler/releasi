@@ -1231,9 +1231,9 @@ async def dispatch_followups():
             campaigns = await repo.get_active_campaigns(account.id)
 
             # ── Daily cap pre-check ────────────────────────────────────────────
-            # Count how many followup messages this account has already sent today.
-            # If the cap is already reached, skip this account entirely.
-            sent_today = await repo.get_followup_messages_sent_today(account.id)
+            # Count distinct leads that already had a followup sequence started today.
+            # Multi-message sequences count as one, so the cap is in sequences not messages.
+            sent_today = await repo.get_followup_sequences_started_today(account.id)
             daily_cap = settings.followup_daily_cap
             if sent_today >= daily_cap:
                 logger.info(

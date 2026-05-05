@@ -252,21 +252,11 @@ class CampaignExecutor:
         """
         result = {"success": False, "messages_sent": 0, "fatal": False, "skipped": False}
 
-        # ── Guard 1: action-log dedup ──────────────────────────────────────────
-        # If the action_log already has a successful FOLLOWUP_MESSAGE for this
-        # lead, the send went through in a prior run even if the status update
-        # didn't persist (e.g. crash between browser action and DB write).
-        # Skip immediately — resending would be a duplicate.
-        if await self.repo.has_successful_followup_log(lead.id):
-            logger.warning(
-                "followup.action_log_dedup_skipped",
-                url=lead.linkedin_url,
-                note="Successful followup log already exists; skipping to avoid duplicate",
-            )
-            result["skipped"] = True
-            return result
-
-        # Collect configured messages
+        # ── Guard 1: action-log resume ─────────────────────────────────────────
+        # Check the highest message_index already successfully sent for this lead.
+        # If all messages were sent in a prior run, skip entirely (dedup).
+        # If some were sent (e.g. msg 1 ok, msg 2 crashed), resume from the next one.
+        # Collect configured messages first so we know the total.
         messages: List[str] = []
         for attr in ("followup_message_1", "followup_message_2", "followup_message_3"):
             msg = getattr(campaign, attr, None)
@@ -276,6 +266,24 @@ class CampaignExecutor:
         if not messages:
             logger.warning("followup.no_messages_configured", campaign=campaign.name)
             return result
+
+        start_from = await self.repo.get_last_successful_followup_index(lead.id)
+        # start_from is 1-based (message_index); loop i is 0-based.
+        # start_from == len(messages) means all messages already sent → full skip.
+        if start_from >= len(messages):
+            logger.warning(
+                "followup.action_log_dedup_skipped",
+                url=lead.linkedin_url,
+                messages_already_sent=start_from,
+            )
+            result["skipped"] = True
+            return result
+        if start_from > 0:
+            logger.info(
+                "followup.resuming_partial_sequence",
+                url=lead.linkedin_url,
+                resuming_from_index=start_from + 1,
+            )
 
         # Pool mode: use shared context, only manage pages
         browser: Optional[LinkedInBrowser] = None
@@ -303,6 +311,9 @@ class CampaignExecutor:
             actions = LinkedInActions(page)
 
             for i, msg_template in enumerate(messages):
+                if i < start_from:
+                    continue  # already sent in a prior run
+
                 msg = render_template(msg_template, lead)
 
                 action_result = await actions.send_message(
@@ -339,9 +350,9 @@ class CampaignExecutor:
                         total=len(messages),
                     )
 
-                    # Wait 30-60s between messages (skip after last)
+                    # Wait 10-20s between messages (skip after last)
                     if i < len(messages) - 1:
-                        delay = random.uniform(30, 60)
+                        delay = random.uniform(10, 20)
                         logger.info("followup.waiting", seconds=round(delay))
                         await asyncio.sleep(delay)
                 else:
