@@ -380,22 +380,6 @@ export function useUnarchiveCampaign() {
   });
 }
 
-export function useArchiveLeadList() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: api.archiveLeadList,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["lead-lists"] }),
-  });
-}
-
-export function useUnarchiveLeadList() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: api.unarchiveLeadList,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["lead-lists"] }),
-  });
-}
-
 // ── Activity ──────────────────────────────────────────────────────────────
 
 export function useGlobalActivity() {

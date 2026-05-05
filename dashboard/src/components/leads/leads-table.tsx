@@ -204,11 +204,11 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
                     {[lead.first_name, lead.last_name].filter(Boolean).join(" ") || "—"}
                   </a>
                 </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {lead.company || "—"}
+                <TableCell className="text-sm text-muted-foreground max-w-[160px]">
+                  <span className="block truncate" title={lead.company || undefined}>{lead.company || "—"}</span>
                 </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {lead.title || "—"}
+                <TableCell className="text-sm text-muted-foreground max-w-[180px]">
+                  <span className="block truncate" title={lead.title || undefined}>{lead.title || "—"}</span>
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
                   {lead.email ? (

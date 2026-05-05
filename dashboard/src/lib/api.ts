@@ -409,9 +409,3 @@ export const archiveCampaign = (id: string) =>
 
 export const unarchiveCampaign = (id: string) =>
   apiFetch<Campaign>(`/campaigns/${id}/unarchive`, { method: "POST" });
-
-export const archiveLeadList = (id: string) =>
-  apiFetch<LeadList>(`/lead-lists/${id}/archive`, { method: "POST" });
-
-export const unarchiveLeadList = (id: string) =>
-  apiFetch<LeadList>(`/lead-lists/${id}/unarchive`, { method: "POST" });

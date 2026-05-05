@@ -227,8 +227,12 @@ export default function LeadListDetailPage({
                             .filter(Boolean)
                             .join(" ") || "—"}
                         </td>
-                        <td className="py-2">{lead.company ?? "—"}</td>
-                        <td className="py-2">{lead.title ?? "—"}</td>
+                        <td className="py-2 max-w-[160px]">
+                          <span className="block truncate" title={lead.company ?? undefined}>{lead.company ?? "—"}</span>
+                        </td>
+                        <td className="py-2 max-w-[180px]">
+                          <span className="block truncate" title={lead.title ?? undefined}>{lead.title ?? "—"}</span>
+                        </td>
                         <td className="py-2 text-sm text-muted-foreground">
                           {lead.email ? (
                             <a href={`mailto:${lead.email}`} className="hover:underline" onClick={(e) => e.stopPropagation()}>

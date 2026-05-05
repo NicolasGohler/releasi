@@ -164,7 +164,9 @@ export default function GlobalLeadsPage() {
                               .join(" ") || "—"}
                           </a>
                         </td>
-                        <td className="py-2 text-muted-foreground">{lead.company ?? "—"}</td>
+                        <td className="py-2 text-muted-foreground max-w-[160px]">
+                          <span className="block truncate" title={lead.company ?? undefined}>{lead.company ?? "—"}</span>
+                        </td>
                         <td className="py-2 text-sm text-muted-foreground">
                           {lead.email ? (
                             <a href={`mailto:${lead.email}`} className="hover:underline" onClick={(e) => e.stopPropagation()}>
