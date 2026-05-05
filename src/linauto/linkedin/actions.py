@@ -1640,6 +1640,10 @@ class LinkedInActions:
         }
         """)
 
+        if data:
+            result["email"] = data.get("email") or None
+            result["phone"] = data.get("phone") or None
+
         logger.info(
             "contact_info.extracted",
             slug=slug,
