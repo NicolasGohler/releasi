@@ -29,6 +29,21 @@ const STATUS_LABELS: Record<string, string> = {
   connection_requested: "requested",
 };
 
+const ERROR_LABELS: Record<string, string> = {
+  email_required: "Email verification required — LinkedIn requires their email to connect",
+  send_button_disabled: "Send button was disabled by LinkedIn",
+  no_connect_button: "No Connect button found on profile",
+  pending_request: "Connection request already pending",
+  preload_navigation_failed: "Failed to load invitation page",
+  no_vanity_name: "Could not extract profile identifier",
+  weekly_invitation_limit: "Weekly invitation limit reached",
+  profile_not_found: "Profile no longer exists (deleted or URL changed)",
+};
+
+function formatErrorMessage(msg: string): string {
+  return ERROR_LABELS[msg] ?? msg.replace(/_/g, " ");
+}
+
 function relativeDate(dateStr: string): { label: string; title: string } {
   const date = new Date(dateStr.endsWith("Z") ? dateStr : dateStr + "Z");
   const diffDays = Math.floor((Date.now() - date.getTime()) / 86400000);
@@ -195,7 +210,26 @@ export default function GlobalLeadsPage() {
                         </td>
                         <td className="py-2 text-muted-foreground">{lead.campaign_name ?? "—"}</td>
                         <td className="py-2">
-                          <StatusBadge status={lead.status} />
+                          {lead.error_message || (lead.status === "scheduled" && lead.scheduled_at) ? (
+                            <TooltipProvider delayDuration={200}>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="cursor-help">
+                                    <StatusBadge status={lead.status} />
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="max-w-xs">
+                                  <p className="text-xs">
+                                    {lead.error_message
+                                      ? formatErrorMessage(lead.error_message)
+                                      : `Scheduled for ${new Date(lead.scheduled_at! + "Z").toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`}
+                                  </p>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          ) : (
+                            <StatusBadge status={lead.status} />
+                          )}
                         </td>
                         <td className="py-2 text-right">
                           <div className="flex items-center justify-end gap-0.5">
