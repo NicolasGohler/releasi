@@ -1,32 +1,31 @@
 #!/bin/bash
-# Backup linauto SQLite database using the online backup API (safe against live writes).
-# Keeps 7 daily snapshots in /root/linauto/data/backups/.
-# Add an rclone/scp line at the bottom to push offsite.
-
 set -e
 
-BACKUP_DIR=/root/linauto/data/backups
+HOST_BACKUP_DIR=/root/linauto/data/backups
 DATE=$(date +%Y%m%d_%H%M%S)
-DEST="$BACKUP_DIR/linauto_${DATE}.db"
+HOST_DEST="$HOST_BACKUP_DIR/linauto_${DATE}.db"
+CTR_DEST="/app/data/backups/linauto_${DATE}.db"
 
-mkdir -p "$BACKUP_DIR"
+mkdir -p "$HOST_BACKUP_DIR"
 
-# sqlite3.backup() is WAL-safe — no need to stop the container
-docker exec linauto python3 - << PYEOF
+# Python runs as root inside the container; /app/data is volume-mounted from /root/linauto/data
+docker exec -u root linauto python3 -c "
 import sqlite3
 src = sqlite3.connect('/app/data/linauto.db')
-dst = sqlite3.connect('/app/data/backups/linauto_${DATE}.db')
+dst = sqlite3.connect('$CTR_DEST')
 src.backup(dst)
 dst.close()
 src.close()
-print("backup ok: /app/data/backups/linauto_${DATE}.db")
-PYEOF
+"
 
 # Prune: keep only the 7 most recent backups
-ls -t "$BACKUP_DIR"/linauto_*.db 2>/dev/null | tail -n +8 | xargs -r rm --
+ls -t "$HOST_BACKUP_DIR"/linauto_*.db 2>/dev/null | tail -n +8 | xargs -r rm --
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') backup complete: $DEST"
+echo "$(date '+%Y-%m-%d %H:%M:%S') backup complete: $HOST_DEST"
 
-# --- Offsite push (uncomment and configure one) ---
-# rclone copy "$DEST" remote:linauto-backups/
-# scp "$DEST" user@backup-server:/backups/linauto/
+# Offsite push to Google Drive — used by weekly Saturday cron
+if [ "${1}" = "--offsite" ]; then
+    FILENAME=$(basename "$HOST_DEST")
+    rclone copyto "$HOST_DEST" "gdrive:linauto-backups/$FILENAME"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') offsite upload complete: gdrive:linauto-backups/$FILENAME"
+fi
