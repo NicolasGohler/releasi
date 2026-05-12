@@ -461,8 +461,48 @@ async def _dispatch_planned(
                 stop_account = True
                 break
 
+            # Explicit session-expiry signal — flag immediately without
+            # waiting for the 3-strike rule. The lead is NOT marked ERROR
+            # (executor leaves it in its prior status) so it'll be picked
+            # up after cookie renewal. Mirrors the followup dispatcher.
+            if result.get("session_expired"):
+                logger.error(
+                    "dispatch.session_expired_detected",
+                    account=account.name,
+                    campaign=campaign.name,
+                )
+                await repo.update_account(account, status="cookie_expired")
+                await slack_notify(
+                    f":warning: *Cookie expired* — account *{account.name}* "
+                    f"(detected by connection dispatcher; SCHEDULED leads reverted to PENDING for retry)."
+                )
+                await repo.bulk_update_lead_status(
+                    campaign.id,
+                    from_status=LeadStatus.SCHEDULED,
+                    to_status=LeadStatus.PENDING,
+                )
+                await repo.log_action(
+                    account_id=account.id,
+                    campaign_id=campaign.id,
+                    action_type=ActionType.ERROR,
+                    status=ActionLogStatus.FAILED,
+                    details={"reason": "connection_session_expired"},
+                )
+                stop_account = True
+                break
+
             if result.get("fatal"):
-                # CAPTCHA or session expired — stop this account
+                # CAPTCHA or other fatal (non-session) — stop this account
+                # and ping Slack so a human can investigate.
+                logger.error(
+                    "dispatch.fatal_error",
+                    account=account.name,
+                    campaign=campaign.name,
+                )
+                await slack_notify(
+                    f":no_entry: *CAPTCHA or fatal action error* — account *{account.name}* "
+                    f"on campaign *{campaign.name}* — account paused, manual review needed."
+                )
                 stop_account = True
                 break
 
@@ -1201,6 +1241,28 @@ async def check_acceptances():
                 # Mark as checked for today so subsequent hourly runs skip this account
                 _acceptance_checked[account.id] = acct_today
 
+            except Exception as e:
+                # Classify per-account exceptions so a redirect loop on the
+                # connections page surfaces as cookie_expired instead of
+                # silently logging and moving on. Other accounts in the
+                # loop continue uninterrupted.
+                err_str = str(e)
+                logger.error(
+                    "acceptance.account_failed",
+                    account=account.name,
+                    error=err_str,
+                )
+                from linauto.safety.error_signals import is_session_expired_signal
+                if is_session_expired_signal(err_str):
+                    logger.error("acceptance.session_expired_detected", account=account.name)
+                    try:
+                        await repo.update_account(account, status="cookie_expired")
+                        await slack_notify(
+                            f":warning: *Cookie expired* — account *{account.name}* "
+                            f"(detected by acceptance checker)."
+                        )
+                    except Exception as inner:
+                        logger.warning("acceptance.cookie_expired_update_failed", error=str(inner))
             finally:
                 await pool.release_idle(account.id)
 
@@ -1480,7 +1542,19 @@ async def dispatch_followups():
                                 break
                         if fu_result.get("fatal") and not stop_account:
                             # Non-session fatal (e.g. CAPTCHA) — bail this
-                            # account but don't necessarily flag cookie_expired.
+                            # account but don't flag cookie_expired. Ping
+                            # Slack so a human can investigate; CAPTCHA is
+                            # just as urgent as cookie expiry.
+                            logger.error(
+                                "followup.fatal_error",
+                                account=account.name,
+                                campaign=campaign.name,
+                                url=lead.linkedin_url,
+                            )
+                            await slack_notify(
+                                f":no_entry: *CAPTCHA or fatal followup error* — account *{account.name}* "
+                                f"on campaign *{campaign.name}* — account paused, manual review needed."
+                            )
                             stop_account = True
                             break
             finally:

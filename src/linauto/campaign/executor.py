@@ -50,7 +50,17 @@ class CampaignExecutor:
         When ``self._shared_context`` is set (pool mode), opens/closes only
         pages on the shared browser.  Otherwise creates an ephemeral browser.
         """
-        result = {"success": False, "limit_reached": False, "fatal": False, "skipped": False}
+        # `session_expired` is the explicit cookie-expiry signal (redirect
+        # loop, /login redirect, authwall, checkpoint). When set, the
+        # dispatcher should mark the account cookie_expired immediately
+        # rather than waiting for 3 consecutive errors.
+        result = {
+            "success": False,
+            "limit_reached": False,
+            "fatal": False,
+            "skipped": False,
+            "session_expired": False,
+        }
 
         # Pool mode: use shared context, only manage pages
         browser: Optional[LinkedInBrowser] = None
@@ -70,6 +80,7 @@ class CampaignExecutor:
             if not valid:
                 logger.error("executor.session_invalid", account=account.name)
                 result["fatal"] = True
+                result["session_expired"] = True
                 await browser.close()
                 return result
             page = await browser.new_page()
@@ -197,34 +208,50 @@ class CampaignExecutor:
 
             else:  # ERROR
                 reason = action_result.reason or ""
-                validate_transition(lead.status, LeadStatus.ERROR)
-                await self.repo.update_lead(
-                    lead,
-                    status=LeadStatus.ERROR,
-                    retry_count=lead.retry_count + 1,
-                    error_message=reason,
-                )
-                await self.repo.increment_daily_stat(account.id, "errors")
-                # Flag network/proxy errors so the dispatcher doesn't confuse
-                # them with session expiry (timeouts = proxy issue, not bad cookie)
-                if _is_network_error(reason):
-                    result["network_error"] = True
+                # Priority chain: explicit session signal → mark fatal +
+                # session_expired and DON'T burn the lead to ERROR (the
+                # request never went through). Network signal → flag for
+                # dispatcher, mark ERROR. Else → mark ERROR normally.
+                if _is_session_expired_signal(reason):
+                    result["fatal"] = True
+                    result["session_expired"] = True
+                    # Leave the lead in its current status so the dispatcher
+                    # can reset SCHEDULED → PENDING for re-planning after
+                    # cookie renewal (same as the 3-strike path already does).
+                else:
+                    validate_transition(lead.status, LeadStatus.ERROR)
+                    await self.repo.update_lead(
+                        lead,
+                        status=LeadStatus.ERROR,
+                        retry_count=lead.retry_count + 1,
+                        error_message=reason,
+                    )
+                    await self.repo.increment_daily_stat(account.id, "errors")
+                    if _is_network_error(reason):
+                        result["network_error"] = True
 
         except Exception as e:
-            logger.error("executor.single_lead_failed", error=str(e))
-            try:
-                await self.repo.update_lead(
-                    lead,
-                    status=LeadStatus.ERROR,
-                    retry_count=lead.retry_count + 1,
-                    error_message=str(e)[:500],
-                )
-            except Exception:
-                pass  # Best-effort — don't mask the original error
-            if _is_network_error(str(e)):
-                result["network_error"] = True
-            else:
+            err_str = str(e)
+            logger.error("executor.single_lead_failed", error=err_str)
+            # Priority chain mirrors the action-result branch above.
+            if _is_session_expired_signal(err_str):
+                # Don't burn the lead — message never went through.
                 result["fatal"] = True
+                result["session_expired"] = True
+            else:
+                try:
+                    await self.repo.update_lead(
+                        lead,
+                        status=LeadStatus.ERROR,
+                        retry_count=lead.retry_count + 1,
+                        error_message=err_str[:500],
+                    )
+                except Exception:
+                    pass  # Best-effort — don't mask the original error
+                if _is_network_error(err_str):
+                    result["network_error"] = True
+                else:
+                    result["fatal"] = True
         finally:
             await page.close()
             if browser:

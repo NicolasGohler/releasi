@@ -305,8 +305,19 @@ async def run_acceptance_catchup(
         return result
 
     except Exception as e:
-        logger.error("catchup.failed", campaign=campaign.name, error=str(e))
-        result.error = str(e)
+        err_str = str(e)
+        logger.error("catchup.failed", campaign=campaign.name, error=err_str)
+        result.error = err_str
+        # If the exception looks like cookie expiry (e.g. redirect loop on
+        # connections page), mark the account so the next dispatch cycle
+        # doesn't blindly retry. Same classifier as the dispatchers use.
+        from linauto.safety.error_signals import is_session_expired_signal
+        if is_session_expired_signal(err_str):
+            logger.error("catchup.session_expired_detected", account=account.name)
+            try:
+                await repo.update_account(account, status=AccountStatus.COOKIE_EXPIRED)
+            except Exception as inner:
+                logger.warning("catchup.cookie_expired_update_failed", error=str(inner))
         return result
     finally:
         await pool.release_idle(account.id)
