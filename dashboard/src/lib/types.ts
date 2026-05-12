@@ -117,6 +117,7 @@ export interface Lead {
   scheduled_at: string | null;
   created_at: string;
   campaign_name: string | null;
+  lead_list_name: string | null;
 }
 
 export interface LeadPage {

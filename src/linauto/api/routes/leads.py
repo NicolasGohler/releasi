@@ -48,12 +48,45 @@ async def list_leads(
         requested_before=requested_before,
         skip_reason=skip_reason,
     )
+    items = await _enrich_leads(repo, leads)
     return LeadPage(
-        items=[LeadOut.model_validate(l) for l in leads],
+        items=items,
         total=total,
         page=page,
         per_page=per_page,
     )
+
+
+async def _enrich_leads(repo: Repository, leads) -> list[LeadOut]:
+    """Attach campaign_name and lead_list_name to LeadOut.
+
+    Batches the name lookups (one query per unique id) so we don't fan out
+    one query per lead. Used by both per-campaign and global leads endpoints.
+    """
+    campaign_ids = {l.campaign_id for l in leads if l.campaign_id}
+    list_ids = {l.lead_list_id for l in leads if l.lead_list_id}
+
+    campaign_names: dict[str, str] = {}
+    for cid in campaign_ids:
+        c = await repo.get_campaign(cid)
+        if c:
+            campaign_names[cid] = c.name
+
+    list_names: dict[str, str] = {}
+    for lid in list_ids:
+        ll = await repo.get_lead_list(lid)
+        if ll:
+            list_names[lid] = ll.name
+
+    items: list[LeadOut] = []
+    for l in leads:
+        out = LeadOut.model_validate(l)
+        if l.campaign_id and l.campaign_id in campaign_names:
+            out.campaign_name = campaign_names[l.campaign_id]
+        if l.lead_list_id and l.lead_list_id in list_names:
+            out.lead_list_name = list_names[l.lead_list_id]
+        items.append(out)
+    return items
 
 
 @router.get("/campaigns/{campaign_id}/leads/export")
@@ -231,21 +264,7 @@ async def list_leads_global(
         skip_reason=skip_reason,
     )
 
-    # Enrich with campaign names
-    campaign_ids = {l.campaign_id for l in leads if l.campaign_id}
-    campaign_names = {}
-    for cid in campaign_ids:
-        c = await repo.get_campaign(cid)
-        if c:
-            campaign_names[cid] = c.name
-
-    items = []
-    for l in leads:
-        out = LeadOut.model_validate(l)
-        if l.campaign_id and l.campaign_id in campaign_names:
-            out.campaign_name = campaign_names[l.campaign_id]
-        items.append(out)
-
+    items = await _enrich_leads(repo, leads)
     return LeadPage(
         items=items,
         total=total,

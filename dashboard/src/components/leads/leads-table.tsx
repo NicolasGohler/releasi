@@ -272,6 +272,7 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
             <TableRow>
               <TableHead>Name</TableHead>
               <TableHead>Company</TableHead>
+              <TableHead>List</TableHead>
               <TableHead>Title</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Requested</TableHead>
@@ -284,7 +285,7 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
           <TableBody>
             {data?.items.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="py-12 text-center">
+                <TableCell colSpan={8} className="py-12 text-center">
                   {statusFilter === "connected" ? (
                     <div className="space-y-1">
                       <p className="text-sm text-muted-foreground">No accepted connections yet</p>
@@ -325,6 +326,13 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
                   <TableCell className="text-sm text-muted-foreground max-w-[150px]">
                     <span className="block truncate" title={lead.company || undefined}>
                       {lead.company || "—"}
+                    </span>
+                  </TableCell>
+
+                  {/* List */}
+                  <TableCell className="text-sm text-muted-foreground max-w-[140px]">
+                    <span className="block truncate" title={lead.lead_list_name || undefined}>
+                      {lead.lead_list_name || "—"}
                     </span>
                   </TableCell>
 

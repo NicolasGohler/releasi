@@ -193,6 +193,7 @@ class LeadOut(BaseModel):
     scheduled_at: Optional[datetime] = None
     created_at: datetime
     campaign_name: Optional[str] = None
+    lead_list_name: Optional[str] = None
 
     class Config:
         from_attributes = True

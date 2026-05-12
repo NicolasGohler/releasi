@@ -186,6 +186,7 @@ export default function GlobalLeadsPage() {
                       <th className="pb-2 font-medium">Name</th>
                       <th className="pb-2 font-medium">Company</th>
                       <th className="pb-2 font-medium">Campaign</th>
+                      <th className="pb-2 font-medium">List</th>
                       <th className="pb-2 font-medium">Status</th>
                       <th className="pb-2 font-medium text-right">Actions</th>
                     </tr>
@@ -210,6 +211,9 @@ export default function GlobalLeadsPage() {
                           <span className="block truncate" title={lead.company ?? undefined}>{lead.company ?? "—"}</span>
                         </td>
                         <td className="py-2 text-muted-foreground">{lead.campaign_name ?? "—"}</td>
+                        <td className="py-2 text-muted-foreground max-w-[140px]">
+                          <span className="block truncate" title={lead.lead_list_name ?? undefined}>{lead.lead_list_name ?? "—"}</span>
+                        </td>
                         <td className="py-2">
                           {lead.error_message || (lead.status === "scheduled" && lead.scheduled_at) ? (
                             <TooltipProvider delayDuration={200}>
