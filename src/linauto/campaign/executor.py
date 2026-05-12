@@ -21,19 +21,12 @@ from linauto.safety.delays import DelayGenerator
 
 logger = structlog.get_logger()
 
-# Substrings in error messages that indicate a network/proxy failure rather
-# than a LinkedIn session problem.  These should NOT count toward the
-# cookie-expiry heuristic.
-_NETWORK_ERROR_SIGNALS = (
-    "timeout", "timed out", "err_tunnel", "err_proxy",
-    "err_connection", "err_name_not_resolved", "net::",
-    "proxy", "econnreset", "econnrefused", "enotfound",
+# Re-export classification helpers from the no-deps module so existing
+# callers (and tests that mock these names) keep working.
+from linauto.safety.error_signals import (
+    is_network_error as _is_network_error,
+    is_session_expired_signal as _is_session_expired_signal,
 )
-
-
-def _is_network_error(msg: str) -> bool:
-    low = msg.lower()
-    return any(sig in low for sig in _NETWORK_ERROR_SIGNALS)
 
 
 class CampaignExecutor:
@@ -251,7 +244,19 @@ class CampaignExecutor:
         Messages are sent with 30-60s delays between each.
         Returns result dict with messages_sent count and success flag.
         """
-        result = {"success": False, "messages_sent": 0, "fatal": False, "skipped": False}
+        # `session_expired` and `network_error` mirror the connection-request
+        # path so dispatch_followups can apply the same consecutive-error
+        # heuristics (3+ session errors → mark cookie_expired, network errors
+        # don't penalise the session, etc.).
+        result = {
+            "success": False,
+            "messages_sent": 0,
+            "fatal": False,
+            "skipped": False,
+            "session_expired": False,
+            "network_error": False,
+            "reason": None,
+        }
 
         # ── Guard 1: action-log resume ─────────────────────────────────────────
         # Check the highest message_index already successfully sent for this lead.
@@ -304,6 +309,8 @@ class CampaignExecutor:
             if not valid:
                 logger.error("followup.session_invalid", account=account.name)
                 result["fatal"] = True
+                result["session_expired"] = True
+                result["reason"] = "session_validate_failed"
                 await browser.close()
                 return result
             page = await browser.new_page()
@@ -358,11 +365,12 @@ class CampaignExecutor:
                         await asyncio.sleep(delay)
                 else:
                     # Stop on first failure
+                    reason_str = action_result.reason or ""
                     logger.error(
                         "followup.message_failed",
                         url=lead.linkedin_url,
                         index=i + 1,
-                        reason=action_result.reason,
+                        reason=reason_str,
                     )
                     await self.repo.log_action(
                         account_id=account.id,
@@ -372,19 +380,42 @@ class CampaignExecutor:
                         status=ActionLogStatus.FAILED,
                         details={
                             "message_index": i + 1,
-                            "reason": action_result.reason,
+                            "reason": reason_str,
                         },
                     )
-                    if action_result.status in (ActionStatus.SESSION_EXPIRED, ActionStatus.CAPTCHA):
+                    result["reason"] = reason_str
+                    # Classify the failure so dispatch_followups can apply the
+                    # same consecutive-error heuristics as the connection
+                    # dispatcher. Priority: explicit status → session signal
+                    # in reason string → network signal → generic fatal.
+                    if action_result.status == ActionStatus.SESSION_EXPIRED:
                         result["fatal"] = True
+                        result["session_expired"] = True
+                    elif action_result.status == ActionStatus.CAPTCHA:
+                        result["fatal"] = True
+                    elif _is_session_expired_signal(reason_str):
+                        # ERR_TOO_MANY_REDIRECTS, /login redirect, authwall, etc.
+                        result["fatal"] = True
+                        result["session_expired"] = True
+                    elif _is_network_error(reason_str):
+                        result["network_error"] = True
                     break
 
             if result["messages_sent"] > 0:
                 result["success"] = True
 
         except Exception as e:
-            logger.error("followup.sequence_failed", error=str(e))
-            result["fatal"] = True
+            err_str = str(e)
+            logger.error("followup.sequence_failed", error=err_str)
+            result["reason"] = err_str
+            # Same priority chain as the action-level error path.
+            if _is_session_expired_signal(err_str):
+                result["fatal"] = True
+                result["session_expired"] = True
+            elif _is_network_error(err_str):
+                result["network_error"] = True
+            else:
+                result["fatal"] = True
         finally:
             await page.close()
             if browser:

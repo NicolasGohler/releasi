@@ -1272,7 +1272,18 @@ async def dispatch_followups():
                 sent_this_cycle = 0
                 remaining_cap = daily_cap - sent_today
 
+                # Mirror the connection-request dispatcher's session-health
+                # heuristics. Before this was added, 5+ followups would fail
+                # in a row with ERR_TOO_MANY_REDIRECTS (login redirect loop =
+                # expired cookie) and each lead was just marked ERROR without
+                # ever flagging the account as cookie_expired.
+                consecutive_session_errors = 0
+                consecutive_network_errors = 0
+                stop_account = False
+
                 for campaign in campaigns:
+                    if stop_account:
+                        break
                     if not campaign.followup_enabled:
                         continue
                     if remaining_cap <= 0:
@@ -1337,6 +1348,8 @@ async def dispatch_followups():
                             )
                             sent_this_cycle += 1
                             remaining_cap -= 1
+                            consecutive_session_errors = 0
+                            consecutive_network_errors = 0
                             logger.info(
                                 "followup.sequence_done",
                                 url=lead.linkedin_url,
@@ -1351,26 +1364,124 @@ async def dispatch_followups():
                                 status=LeadStatus.FOLLOWUP_SENT,
                                 followup_sent_at=datetime.utcnow(),
                             )
+                            consecutive_session_errors = 0
+                            consecutive_network_errors = 0
                             logger.info(
                                 "followup.skipped_marked_sent",
                                 url=lead.linkedin_url,
                             )
+                        elif fu_result.get("session_expired"):
+                            # Explicit session-expiry signal (redirect loop,
+                            # authwall, etc.) — the message page never loaded,
+                            # so the message DEFINITELY did not go through.
+                            # Leave the lead in FOLLOWUP_SCHEDULED to retry
+                            # after cookie renewal, mark account cookie_expired
+                            # immediately (don't wait for 3 consecutive — this
+                            # is unambiguous).
+                            logger.error(
+                                "followup.session_expired_detected",
+                                account=account.name,
+                                campaign=campaign.name,
+                                url=lead.linkedin_url,
+                                reason=fu_result.get("reason"),
+                            )
+                            await repo.update_account(account, status="cookie_expired")
+                            await slack_notify(
+                                f":warning: *Cookie expired* — account *{account.name}* "
+                                f"(detected by followup dispatcher; lead preserved in FOLLOWUP_SCHEDULED for retry)."
+                            )
+                            await repo.log_action(
+                                account_id=account.id,
+                                campaign_id=campaign.id,
+                                lead_id=lead.id,
+                                action_type=ActionType.ERROR,
+                                status=ActionLogStatus.FAILED,
+                                details={
+                                    "reason": "followup_session_expired",
+                                    "detail": fu_result.get("reason"),
+                                },
+                            )
+                            stop_account = True
+                            break
+                        elif fu_result.get("network_error"):
+                            # Proxy/timeout — don't mark the lead as ERROR
+                            # since the message never went through. Leave it
+                            # in FOLLOWUP_SCHEDULED for the next cycle.
+                            consecutive_network_errors += 1
+                            consecutive_session_errors = 0
+                            logger.warning(
+                                "followup.network_error",
+                                account=account.name,
+                                url=lead.linkedin_url,
+                                consecutive=consecutive_network_errors,
+                                reason=fu_result.get("reason"),
+                            )
+                            if consecutive_network_errors >= 3:
+                                logger.warning(
+                                    "followup.proxy_connectivity_issues",
+                                    account=account.name,
+                                    consecutive=consecutive_network_errors,
+                                )
+                                await repo.log_action(
+                                    account_id=account.id,
+                                    campaign_id=campaign.id,
+                                    action_type=ActionType.ERROR,
+                                    status=ActionLogStatus.FAILED,
+                                    details={
+                                        "reason": "followup_consecutive_network_errors",
+                                        "count": consecutive_network_errors,
+                                    },
+                                )
+                                stop_account = True
+                                break
                         else:
-                            # Messages are NOT idempotent — retrying risks sending
-                            # a duplicate.  Move to ERROR immediately on first failure
-                            # so the user can inspect and decide whether to retry.
+                            # Generic failure (no explicit session/network
+                            # classification). Messages are NOT idempotent —
+                            # retrying risks duplicates — so mark the lead
+                            # ERROR immediately. Still track for consecutive-
+                            # error heuristics: 3 in a row → cookie suspect.
                             validate_transition(lead.status, LeadStatus.ERROR)
                             await repo.update_lead(
                                 lead,
                                 status=LeadStatus.ERROR,
                                 retry_count=1,
                             )
+                            consecutive_session_errors += 1
+                            consecutive_network_errors = 0
                             logger.warning(
                                 "followup.failed_no_retry",
                                 url=lead.linkedin_url,
+                                consecutive=consecutive_session_errors,
                                 reason=fu_result.get("reason", "unknown"),
                             )
-                        if fu_result.get("fatal"):
+                            if consecutive_session_errors >= 3:
+                                logger.error(
+                                    "followup.consecutive_errors_detected",
+                                    account=account.name,
+                                    campaign=campaign.name,
+                                    consecutive=consecutive_session_errors,
+                                )
+                                await repo.update_account(account, status="cookie_expired")
+                                await slack_notify(
+                                    f":warning: *Cookie expired* — account *{account.name}* "
+                                    f"({consecutive_session_errors} consecutive followup failures on *{campaign.name}*)."
+                                )
+                                await repo.log_action(
+                                    account_id=account.id,
+                                    campaign_id=campaign.id,
+                                    action_type=ActionType.ERROR,
+                                    status=ActionLogStatus.FAILED,
+                                    details={
+                                        "reason": "followup_consecutive_errors",
+                                        "count": consecutive_session_errors,
+                                    },
+                                )
+                                stop_account = True
+                                break
+                        if fu_result.get("fatal") and not stop_account:
+                            # Non-session fatal (e.g. CAPTCHA) — bail this
+                            # account but don't necessarily flag cookie_expired.
+                            stop_account = True
                             break
             finally:
                 await pool.release_idle(account.id)
