@@ -103,6 +103,9 @@ class Account(Base):
     auto_withdraw_interval_days: Mapped[int] = mapped_column(Integer, default=30)
     auto_withdraw_last_run: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     pending_invitations_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Most-recent acceptance catchup completion. Used as a per-account
+    # rate-limit guard (default 1h cooldown between catchup invocations).
+    last_catchup_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     avatar_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     dispatch_mode: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -143,6 +146,12 @@ class Campaign(Base):
     csv_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     total_leads: Mapped[int] = mapped_column(Integer, default=0)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Start of an unscanned pause window. Set on pause (only if currently
+    # NULL, preserving the earliest unscanned pause across serial
+    # pause/resume cycles). Cleared only when acceptance catchup completes.
+    # A non-NULL value on an ACTIVE campaign signals "there's a stale pause
+    # window that was never scanned."
+    paused_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, onupdate=_utcnow

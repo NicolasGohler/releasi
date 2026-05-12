@@ -32,6 +32,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { fetchAccountActivity, replanAccount } from "@/lib/api";
+import { ResumeCampaignDialog, shouldOfferCatchup } from "@/components/resume-campaign-dialog";
 
 export default function CampaignDetailPage({
   params,
@@ -48,6 +49,7 @@ export default function CampaignDetailPage({
   const activate = useActivateCampaign();
   const pause = usePauseCampaign();
   const resetLeads = useResetLeads();
+  const [resumeDialogOpen, setResumeDialogOpen] = useState(false);
   const updateCampaign = useUpdateCampaign(id);
   const archiveCampaign = useArchiveCampaign();
   const { data: allLists } = useLeadLists();
@@ -245,7 +247,13 @@ export default function CampaignDetailPage({
             {(campaign.status === "draft" || campaign.status === "paused") && (
               <Button
                 size="sm"
-                onClick={() => activate.mutate(id, { onSuccess: () => toast.success("Campaign activated") })}
+                onClick={() => {
+                  if (campaign.status === "paused" && shouldOfferCatchup(campaign)) {
+                    setResumeDialogOpen(true);
+                  } else {
+                    activate.mutate(id, { onSuccess: () => toast.success("Campaign activated") });
+                  }
+                }}
                 disabled={activate.isPending}
               >
                 Activate
@@ -693,6 +701,11 @@ export default function CampaignDetailPage({
           </TabsContent>
         </Tabs>
       </div>
+      <ResumeCampaignDialog
+        campaign={campaign}
+        open={resumeDialogOpen}
+        onOpenChange={setResumeDialogOpen}
+      />
     </div>
   );
 }

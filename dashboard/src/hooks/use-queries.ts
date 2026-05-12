@@ -124,6 +124,32 @@ export function usePauseCampaign() {
   });
 }
 
+export function useStartAcceptanceCatchup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { campaignId: string; cutoff_hours_override?: number }) =>
+      api.startAcceptanceCatchup(args.campaignId, {
+        cutoff_hours_override: args.cutoff_hours_override,
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["campaigns"] }),
+  });
+}
+
+export function useAcceptanceCatchupStatus(
+  campaignId: string,
+  taskId: string | null,
+) {
+  return useQuery({
+    queryKey: ["catchup-status", campaignId, taskId],
+    queryFn: () => api.fetchAcceptanceCatchupStatus(campaignId, taskId as string),
+    enabled: !!taskId,
+    refetchInterval: (q) => {
+      const status = (q.state.data as api.AcceptanceCatchupTask | undefined)?.status;
+      return status === "running" ? 3000 : false;
+    },
+  });
+}
+
 export function useCampaignStats(id: string, days = 30, granularity: "day" | "hour" = "day") {
   return useQuery({
     queryKey: ["campaign-stats", id, days, granularity],
@@ -144,7 +170,13 @@ export function useResetLeads() {
 
 export function useLeads(
   campaignId: string,
-  params?: { page?: number; per_page?: number; status?: string; search?: string; excludeRemoved?: boolean; leadListId?: string }
+  params?: {
+    page?: number; per_page?: number; status?: string; search?: string;
+    excludeRemoved?: boolean; leadListId?: string;
+    sortBy?: string; sortDir?: "asc" | "desc";
+    requestedAfter?: string; requestedBefore?: string;
+    skipReason?: string;
+  }
 ) {
   return useQuery({
     queryKey: ["leads", campaignId, params],
@@ -285,16 +317,52 @@ export function useUnassignListFromCampaign() {
 // ── Global Leads ─────────────────────────────────────────────────────────
 
 export function useGlobalLeads(params?: {
-  page?: number;
-  per_page?: number;
-  lead_list_id?: string;
-  campaign_id?: string;
-  status?: string;
-  search?: string;
+  page?: number; per_page?: number;
+  lead_list_id?: string; campaign_id?: string;
+  status?: string; search?: string;
+  sort_by?: string; sort_dir?: "asc" | "desc";
+  requested_after?: string; requested_before?: string;
+  skip_reason?: string;
 }) {
   return useQuery({
     queryKey: ["global-leads", params],
     queryFn: () => api.fetchGlobalLeads(params),
+  });
+}
+
+export function useBulkSkipLeads() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.bulkSkipLeads,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["global-leads"] });
+      qc.invalidateQueries({ queryKey: ["leads"] });
+      qc.invalidateQueries({ queryKey: ["campaigns"] });
+    },
+  });
+}
+
+export function useBulkRemoveLeads() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.bulkRemoveLeads,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["global-leads"] });
+      qc.invalidateQueries({ queryKey: ["leads"] });
+      qc.invalidateQueries({ queryKey: ["campaigns"] });
+    },
+  });
+}
+
+export function useBulkRequeueLeads() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.bulkRequeueLeads,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["global-leads"] });
+      qc.invalidateQueries({ queryKey: ["leads"] });
+      qc.invalidateQueries({ queryKey: ["campaigns"] });
+    },
   });
 }
 

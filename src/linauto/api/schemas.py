@@ -124,6 +124,7 @@ class CampaignOut(BaseModel):
     csv_filename: Optional[str] = None
     total_leads: int
     archived: bool = False
+    paused_at: Optional[datetime] = None
     status_counts: Optional[Dict[str, int]] = None
     assigned_lists: List[Dict[str, Any]] = []
     account_status: Optional[str] = None

@@ -1,10 +1,11 @@
 """Campaign endpoints."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import List, Optional
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from linauto.api.auth import require_api_key
 from linauto.api.deps import get_repo
@@ -13,6 +14,12 @@ from linauto.db.models import CampaignStatus
 from linauto.db.repository import Repository
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
+
+# In-process task registry for acceptance catchup jobs. Mirrors the pattern
+# used by the invitation-withdrawal endpoint in routes/accounts.py.
+# Format: { task_id: { status, accepted_count, scanned_slugs, cutoff_hours,
+#                      hit_cutoff, hit_iteration_cap, skipped_reason, error } }
+_catchup_tasks: dict = {}
 
 
 async def _enrich_campaign(repo: Repository, campaign) -> CampaignOut:
@@ -146,11 +153,137 @@ async def activate_campaign(campaign_id: str, repo: Repository = Depends(get_rep
 
 @router.post("/campaigns/{campaign_id}/pause", response_model=CampaignOut)
 async def pause_campaign(campaign_id: str, repo: Repository = Depends(get_repo)):
+    from datetime import datetime as _datetime
+
     campaign = await repo.get_campaign(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    campaign = await repo.update_campaign(campaign, status=CampaignStatus.PAUSED)
+
+    # Set paused_at only if NULL — preserves the earliest unscanned pause
+    # window across serial pause/resume cycles. Cleared only on successful
+    # acceptance catchup.
+    updates = {"status": CampaignStatus.PAUSED}
+    if campaign.paused_at is None:
+        updates["paused_at"] = _datetime.utcnow()
+    campaign = await repo.update_campaign(campaign, **updates)
     return await _enrich_campaign(repo, campaign)
+
+
+@router.post("/campaigns/{campaign_id}/acceptance-catchup")
+async def start_acceptance_catchup(
+    campaign_id: str,
+    background_tasks: BackgroundTasks,
+    body: Optional[dict] = None,
+    repo: Repository = Depends(get_repo),
+):
+    """Start a one-shot acceptance catchup scan for a paused campaign.
+
+    Returns task_id immediately. Poll
+    GET /campaigns/{id}/acceptance-catchup/{task_id} for status.
+
+    Optional body:
+      { "cutoff_hours_override": float }  # for the "duration unknown" case
+    """
+    from linauto.campaign.acceptance_catchup import (
+        run_acceptance_catchup,
+        MIN_CUTOFF_HOURS,
+        MAX_CUTOFF_HOURS,
+    )
+    from linauto.db.engine import get_session_factory
+
+    campaign = await repo.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Hard precondition checks (#8 / #15) BEFORE spawning the task
+    if campaign.archived:
+        raise HTTPException(status_code=409, detail="Campaign is archived")
+
+    account = await repo.get_account(campaign.account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    acct_status_val = account.status.value if hasattr(account.status, "value") else account.status
+    if acct_status_val != "active":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Account not active (status={acct_status_val})",
+        )
+    if account.paused_until and account.paused_until > datetime.utcnow():
+        raise HTTPException(status_code=409, detail="Account is in cooldown")
+
+    cutoff_override: Optional[float] = None
+    if body and body.get("cutoff_hours_override") is not None:
+        try:
+            cutoff_override = float(body["cutoff_hours_override"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="cutoff_hours_override must be a number")
+        if cutoff_override < MIN_CUTOFF_HOURS or cutoff_override > MAX_CUTOFF_HOURS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"cutoff_hours_override must be in [{MIN_CUTOFF_HOURS}, {MAX_CUTOFF_HOURS}]",
+            )
+
+    task_id = f"ca-{uuid4().hex[:8]}"
+    _catchup_tasks[task_id] = {
+        "status": "running",
+        "campaign_id": campaign.id,
+        "accepted_count": 0,
+        "scanned_slugs": 0,
+        "cutoff_hours": 0.0,
+        "hit_cutoff": False,
+        "hit_iteration_cap": False,
+        "skipped_reason": None,
+        "error": None,
+    }
+
+    async def _run(tid: str, c_id: str, override: Optional[float]):
+        # New repo + session bound to this background task — the request
+        # session would close as soon as we return the task_id.
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            task_repo = Repository(session)
+            try:
+                result = await run_acceptance_catchup(
+                    task_repo, c_id, cutoff_hours_override=override
+                )
+                _catchup_tasks[tid] = {
+                    "status": "error" if result.error else "done",
+                    "campaign_id": c_id,
+                    "accepted_count": result.accepted_count,
+                    "scanned_slugs": result.scanned_slugs,
+                    "cutoff_hours": result.cutoff_hours,
+                    "hit_cutoff": result.hit_cutoff,
+                    "hit_iteration_cap": result.hit_iteration_cap,
+                    "skipped_reason": result.skipped_reason,
+                    "error": result.error,
+                }
+            except Exception as e:
+                _catchup_tasks[tid] = {
+                    "status": "error",
+                    "campaign_id": c_id,
+                    "accepted_count": 0,
+                    "scanned_slugs": 0,
+                    "cutoff_hours": 0.0,
+                    "hit_cutoff": False,
+                    "hit_iteration_cap": False,
+                    "skipped_reason": None,
+                    "error": str(e),
+                }
+
+    background_tasks.add_task(_run, task_id, campaign.id, cutoff_override)
+    return {"task_id": task_id}
+
+
+@router.get("/campaigns/{campaign_id}/acceptance-catchup/{task_id}")
+async def get_acceptance_catchup_status(campaign_id: str, task_id: str):
+    """Poll for acceptance catchup task status."""
+    task = _catchup_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.get("campaign_id") != campaign_id:
+        raise HTTPException(status_code=404, detail="Task not found for this campaign")
+    return task
 
 
 @router.post("/campaigns/{campaign_id}/reset-leads")

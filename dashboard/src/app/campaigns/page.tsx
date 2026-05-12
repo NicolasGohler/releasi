@@ -1,26 +1,41 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import Link from "next/link";
 import { useCampaigns, useActivateCampaign, usePauseCampaign } from "@/hooks/use-queries";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
+import { ResumeCampaignDialog, shouldOfferCatchup } from "@/components/resume-campaign-dialog";
+import type { Campaign } from "@/lib/types";
+
+type SortOption = "name" | "progress" | "remaining" | "last_activity";
+
+const SORT_LABELS: Record<SortOption, string> = {
+  name: "Name A→Z",
+  progress: "Progress ↓",
+  remaining: "Remaining ↓",
+  last_activity: "Last active",
+};
 
 export default function CampaignsPage() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
+  const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState<SortOption>("last_activity");
   const { data: campaigns, isLoading } = useCampaigns({ status: statusFilter });
   const activate = useActivateCampaign();
   const pause = usePauseCampaign();
+  const [resumeDialogCampaign, setResumeDialogCampaign] = useState<Campaign | null>(null);
 
   function getProgress(counts: Record<string, number> | null | undefined) {
-    if (!counts) return { total: 0, sent: 0, accepted: 0, other: 0, sentPct: 0, acceptedPct: 0, otherPct: 0 };
+    if (!counts) return { total: 0, sent: 0, accepted: 0, other: 0, pending: 0, sentPct: 0, acceptedPct: 0, otherPct: 0 };
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
-    if (total === 0) return { total: 0, sent: 0, accepted: 0, other: 0, sentPct: 0, acceptedPct: 0, otherPct: 0 };
+    if (total === 0) return { total: 0, sent: 0, accepted: 0, other: 0, pending: 0, sentPct: 0, acceptedPct: 0, otherPct: 0 };
     const accepted = (counts["connected"] ?? 0) + (counts["followup_scheduled"] ?? 0) + (counts["followup_sent"] ?? 0) + (counts["completed"] ?? 0);
     const sent = counts["connection_requested"] ?? 0;
     const pending = (counts["pending"] ?? 0) + (counts["scheduled"] ?? 0);
@@ -30,11 +45,40 @@ export default function CampaignsPage() {
       sent,
       accepted,
       other,
+      pending,
       sentPct: Math.round((sent / total) * 100),
       acceptedPct: Math.round((accepted / total) * 100),
       otherPct: Math.round((other / total) * 100),
     };
   }
+
+  const filtered = useMemo(() => {
+    if (!campaigns) return [];
+    let list = campaigns;
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter((c) => c.name?.toLowerCase().includes(q) || c.account_name?.toLowerCase().includes(q));
+    }
+    return [...list].sort((a, b) => {
+      if (sortBy === "name") return (a.name ?? "").localeCompare(b.name ?? "");
+      if (sortBy === "progress") {
+        const pa = getProgress(a.status_counts);
+        const pb = getProgress(b.status_counts);
+        const pctA = pa.total ? (pa.accepted + pa.sent + pa.other) / pa.total : 0;
+        const pctB = pb.total ? (pb.accepted + pb.sent + pb.other) / pb.total : 0;
+        return pctB - pctA;
+      }
+      if (sortBy === "remaining") {
+        const pa = getProgress(a.status_counts);
+        const pb = getProgress(b.status_counts);
+        return pb.pending - pa.pending;
+      }
+      // last_activity: active first, then by name (no timestamp available client-side)
+      if (a.status === "active" && b.status !== "active") return -1;
+      if (b.status === "active" && a.status !== "active") return 1;
+      return (a.name ?? "").localeCompare(b.name ?? "");
+    });
+  }, [campaigns, search, sortBy]);
 
   return (
     <div className="space-y-6">
@@ -44,17 +88,34 @@ export default function CampaignsPage() {
         </Link>
       </PageHeader>
 
-      <Tabs
-        defaultValue="all"
-        onValueChange={(v) => setStatusFilter(v === "all" ? undefined : v)}
-      >
-        <TabsList>
-          <TabsTrigger value="all">All</TabsTrigger>
-          <TabsTrigger value="active">Active</TabsTrigger>
-          <TabsTrigger value="paused">Paused</TabsTrigger>
-          <TabsTrigger value="draft">Draft</TabsTrigger>
-        </TabsList>
-      </Tabs>
+      <div className="flex flex-wrap items-center gap-3">
+        <Tabs
+          defaultValue="all"
+          onValueChange={(v) => setStatusFilter(v === "all" ? undefined : v)}
+        >
+          <TabsList>
+            <TabsTrigger value="all">All</TabsTrigger>
+            <TabsTrigger value="active">Active</TabsTrigger>
+            <TabsTrigger value="paused">Paused</TabsTrigger>
+            <TabsTrigger value="draft">Draft</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <Input
+          placeholder="Search campaigns…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="max-w-xs"
+        />
+        <select
+          className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value as SortOption)}
+        >
+          {(Object.keys(SORT_LABELS) as SortOption[]).map((k) => (
+            <option key={k} value={k}>{SORT_LABELS[k]}</option>
+          ))}
+        </select>
+      </div>
 
       {isLoading ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -62,20 +123,20 @@ export default function CampaignsPage() {
             <Skeleton key={i} className="h-40" />
           ))}
         </div>
-      ) : campaigns?.length === 0 ? (
+      ) : filtered.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">
-            <p className="text-muted-foreground">No campaigns yet</p>
-            <Link href="/campaigns/new">
-              <Button variant="outline" className="mt-4">
-                Create your first campaign
-              </Button>
-            </Link>
+            <p className="text-muted-foreground">{campaigns?.length === 0 ? "No campaigns yet" : "No campaigns match your search"}</p>
+            {campaigns?.length === 0 && (
+              <Link href="/campaigns/new">
+                <Button variant="outline" className="mt-4">Create your first campaign</Button>
+              </Link>
+            )}
           </CardContent>
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {campaigns?.map((c) => {
+          {filtered.map((c) => {
             const progress = getProgress(c.status_counts);
             return (
               <Link key={c.id} href={`/campaigns/${c.id}`}>
@@ -85,17 +146,11 @@ export default function CampaignsPage() {
                       <h3 className="font-medium truncate">{c.name}</h3>
                       <StatusBadge status={c.status} />
                     </div>
-                    <p className="text-xs text-muted-foreground">
-                      {c.account_name ?? "—"}
-                    </p>
+                    <p className="text-xs text-muted-foreground">{c.account_name ?? "—"}</p>
                     {c.account_status === "cookie_expired" ? (
                       <p className="text-xs text-red-400">
                         Cookie expired — update in{" "}
-                        <Link
-                          href={`/accounts/${c.account_id}`}
-                          className="underline hover:text-red-300"
-                          onClick={(e) => e.stopPropagation()}
-                        >
+                        <Link href={`/accounts/${c.account_id}`} className="underline hover:text-red-300" onClick={(e) => e.stopPropagation()}>
                           account settings
                         </Link>
                       </p>
@@ -104,58 +159,42 @@ export default function CampaignsPage() {
                         Paused — resumes{" "}
                         {new Date(c.account_paused_until.endsWith("Z") ? c.account_paused_until : c.account_paused_until + "Z").toLocaleString(undefined, {
                           timeZone: c.account_timezone ?? undefined,
-                          weekday: "short",
-                          month: "short",
-                          day: "numeric",
-                          hour: "2-digit",
-                          minute: "2-digit",
+                          weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
                         })}
                       </p>
                     ) : null}
                     <div className="space-y-1">
                       <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>{progress.accepted + progress.sent + progress.other} / {progress.total} processed</span>
+                        <span>
+                          {progress.accepted + progress.sent + progress.other} / {progress.total} processed
+                          {progress.pending > 0 && (
+                            <span className="ml-1 text-muted-foreground/60">· {progress.pending} left</span>
+                          )}
+                        </span>
                         <span>{progress.acceptedPct + progress.sentPct + progress.otherPct}%</span>
                       </div>
                       <div className="flex h-1.5 w-full rounded-full bg-muted overflow-hidden">
-                        {progress.acceptedPct > 0 && (
-                          <div className="h-full bg-emerald-500 transition-all" style={{ width: `${progress.acceptedPct}%` }} />
-                        )}
-                        {progress.sentPct > 0 && (
-                          <div className="h-full bg-blue-500 transition-all" style={{ width: `${progress.sentPct}%` }} />
-                        )}
-                        {progress.otherPct > 0 && (
-                          <div className="h-full bg-zinc-500 transition-all" style={{ width: `${progress.otherPct}%` }} />
-                        )}
+                        {progress.acceptedPct > 0 && <div className="h-full bg-emerald-500 transition-all" style={{ width: `${progress.acceptedPct}%` }} />}
+                        {progress.sentPct > 0 && <div className="h-full bg-blue-500 transition-all" style={{ width: `${progress.sentPct}%` }} />}
+                        {progress.otherPct > 0 && <div className="h-full bg-zinc-500 transition-all" style={{ width: `${progress.otherPct}%` }} />}
                       </div>
                     </div>
                     <div className="flex gap-2 pt-1">
-                      {c.status === "draft" || c.status === "paused" ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            activate.mutate(c.id, {
-                              onSuccess: () => toast.success("Campaign activated"),
-                            });
-                          }}
-                        >
-                          Activate
-                        </Button>
+                      {(c.status === "draft" || c.status === "paused") ? (
+                        <Button size="sm" variant="outline" onClick={(e) => {
+                          e.preventDefault();
+                          // Long pause → offer catchup dialog. Short pause / draft → activate directly.
+                          if (c.status === "paused" && shouldOfferCatchup(c)) {
+                            setResumeDialogCampaign(c);
+                          } else {
+                            activate.mutate(c.id, { onSuccess: () => toast.success("Campaign activated") });
+                          }
+                        }}>Activate</Button>
                       ) : c.status === "active" ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            pause.mutate(c.id, {
-                              onSuccess: () => toast.success("Campaign paused"),
-                            });
-                          }}
-                        >
-                          Pause
-                        </Button>
+                        <Button size="sm" variant="outline" onClick={(e) => {
+                          e.preventDefault();
+                          pause.mutate(c.id, { onSuccess: () => toast.success("Campaign paused") });
+                        }}>Pause</Button>
                       ) : null}
                     </div>
                   </CardContent>
@@ -164,6 +203,13 @@ export default function CampaignsPage() {
             );
           })}
         </div>
+      )}
+      {resumeDialogCampaign && (
+        <ResumeCampaignDialog
+          campaign={resumeDialogCampaign}
+          open={!!resumeDialogCampaign}
+          onOpenChange={(o) => !o && setResumeDialogCampaign(null)}
+        />
       )}
     </div>
   );

@@ -164,6 +164,30 @@ export const pauseCampaign = (id: string) =>
 export const resetCampaignLeads = (id: string) =>
   apiFetch<{ reset_count: number }>(`/campaigns/${id}/reset-leads`, { method: "POST" });
 
+export type AcceptanceCatchupTask = {
+  status: "running" | "done" | "error";
+  campaign_id: string;
+  accepted_count: number;
+  scanned_slugs: number;
+  cutoff_hours: number;
+  hit_cutoff: boolean;
+  hit_iteration_cap: boolean;
+  skipped_reason: string | null;
+  error: string | null;
+};
+
+export const startAcceptanceCatchup = (
+  id: string,
+  body?: { cutoff_hours_override?: number },
+) =>
+  apiFetch<{ task_id: string }>(`/campaigns/${id}/acceptance-catchup`, {
+    method: "POST",
+    body: JSON.stringify(body ?? {}),
+  });
+
+export const fetchAcceptanceCatchupStatus = (campaignId: string, taskId: string) =>
+  apiFetch<AcceptanceCatchupTask>(`/campaigns/${campaignId}/acceptance-catchup/${taskId}`);
+
 export const fetchCampaignStats = (id: string, days = 30, granularity: "day" | "hour" = "day") =>
   apiFetch<CampaignStats>(`/campaigns/${id}/stats?days=${days}&granularity=${granularity}`);
 
@@ -171,7 +195,13 @@ export const fetchCampaignStats = (id: string, days = 30, granularity: "day" | "
 
 export const fetchLeads = (
   campaignId: string,
-  params?: { page?: number; per_page?: number; status?: string; search?: string; excludeRemoved?: boolean; leadListId?: string }
+  params?: {
+    page?: number; per_page?: number; status?: string; search?: string;
+    excludeRemoved?: boolean; leadListId?: string;
+    sortBy?: string; sortDir?: "asc" | "desc";
+    requestedAfter?: string; requestedBefore?: string;
+    skipReason?: string;
+  }
 ) => {
   const sp = new URLSearchParams();
   if (params?.page) sp.set("page", String(params.page));
@@ -180,6 +210,11 @@ export const fetchLeads = (
   if (params?.search) sp.set("search", params.search);
   if (params?.excludeRemoved) sp.set("exclude_removed", "true");
   if (params?.leadListId) sp.set("lead_list_id", params.leadListId);
+  if (params?.sortBy) sp.set("sort_by", params.sortBy);
+  if (params?.sortDir) sp.set("sort_dir", params.sortDir);
+  if (params?.requestedAfter) sp.set("requested_after", params.requestedAfter);
+  if (params?.requestedBefore) sp.set("requested_before", params.requestedBefore);
+  if (params?.skipReason) sp.set("skip_reason", params.skipReason);
   const qs = sp.toString();
   return apiFetch<LeadPage>(`/campaigns/${campaignId}/leads${qs ? `?${qs}` : ""}`);
 };
@@ -307,12 +342,12 @@ export const unassignListFromCampaign = (listId: string, campaignId: string) =>
 // ── Global Leads / Lead Management ──────────────────────────────────────
 
 export const fetchGlobalLeads = (params?: {
-  page?: number;
-  per_page?: number;
-  lead_list_id?: string;
-  campaign_id?: string;
-  status?: string;
-  search?: string;
+  page?: number; per_page?: number;
+  lead_list_id?: string; campaign_id?: string;
+  status?: string; search?: string;
+  sort_by?: string; sort_dir?: "asc" | "desc";
+  requested_after?: string; requested_before?: string;
+  skip_reason?: string;
 }) => {
   const sp = new URLSearchParams();
   if (params?.page) sp.set("page", String(params.page));
@@ -321,9 +356,23 @@ export const fetchGlobalLeads = (params?: {
   if (params?.campaign_id) sp.set("campaign_id", params.campaign_id);
   if (params?.status) sp.set("status", params.status);
   if (params?.search) sp.set("search", params.search);
+  if (params?.sort_by) sp.set("sort_by", params.sort_by);
+  if (params?.sort_dir) sp.set("sort_dir", params.sort_dir);
+  if (params?.requested_after) sp.set("requested_after", params.requested_after);
+  if (params?.requested_before) sp.set("requested_before", params.requested_before);
+  if (params?.skip_reason) sp.set("skip_reason", params.skip_reason);
   const qs = sp.toString();
   return apiFetch<LeadPage>(`/leads${qs ? `?${qs}` : ""}`);
 };
+
+export const bulkSkipLeads = (lead_ids: string[]) =>
+  apiFetch<{ updated: number }>("/leads/bulk/skip", { method: "POST", body: JSON.stringify({ lead_ids }) });
+
+export const bulkRemoveLeads = (lead_ids: string[]) =>
+  apiFetch<{ updated: number }>("/leads/bulk/remove", { method: "POST", body: JSON.stringify({ lead_ids }) });
+
+export const bulkRequeueLeads = (lead_ids: string[]) =>
+  apiFetch<{ updated: number }>("/leads/bulk/requeue", { method: "POST", body: JSON.stringify({ lead_ids }) });
 
 export const deleteLead = (id: string) =>
   apiFetch<Lead>(`/leads/${id}`, { method: "DELETE" });
