@@ -14,12 +14,112 @@ from linauto.db.models import (
     ActionLog, ActionType, ActionLogStatus,
     DailyStat,
     LeadList, CampaignLeadList,
+    LeadListMembership, CampaignLeadAssignment,
+)
+
+
+# Phase 1 of the lead-centric refactor: every Lead mutation also writes
+# to the new tables. Flip this off to disable dual-write (for emergency
+# rollback or running on a DB that doesn't have the new tables yet).
+DUAL_WRITE_NEW_SCHEMA = True
+
+# Status fields on Lead that also live on CampaignLeadAssignment. When a
+# Lead row is updated with any of these, the matching assignment row gets
+# the same value.
+_ASSIGNMENT_SYNC_FIELDS = (
+    "status",
+    "scheduled_at",
+    "connection_requested_at",
+    "connection_accepted_at",
+    "followup_sent_at",
+    "error_message",
+    "retry_count",
 )
 
 
 class Repository:
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    # ── Phase 1 dual-write helpers ─────────────────────────────────────────
+    # These mirror Lead state to the new tables. Called from every Lead
+    # mutation site. Safe no-ops when:
+    #   - DUAL_WRITE_NEW_SCHEMA is False (rollback switch)
+    #   - The Lead has no campaign_id / lead_list_id (no assignment/
+    #     membership to sync)
+    #   - The matching new-table row doesn't exist yet (we don't auto-create
+    #     here — that's the backfill script's job for legacy rows, and the
+    #     explicit creation sites' job for new rows)
+
+    async def _sync_assignment_from_lead(self, lead: Lead) -> None:
+        """Mirror a Lead's per-campaign state to its CampaignLeadAssignment.
+
+        UPSERT-ish: if the assignment row exists, UPDATE its sync fields.
+        If it doesn't exist (e.g. brand-new Lead created in this transaction),
+        INSERT a fresh one mirroring the Lead's full state.
+        """
+        if not DUAL_WRITE_NEW_SCHEMA or lead.campaign_id is None:
+            return
+
+        existing = await self.session.execute(
+            select(CampaignLeadAssignment).where(
+                CampaignLeadAssignment.lead_id == lead.id,
+                CampaignLeadAssignment.campaign_id == lead.campaign_id,
+            )
+        )
+        assignment = existing.scalar_one_or_none()
+
+        if assignment is None:
+            assignment = CampaignLeadAssignment(
+                lead_id=lead.id,
+                campaign_id=lead.campaign_id,
+                lead_list_id=lead.lead_list_id,
+                status=lead.status.value if hasattr(lead.status, "value") else str(lead.status).lower(),
+                scheduled_at=lead.scheduled_at,
+                connection_requested_at=lead.connection_requested_at,
+                connection_accepted_at=lead.connection_accepted_at,
+                followup_sent_at=lead.followup_sent_at,
+                error_message=lead.error_message,
+                retry_count=lead.retry_count or 0,
+            )
+            self.session.add(assignment)
+        else:
+            assignment.status = (
+                lead.status.value if hasattr(lead.status, "value") else str(lead.status).lower()
+            )
+            assignment.scheduled_at = lead.scheduled_at
+            assignment.connection_requested_at = lead.connection_requested_at
+            assignment.connection_accepted_at = lead.connection_accepted_at
+            assignment.followup_sent_at = lead.followup_sent_at
+            assignment.error_message = lead.error_message
+            assignment.retry_count = lead.retry_count or 0
+            # Update lead_list_id if it changed on the Lead (rare)
+            if lead.lead_list_id and assignment.lead_list_id != lead.lead_list_id:
+                assignment.lead_list_id = lead.lead_list_id
+
+    async def _sync_membership_from_lead(self, lead: Lead) -> None:
+        """Ensure a LeadListMembership row exists for the Lead's list.
+
+        Membership rows are write-once: the lead either is or isn't in the
+        list. Idempotent — re-runs are no-ops.
+        """
+        if not DUAL_WRITE_NEW_SCHEMA or lead.lead_list_id is None:
+            return
+
+        existing = await self.session.execute(
+            select(LeadListMembership.id).where(
+                LeadListMembership.lead_id == lead.id,
+                LeadListMembership.lead_list_id == lead.lead_list_id,
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            return
+
+        membership = LeadListMembership(
+            lead_id=lead.id,
+            lead_list_id=lead.lead_list_id,
+        )
+        self.session.add(membership)
 
     # ── Accounts ───────────────────────────────────────────────────────────
 
@@ -91,6 +191,13 @@ class Repository:
 
     async def bulk_create_leads(self, leads: list[Lead]) -> int:
         self.session.add_all(leads)
+        # Flush to populate generated Lead.id values before dual-writing
+        # the membership + assignment rows.
+        await self.session.flush()
+        if DUAL_WRITE_NEW_SCHEMA:
+            for lead in leads:
+                await self._sync_assignment_from_lead(lead)
+                await self._sync_membership_from_lead(lead)
         await self.session.commit()
         return len(leads)
 
@@ -170,6 +277,16 @@ class Repository:
             )
             .values(status=LeadStatus.PENDING, scheduled_at=None)
         )
+        if DUAL_WRITE_NEW_SCHEMA:
+            await self.session.execute(
+                update(CampaignLeadAssignment)
+                .where(
+                    CampaignLeadAssignment.campaign_id == campaign_id,
+                    CampaignLeadAssignment.status == LeadStatus.SCHEDULED.value,
+                    CampaignLeadAssignment.scheduled_at < now,
+                )
+                .values(status=LeadStatus.PENDING.value, scheduled_at=None)
+            )
         await self.session.commit()
         return result.rowcount
 
@@ -249,6 +366,11 @@ class Repository:
     async def update_lead(self, lead: Lead, **kwargs) -> Lead:
         for key, value in kwargs.items():
             setattr(lead, key, value)
+        # Dual-write: mirror state changes to the assignment row and ensure
+        # membership exists. Both are no-ops if the lead has no campaign/list
+        # or DUAL_WRITE_NEW_SCHEMA is False.
+        await self._sync_assignment_from_lead(lead)
+        await self._sync_membership_from_lead(lead)
         await self.session.commit()
         await self.session.refresh(lead)
         return lead
@@ -653,6 +775,12 @@ class Repository:
             .where(Lead.id == lead_id)
             .values(scheduled_at=scheduled_at, status=new_status)
         )
+        if DUAL_WRITE_NEW_SCHEMA:
+            await self.session.execute(
+                update(CampaignLeadAssignment)
+                .where(CampaignLeadAssignment.lead_id == lead_id)
+                .values(scheduled_at=scheduled_at, status=new_status.value)
+            )
         await self.session.commit()
 
     async def bulk_update_lead_status(
@@ -667,6 +795,17 @@ class Repository:
             .where(Lead.campaign_id == campaign_id, Lead.status == from_status)
             .values(status=to_status)
         )
+        # Dual-write the same change to the assignment table. String values
+        # because CampaignLeadAssignment.status is VARCHAR not Enum.
+        if DUAL_WRITE_NEW_SCHEMA:
+            await self.session.execute(
+                update(CampaignLeadAssignment)
+                .where(
+                    CampaignLeadAssignment.campaign_id == campaign_id,
+                    CampaignLeadAssignment.status == from_status.value,
+                )
+                .values(status=to_status.value)
+            )
         await self.session.commit()
         return result.rowcount
 
@@ -696,6 +835,23 @@ class Repository:
                 scheduled_at=None,
             )
         )
+        if DUAL_WRITE_NEW_SCHEMA:
+            await self.session.execute(
+                update(CampaignLeadAssignment)
+                .where(
+                    CampaignLeadAssignment.campaign_id == campaign_id,
+                    CampaignLeadAssignment.status.in_([s.value for s in statuses]),
+                )
+                .values(
+                    status=LeadStatus.PENDING.value,
+                    error_message=None,
+                    retry_count=0,
+                    connection_requested_at=None,
+                    connection_accepted_at=None,
+                    followup_sent_at=None,
+                    scheduled_at=None,
+                )
+            )
         await self.session.commit()
         return result.rowcount
 
@@ -1081,6 +1237,13 @@ class Repository:
 
         if new_leads:
             self.session.add_all(new_leads)
+            # Flush so we have lead.id values for the dual-write step.
+            await self.session.flush()
+            # Dual-write: each new Lead row gets a matching assignment
+            # (campaign_id is set) and membership (lead_list_id is set).
+            for nl in new_leads:
+                await self._sync_assignment_from_lead(nl)
+                await self._sync_membership_from_lead(nl)
 
         await self.session.commit()
         return len(new_leads)
@@ -1112,6 +1275,16 @@ class Repository:
             )
             .values(status=LeadStatus.REMOVED)
         )
+        if DUAL_WRITE_NEW_SCHEMA:
+            await self.session.execute(
+                update(CampaignLeadAssignment)
+                .where(
+                    CampaignLeadAssignment.campaign_id == campaign_id,
+                    CampaignLeadAssignment.lead_list_id == lead_list_id,
+                    CampaignLeadAssignment.status != LeadStatus.REMOVED.value,
+                )
+                .values(status=LeadStatus.REMOVED.value)
+            )
         await self.session.commit()
         return result.rowcount
 
@@ -1141,6 +1314,7 @@ class Repository:
         if not lead or lead.status == LeadStatus.REMOVED:
             return lead
         lead.status = LeadStatus.REMOVED
+        await self._sync_assignment_from_lead(lead)
         await self.session.commit()
         await self.session.refresh(lead)
         return lead
@@ -1157,6 +1331,7 @@ class Repository:
         lead.connection_accepted_at = None
         lead.followup_sent_at = None
         lead.scheduled_at = None
+        await self._sync_assignment_from_lead(lead)
         await self.session.commit()
         await self.session.refresh(lead)
         return lead
@@ -1171,6 +1346,7 @@ class Repository:
         lead.status = LeadStatus.SKIPPED
         lead.scheduled_at = None
         lead.error_message = "skipped_manually"
+        await self._sync_assignment_from_lead(lead)
         await self.session.commit()
         await self.session.refresh(lead)
         return lead
@@ -1191,6 +1367,7 @@ class Repository:
             return False
         for lead in leads:
             lead.status = LeadStatus.WITHDRAWN
+            await self._sync_assignment_from_lead(lead)
         await self.session.commit()
         return True
 
@@ -1205,6 +1382,7 @@ class Repository:
         lead.error_message = None
         lead.retry_count = 0
         lead.scheduled_at = None
+        await self._sync_assignment_from_lead(lead)
         await self.session.commit()
         await self.session.refresh(lead)
         return lead
@@ -1216,6 +1394,15 @@ class Repository:
             .where(Lead.id.in_(lead_ids), Lead.status.in_(["pending", "scheduled"]))
             .values(status=LeadStatus.SKIPPED, error_message="skipped_manually")
         )
+        if DUAL_WRITE_NEW_SCHEMA:
+            await self.session.execute(
+                update(CampaignLeadAssignment)
+                .where(
+                    CampaignLeadAssignment.lead_id.in_(lead_ids),
+                    CampaignLeadAssignment.status.in_(["pending", "scheduled"]),
+                )
+                .values(status=LeadStatus.SKIPPED.value, error_message="skipped_manually")
+            )
         await self.session.commit()
         return result.rowcount
 
@@ -1226,6 +1413,15 @@ class Repository:
             .where(Lead.id.in_(lead_ids), Lead.status != LeadStatus.REMOVED)
             .values(status=LeadStatus.REMOVED)
         )
+        if DUAL_WRITE_NEW_SCHEMA:
+            await self.session.execute(
+                update(CampaignLeadAssignment)
+                .where(
+                    CampaignLeadAssignment.lead_id.in_(lead_ids),
+                    CampaignLeadAssignment.status != LeadStatus.REMOVED.value,
+                )
+                .values(status=LeadStatus.REMOVED.value)
+            )
         await self.session.commit()
         return result.rowcount
 
@@ -1236,6 +1432,18 @@ class Repository:
             .where(Lead.id.in_(lead_ids), Lead.status.in_(["error", "withdrawn", "skipped"]))
             .values(status=LeadStatus.PENDING, error_message=None, retry_count=0, scheduled_at=None)
         )
+        if DUAL_WRITE_NEW_SCHEMA:
+            await self.session.execute(
+                update(CampaignLeadAssignment)
+                .where(
+                    CampaignLeadAssignment.lead_id.in_(lead_ids),
+                    CampaignLeadAssignment.status.in_(["error", "withdrawn", "skipped"]),
+                )
+                .values(
+                    status=LeadStatus.PENDING.value,
+                    error_message=None, retry_count=0, scheduled_at=None,
+                )
+            )
         await self.session.commit()
         return result.rowcount
 

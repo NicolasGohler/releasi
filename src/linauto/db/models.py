@@ -270,6 +270,97 @@ class LeadList(Base):
     )
 
 
+# ── Lead-centric model (Phase 1) ───────────────────────────────────────────
+# Two new tables that make Lead↔List and Lead↔Campaign true many-to-many
+# relationships. Live alongside the legacy Lead.campaign_id / lead_list_id
+# columns during the migration. Phase 2 will switch reads over; Phase 3
+# will drop the deprecated columns.
+
+
+class LeadListMembership(Base):
+    """A lead's membership in a lead list. Many-to-many.
+
+    Replaces `Lead.lead_list_id` in Phase 3. Multiple memberships per lead
+    means the same person can be in any number of lists at once. The
+    UNIQUE constraint makes CSV re-imports idempotent — importing the same
+    list twice doesn't duplicate the membership.
+    """
+    __tablename__ = "lead_list_memberships"
+    __table_args__ = (
+        UniqueConstraint("lead_id", "lead_list_id", name="uq_lead_list_membership"),
+        Index("ix_lead_list_memberships_lead", "lead_id"),
+        Index("ix_lead_list_memberships_list", "lead_list_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    lead_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False
+    )
+    lead_list_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("lead_lists.id", ondelete="CASCADE"), nullable=False
+    )
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class CampaignLeadAssignment(Base):
+    """A lead's assignment to a campaign. Many-to-many WITH per-campaign state.
+
+    Replaces `Lead.campaign_id` and the on-Lead status fields in Phase 3.
+    All per-campaign timestamps and status transitions live here so the
+    same lead can have independent state in multiple campaigns simultaneously
+    (e.g. CONNECTED in campaign A while still PENDING in campaign B on a
+    different account).
+
+    `lead_list_id` is denormalised: which list brought this lead into this
+    campaign. Used by unassign-list-from-campaign and surfaced in the
+    lead-detail view.
+    """
+    __tablename__ = "campaign_lead_assignments"
+    __table_args__ = (
+        UniqueConstraint(
+            "lead_id", "campaign_id", name="uq_campaign_lead_assignment"
+        ),
+        Index(
+            "ix_campaign_lead_assignments_campaign_status",
+            "campaign_id", "status",
+        ),
+        Index("ix_campaign_lead_assignments_lead", "lead_id"),
+        Index("ix_campaign_lead_assignments_scheduled_at", "scheduled_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    lead_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False
+    )
+    campaign_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False
+    )
+    lead_list_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("lead_lists.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Stored as plain string to keep migration-time enum changes painless.
+    # Values match LeadStatus enum values.
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    scheduled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    connection_requested_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    connection_accepted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    followup_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+
 class CampaignLeadList(Base):
     __tablename__ = "campaign_lead_lists"
     __table_args__ = (
