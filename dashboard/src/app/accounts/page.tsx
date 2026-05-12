@@ -1,13 +1,31 @@
 "use client";
 
+import { useState, useMemo } from "react";
 import Link from "next/link";
 import { useAccounts } from "@/hooks/use-queries";
 import { getAvatarUrl } from "@/lib/api";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
+
+type SortOption = "name" | "status" | "pending_desc" | "daily_limit";
+
+const SORT_LABELS: Record<SortOption, string> = {
+  name: "Name A→Z",
+  status: "Status",
+  pending_desc: "Pending requests ↓",
+  daily_limit: "Daily limit ↓",
+};
+
+const STATUS_ORDER: Record<string, number> = {
+  cookie_expired: 0,
+  active: 1,
+  paused: 2,
+  inactive: 3,
+};
 
 const PROXY_LABELS: Record<string, string> = {
   us: "US", "us-newyork": "US / New York", "us-losangeles": "US / LA",
@@ -40,18 +58,11 @@ function proxyLabel(code: string | null): string {
 }
 
 function AccountAvatar({ accountId, name }: { accountId: string; name: string }) {
-  const initials = name
-    .split(/\s+/)
-    .map((w) => w[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2);
-
+  const initials = name.split(/\s+/).map((w) => w[0]).join("").toUpperCase().slice(0, 2);
   return (
     <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-full bg-muted">
       <img
-        src={getAvatarUrl(accountId)}
-        alt=""
+        src={getAvatarUrl(accountId)} alt=""
         className="h-full w-full object-cover"
         onError={(e) => {
           (e.currentTarget as HTMLImageElement).style.display = "none";
@@ -61,10 +72,7 @@ function AccountAvatar({ accountId, name }: { accountId: string; name: string })
       <span
         className="absolute inset-0 hidden items-center justify-center text-xs font-bold text-muted-foreground"
         style={{ display: "none" }}
-        ref={(el) => {
-          // Show initials by default until image loads
-          if (el) el.style.display = "flex";
-        }}
+        ref={(el) => { if (el) el.style.display = "flex"; }}
       >
         {initials}
       </span>
@@ -74,6 +82,37 @@ function AccountAvatar({ accountId, name }: { accountId: string; name: string })
 
 export default function AccountsPage() {
   const { data: accounts, isLoading } = useAccounts();
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("");
+  const [sortBy, setSortBy] = useState<SortOption>("status");
+
+  const filtered = useMemo(() => {
+    if (!accounts) return [];
+    let list = accounts;
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter((a) => a.name?.toLowerCase().includes(q));
+    }
+    if (statusFilter) {
+      list = list.filter((a) => a.status === statusFilter);
+    }
+    return [...list].sort((a, b) => {
+      if (sortBy === "name") return (a.name ?? "").localeCompare(b.name ?? "");
+      if (sortBy === "status") {
+        const sa = STATUS_ORDER[a.status] ?? 99;
+        const sb = STATUS_ORDER[b.status] ?? 99;
+        return sa !== sb ? sa - sb : (a.name ?? "").localeCompare(b.name ?? "");
+      }
+      if (sortBy === "pending_desc") return (b.pending_requests ?? 0) - (a.pending_requests ?? 0);
+      if (sortBy === "daily_limit") return (b.daily_limit ?? 0) - (a.daily_limit ?? 0);
+      return 0;
+    });
+  }, [accounts, search, statusFilter, sortBy]);
+
+  const uniqueStatuses = useMemo(() => {
+    if (!accounts) return [];
+    return Array.from(new Set(accounts.map((a) => a.status))).sort();
+  }, [accounts]);
 
   return (
     <div className="space-y-6">
@@ -83,26 +122,52 @@ export default function AccountsPage() {
         </Link>
       </PageHeader>
 
+      <div className="flex flex-wrap items-center gap-3">
+        <Input
+          placeholder="Search accounts…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="max-w-xs"
+        />
+        <select
+          className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+        >
+          <option value="">All statuses</option>
+          {uniqueStatuses.map((s) => (
+            <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
+          ))}
+        </select>
+        <select
+          className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value as SortOption)}
+        >
+          {(Object.keys(SORT_LABELS) as SortOption[]).map((k) => (
+            <option key={k} value={k}>{SORT_LABELS[k]}</option>
+          ))}
+        </select>
+      </div>
+
       {isLoading ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {Array.from({ length: 2 }).map((_, i) => (
-            <Skeleton key={i} className="h-36" />
-          ))}
+          {Array.from({ length: 2 }).map((_, i) => <Skeleton key={i} className="h-36" />)}
         </div>
-      ) : accounts?.length === 0 ? (
+      ) : filtered.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">
-            <p className="text-muted-foreground">No accounts yet</p>
-            <Link href="/accounts/new">
-              <Button variant="outline" className="mt-4">
-                Add your first account
-              </Button>
-            </Link>
+            <p className="text-muted-foreground">{accounts?.length === 0 ? "No accounts yet" : "No accounts match your search"}</p>
+            {accounts?.length === 0 && (
+              <Link href="/accounts/new">
+                <Button variant="outline" className="mt-4">Add your first account</Button>
+              </Link>
+            )}
           </CardContent>
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {accounts?.map((a) => (
+          {filtered.map((a) => (
             <Link key={a.id} href={`/accounts/${a.id}`}>
               <Card className="hover:border-muted-foreground/30 transition-colors cursor-pointer">
                 <CardContent className="p-5 space-y-3">
@@ -121,7 +186,7 @@ export default function AccountsPage() {
                     <div>
                       <p className="text-xs text-muted-foreground">Pending Requests</p>
                       <p className={a.pending_requests != null && a.pending_requests > 1000 ? "text-amber-400" : ""}>
-                        {a.pending_requests ?? "—"}
+                        {a.pending_invitations_count != null ? a.pending_invitations_count : (a.pending_requests ?? "—")}
                       </p>
                     </div>
                     <div>

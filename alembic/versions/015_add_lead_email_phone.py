@@ -35,6 +35,9 @@ def upgrade():
         except (json.JSONDecodeError, TypeError):
             continue
 
+        if not isinstance(extra, dict):
+            continue
+
         email = None
         phone = None
         changed = False

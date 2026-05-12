@@ -18,7 +18,16 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useLeads, useDeleteLead, useRestoreLead, useSkipLead, useRequeueLead } from "@/hooks/use-queries";
+import {
+  useLeads,
+  useDeleteLead,
+  useRestoreLead,
+  useSkipLead,
+  useRequeueLead,
+  useBulkSkipLeads,
+  useBulkRemoveLeads,
+  useBulkRequeueLeads,
+} from "@/hooks/use-queries";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { exportCampaignLeadsCSV } from "@/lib/api";
@@ -30,6 +39,10 @@ import {
   Mail,
   Check,
   MessageSquare,
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
+  X,
 } from "lucide-react";
 
 interface LeadsTableProps {
@@ -38,6 +51,8 @@ interface LeadsTableProps {
   assignedLists?: { id: string; name: string; total_leads: number }[];
   campaignName?: string;
 }
+
+type SortKey = "name" | "company" | "status" | "requested_at" | "created_at";
 
 const ALL_ACTIVE = "__all_active__";
 
@@ -57,11 +72,25 @@ const ERROR_LABELS: Record<string, string> = {
   profile_not_found: "Profile no longer exists (deleted or URL changed)",
 };
 
+const SKIP_REASON_OPTIONS = [
+  { value: "", label: "All skip reasons" },
+  { value: "skipped_manually", label: "Skipped manually" },
+  { value: "email_required", label: "Email required" },
+  { value: "send_button_disabled", label: "Send button disabled" },
+  { value: "no_connect_button", label: "No connect button" },
+  { value: "pending_request", label: "Already pending" },
+  { value: "weekly_invitation_limit", label: "Weekly limit hit" },
+  { value: "profile_not_found", label: "Profile not found" },
+  { value: "filter_no_photo", label: "Filter: no photo" },
+  { value: "filter_low_connections", label: "Filter: low connections" },
+  { value: "filter_open_to_work", label: "Filter: open to work" },
+  { value: "already_connected", label: "Already connected" },
+];
+
 function formatErrorMessage(msg: string): string {
   return ERROR_LABELS[msg] ?? msg.replace(/_/g, " ");
 }
 
-/** Converts a UTC date string to a compact relative label with an exact-date tooltip. */
 function relativeDate(dateStr: string, timezone?: string | null): { label: string; title: string } {
   const date = new Date(dateStr.endsWith("Z") ? dateStr : dateStr + "Z");
   const now = new Date();
@@ -84,10 +113,8 @@ function relativeDate(dateStr: string, timezone?: string | null): { label: strin
   return { label, title };
 }
 
-/** Inline mail icon that copies the email address on click. */
 function EmailCopyButton({ email }: { email: string }) {
   const [copied, setCopied] = useState(false);
-
   function handleCopy(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
@@ -96,62 +123,46 @@ function EmailCopyButton({ email }: { email: string }) {
       setTimeout(() => setCopied(false), 1500);
     });
   }
-
   return (
     <TooltipProvider delayDuration={150}>
       <Tooltip>
         <TooltipTrigger asChild>
-          <button
-            onClick={handleCopy}
-            className="ml-1.5 inline-flex items-center text-muted-foreground/60 hover:text-muted-foreground transition-colors"
-          >
-            {copied
-              ? <Check className="h-3 w-3 text-emerald-500" />
-              : <Mail className="h-3 w-3" />}
+          <button onClick={handleCopy} className="ml-1.5 inline-flex items-center text-muted-foreground/60 hover:text-muted-foreground transition-colors">
+            {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Mail className="h-3 w-3" />}
           </button>
         </TooltipTrigger>
-        <TooltipContent side="top" className="text-xs">
-          {copied ? "Copied!" : email}
-        </TooltipContent>
+        <TooltipContent side="top" className="text-xs">{copied ? "Copied!" : email}</TooltipContent>
       </Tooltip>
     </TooltipProvider>
   );
 }
 
-/** Icon-only action button with a hover tooltip label. */
-function ActionButton({
-  icon,
-  label,
-  onClick,
-  disabled,
-  destructive,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onClick: () => void;
-  disabled?: boolean;
-  destructive?: boolean;
+function ActionButton({ icon, label, onClick, disabled, destructive }: {
+  icon: React.ReactNode; label: string; onClick: () => void; disabled?: boolean; destructive?: boolean;
 }) {
   return (
     <TooltipProvider delayDuration={300}>
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
-            variant="ghost"
-            size="icon"
+            variant="ghost" size="icon"
             className={`h-7 w-7 ${destructive ? "text-muted-foreground hover:text-destructive hover:bg-destructive/10" : ""}`}
-            onClick={onClick}
-            disabled={disabled}
+            onClick={onClick} disabled={disabled}
           >
             {icon}
           </Button>
         </TooltipTrigger>
-        <TooltipContent side="top" className="text-xs">
-          {label}
-        </TooltipContent>
+        <TooltipContent side="top" className="text-xs">{label}</TooltipContent>
       </Tooltip>
     </TooltipProvider>
   );
+}
+
+function SortIcon({ col, sortBy, sortDir }: { col: SortKey; sortBy: SortKey | null; sortDir: "asc" | "desc" }) {
+  if (sortBy !== col) return <ChevronsUpDown className="ml-1 h-3 w-3 opacity-40 inline" />;
+  return sortDir === "asc"
+    ? <ChevronUp className="ml-1 h-3 w-3 inline" />
+    : <ChevronDown className="ml-1 h-3 w-3 inline" />;
 }
 
 export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }: LeadsTableProps) {
@@ -159,12 +170,21 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>(ALL_ACTIVE);
   const [listFilter, setListFilter] = useState<string>("");
+  const [skipReasonFilter, setSkipReasonFilter] = useState<string>("");
+  const [requestedAfter, setRequestedAfter] = useState<string>("");
+  const [requestedBefore, setRequestedBefore] = useState<string>("");
+  const [sortBy, setSortBy] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState(false);
 
   const skipLead = useSkipLead();
   const requeueLead = useRequeueLead();
   const deleteLead = useDeleteLead();
   const restoreLead = useRestoreLead();
+  const bulkSkip = useBulkSkipLeads();
+  const bulkRemove = useBulkRemoveLeads();
+  const bulkRequeue = useBulkRequeueLeads();
 
   const isAllActive = statusFilter === ALL_ACTIVE;
   const { data, isLoading } = useLeads(campaignId, {
@@ -174,7 +194,52 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
     search: search || undefined,
     excludeRemoved: isAllActive,
     leadListId: listFilter || undefined,
+    sortBy: sortBy ?? undefined,
+    sortDir,
+    requestedAfter: requestedAfter || undefined,
+    requestedBefore: requestedBefore || undefined,
+    skipReason: skipReasonFilter || undefined,
   });
+
+  function toggleSort(col: SortKey) {
+    if (sortBy === col) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(col);
+      setSortDir("asc");
+    }
+    setPage(1);
+  }
+
+  function resetFilters() {
+    setSearch(""); setStatusFilter(ALL_ACTIVE); setListFilter(""); setSkipReasonFilter("");
+    setRequestedAfter(""); setRequestedBefore(""); setSortBy(null); setSortDir("asc"); setPage(1);
+    setSelected(new Set());
+  }
+
+  const hasActiveFilters = search || statusFilter !== ALL_ACTIVE || listFilter || skipReasonFilter || requestedAfter || requestedBefore || sortBy;
+
+  function toggleSelect(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (!data?.items) return;
+    const allIds = data.items.map((l) => l.id);
+    if (allIds.every((id) => selected.has(id))) {
+      setSelected((prev) => { const next = new Set(prev); allIds.forEach((id) => next.delete(id)); return next; });
+    } else {
+      setSelected((prev) => { const next = new Set(prev); allIds.forEach((id) => next.add(id)); return next; });
+    }
+  }
+
+  const selectedIds = Array.from(selected);
+  const pageIds = data?.items.map((l) => l.id) ?? [];
+  const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
 
   async function handleExport() {
     setExporting(true);
@@ -195,24 +260,12 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
     }
   }
 
-  const statuses = [
-    ALL_ACTIVE,
-    "pending",
-    "scheduled",
-    "connection_requested",
-    "connected",
-    "error",
-    "skipped",
-    "invalid",
-    "removed",
-  ];
+  const statuses = [ALL_ACTIVE, "pending", "scheduled", "connection_requested", "connected", "error", "skipped", "invalid", "removed"];
 
   if (isLoading) {
     return (
       <div className="space-y-2">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <Skeleton key={i} className="h-10 w-full" />
-        ))}
+        {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
       </div>
     );
   }
@@ -221,7 +274,7 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
 
   return (
     <div className="space-y-4">
-      {/* Filters */}
+      {/* Filters row 1: search + list + skip reason + dates */}
       <div className="flex flex-wrap items-center gap-3">
         <Input
           placeholder="Search name, company, title, URL…"
@@ -236,46 +289,122 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
             onChange={(e) => { setListFilter(e.target.value); setPage(1); }}
           >
             <option value="">All lists</option>
-            {assignedLists.map((ll) => (
-              <option key={ll.id} value={ll.id}>{ll.name}</option>
-            ))}
+            {assignedLists.map((ll) => <option key={ll.id} value={ll.id}>{ll.name}</option>)}
           </select>
         )}
-        <div className="flex flex-wrap gap-1">
-          {statuses.map((s) => (
-            <Button
-              key={s}
-              variant={statusFilter === s ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => { setStatusFilter(s); setPage(1); }}
-            >
-              {s === ALL_ACTIVE ? "All" : (STATUS_LABELS[s] ?? s.replace(/_/g, " "))}
-            </Button>
-          ))}
+        <select
+          className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+          value={skipReasonFilter}
+          onChange={(e) => { setSkipReasonFilter(e.target.value); setPage(1); }}
+        >
+          {SKIP_REASON_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <div className="flex items-center gap-1">
+          <Input
+            type="date"
+            value={requestedAfter}
+            onChange={(e) => { setRequestedAfter(e.target.value); setPage(1); }}
+            className="h-9 w-36 text-sm"
+            title="Requested after"
+          />
+          <span className="text-muted-foreground text-xs">–</span>
+          <Input
+            type="date"
+            value={requestedBefore}
+            onChange={(e) => { setRequestedBefore(e.target.value); setPage(1); }}
+            className="h-9 w-36 text-sm"
+            title="Requested before"
+          />
         </div>
+        {hasActiveFilters && (
+          <Button variant="ghost" size="sm" onClick={resetFilters} className="h-9 gap-1 text-muted-foreground">
+            <X className="h-3.5 w-3.5" /> Clear
+          </Button>
+        )}
         <Button
-          variant="outline"
-          size="sm"
-          onClick={handleExport}
+          variant="outline" size="sm" onClick={handleExport}
           disabled={exporting || !data || data.total === 0}
           className="ml-auto"
-          title="Download the currently filtered leads as CSV"
         >
           {exporting ? "Exporting…" : `Export CSV${data ? ` (${data.total})` : ""}`}
         </Button>
       </div>
+
+      {/* Filters row 2: status buttons */}
+      <div className="flex flex-wrap gap-1">
+        {statuses.map((s) => (
+          <Button
+            key={s}
+            variant={statusFilter === s ? "secondary" : "ghost"}
+            size="sm"
+            onClick={() => { setStatusFilter(s); setPage(1); }}
+          >
+            {s === ALL_ACTIVE ? "All" : (STATUS_LABELS[s] ?? s.replace(/_/g, " "))}
+          </Button>
+        ))}
+      </div>
+
+      {/* Bulk action bar */}
+      {selectedIds.length > 0 && (
+        <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2">
+          <span className="text-sm text-muted-foreground mr-2">{selectedIds.length} selected</span>
+          <Button size="sm" variant="outline" onClick={() => {
+            bulkSkip.mutate(selectedIds, {
+              onSuccess: (r) => { toast.success(`Skipped ${r.updated} leads`); setSelected(new Set()); },
+              onError: (e) => toast.error(e.message),
+            });
+          }} disabled={bulkSkip.isPending}>
+            <FastForward className="mr-1 h-3.5 w-3.5" /> Skip
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => {
+            bulkRequeue.mutate(selectedIds, {
+              onSuccess: (r) => { toast.success(`Re-queued ${r.updated} leads`); setSelected(new Set()); },
+              onError: (e) => toast.error(e.message),
+            });
+          }} disabled={bulkRequeue.isPending}>
+            <RotateCcw className="mr-1 h-3.5 w-3.5" /> Re-queue
+          </Button>
+          <Button size="sm" variant="outline" className="text-muted-foreground hover:text-destructive hover:bg-destructive/10" onClick={() => {
+            bulkRemove.mutate(selectedIds, {
+              onSuccess: (r) => { toast.success(`Removed ${r.updated} leads`); setSelected(new Set()); },
+              onError: (e) => toast.error(e.message),
+            });
+          }} disabled={bulkRemove.isPending}>
+            <Trash2 className="mr-1 h-3.5 w-3.5" /> Remove
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())} className="ml-auto text-muted-foreground">
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      )}
 
       {/* Table */}
       <div className="rounded-md border max-h-[600px] overflow-auto">
         <Table>
           <TableHeader className="sticky top-0 z-10 bg-background shadow-[0_1px_0_0_hsl(var(--border))]">
             <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Company</TableHead>
+              <TableHead className="w-8">
+                <input
+                  type="checkbox"
+                  checked={allPageSelected}
+                  onChange={toggleSelectAll}
+                  className="h-4 w-4 rounded border-border"
+                />
+              </TableHead>
+              <TableHead className="cursor-pointer select-none" onClick={() => toggleSort("name")}>
+                Name <SortIcon col="name" sortBy={sortBy} sortDir={sortDir} />
+              </TableHead>
+              <TableHead className="cursor-pointer select-none" onClick={() => toggleSort("company")}>
+                Company <SortIcon col="company" sortBy={sortBy} sortDir={sortDir} />
+              </TableHead>
               <TableHead>List</TableHead>
               <TableHead>Title</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Requested</TableHead>
+              <TableHead className="cursor-pointer select-none" onClick={() => toggleSort("status")}>
+                Status <SortIcon col="status" sortBy={sortBy} sortDir={sortDir} />
+              </TableHead>
+              <TableHead className="cursor-pointer select-none" onClick={() => toggleSort("requested_at")}>
+                Requested <SortIcon col="requested_at" sortBy={sortBy} sortDir={sortDir} />
+              </TableHead>
               <TableHead className="w-8 text-center" title="Follow-up sent">
                 <MessageSquare className="h-3.5 w-3.5 mx-auto text-muted-foreground" />
               </TableHead>
@@ -285,7 +414,7 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
           <TableBody>
             {data?.items.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="py-12 text-center">
+                <TableCell colSpan={9} className="py-12 text-center">
                   {statusFilter === "connected" ? (
                     <div className="space-y-1">
                       <p className="text-sm text-muted-foreground">No accepted connections yet</p>
@@ -304,54 +433,41 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
               const requestedAt = lead.connection_requested_at
                 ? relativeDate(lead.connection_requested_at, timezone)
                 : null;
+              const isSelected = selected.has(lead.id);
 
               return (
-                <TableRow key={lead.id}>
-                  {/* Name + email copy icon */}
+                <TableRow key={lead.id} className={isSelected ? "bg-muted/30" : undefined}>
+                  <TableCell>
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleSelect(lead.id)}
+                      className="h-4 w-4 rounded border-border"
+                    />
+                  </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-0.5">
-                      <a
-                        href={lead.linkedin_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm font-medium hover:underline"
-                      >
+                      <a href={lead.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-sm font-medium hover:underline">
                         {[lead.first_name, lead.last_name].filter(Boolean).join(" ") || "—"}
                       </a>
                       {lead.email && <EmailCopyButton email={lead.email} />}
                     </div>
                   </TableCell>
-
-                  {/* Company */}
                   <TableCell className="text-sm text-muted-foreground max-w-[150px]">
-                    <span className="block truncate" title={lead.company || undefined}>
-                      {lead.company || "—"}
-                    </span>
+                    <span className="block truncate" title={lead.company || undefined}>{lead.company || "—"}</span>
                   </TableCell>
-
-                  {/* List */}
                   <TableCell className="text-sm text-muted-foreground max-w-[140px]">
-                    <span className="block truncate" title={lead.lead_list_name || undefined}>
-                      {lead.lead_list_name || "—"}
-                    </span>
+                    <span className="block truncate" title={lead.lead_list_name || undefined}>{lead.lead_list_name || "—"}</span>
                   </TableCell>
-
-                  {/* Title */}
                   <TableCell className="text-sm text-muted-foreground max-w-[170px]">
-                    <span className="block truncate" title={lead.title || undefined}>
-                      {lead.title || "—"}
-                    </span>
+                    <span className="block truncate" title={lead.title || undefined}>{lead.title || "—"}</span>
                   </TableCell>
-
-                  {/* Status (with error/schedule tooltip) */}
                   <TableCell>
                     {lead.error_message || (lead.status === "scheduled" && lead.scheduled_at) ? (
                       <TooltipProvider delayDuration={200}>
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <span className="cursor-help">
-                              <StatusBadge status={lead.status} />
-                            </span>
+                            <span className="cursor-help"><StatusBadge status={lead.status} /></span>
                           </TooltipTrigger>
                           <TooltipContent side="top" className="max-w-xs">
                             <p className="text-xs">
@@ -370,8 +486,6 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
                       <StatusBadge status={lead.status} />
                     )}
                   </TableCell>
-
-                  {/* Requested date — relative label + exact date on hover */}
                   <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                     {requestedAt ? (
                       <TooltipProvider delayDuration={200}>
@@ -379,15 +493,11 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
                           <TooltipTrigger asChild>
                             <span className="cursor-default">{requestedAt.label}</span>
                           </TooltipTrigger>
-                          <TooltipContent side="top" className="text-xs">
-                            {requestedAt.title}
-                          </TooltipContent>
+                          <TooltipContent side="top" className="text-xs">{requestedAt.title}</TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
                     ) : "—"}
                   </TableCell>
-
-                  {/* Follow-up indicator */}
                   <TableCell className="text-center">
                     {lead.followup_sent_at ? (
                       <TooltipProvider delayDuration={200}>
@@ -406,53 +516,26 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
                       <span className="text-muted-foreground/30 text-xs">—</span>
                     )}
                   </TableCell>
-
-                  {/* Actions — icon buttons */}
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-0.5">
                       {(lead.status === "pending" || lead.status === "scheduled") && (
-                        <ActionButton
-                          icon={<FastForward className="h-3.5 w-3.5" />}
-                          label="Skip"
-                          onClick={() => skipLead.mutate(lead.id, {
-                            onSuccess: () => toast.success("Lead skipped"),
-                            onError: (err) => toast.error(err.message),
-                          })}
-                          disabled={skipLead.isPending}
-                        />
+                        <ActionButton icon={<FastForward className="h-3.5 w-3.5" />} label="Skip"
+                          onClick={() => skipLead.mutate(lead.id, { onSuccess: () => toast.success("Lead skipped"), onError: (e) => toast.error(e.message) })}
+                          disabled={skipLead.isPending} />
                       )}
                       {(lead.status === "error" || lead.status === "withdrawn" || lead.status === "skipped") && (
-                        <ActionButton
-                          icon={<RotateCcw className="h-3.5 w-3.5" />}
-                          label="Re-queue"
-                          onClick={() => requeueLead.mutate(lead.id, {
-                            onSuccess: () => toast.success("Lead re-queued"),
-                            onError: (err) => toast.error(err.message),
-                          })}
-                          disabled={requeueLead.isPending}
-                        />
+                        <ActionButton icon={<RotateCcw className="h-3.5 w-3.5" />} label="Re-queue"
+                          onClick={() => requeueLead.mutate(lead.id, { onSuccess: () => toast.success("Lead re-queued"), onError: (e) => toast.error(e.message) })}
+                          disabled={requeueLead.isPending} />
                       )}
                       {lead.status === "removed" ? (
-                        <ActionButton
-                          icon={<Undo2 className="h-3.5 w-3.5" />}
-                          label="Restore"
-                          onClick={() => restoreLead.mutate(lead.id, {
-                            onSuccess: () => toast.success("Lead restored"),
-                            onError: (err) => toast.error(err.message),
-                          })}
-                          disabled={restoreLead.isPending}
-                        />
+                        <ActionButton icon={<Undo2 className="h-3.5 w-3.5" />} label="Restore"
+                          onClick={() => restoreLead.mutate(lead.id, { onSuccess: () => toast.success("Lead restored"), onError: (e) => toast.error(e.message) })}
+                          disabled={restoreLead.isPending} />
                       ) : (
-                        <ActionButton
-                          icon={<Trash2 className="h-3.5 w-3.5" />}
-                          label="Remove"
-                          onClick={() => deleteLead.mutate(lead.id, {
-                            onSuccess: () => toast.success("Lead removed"),
-                            onError: (err) => toast.error(err.message),
-                          })}
-                          disabled={deleteLead.isPending}
-                          destructive
-                        />
+                        <ActionButton icon={<Trash2 className="h-3.5 w-3.5" />} label="Remove"
+                          onClick={() => deleteLead.mutate(lead.id, { onSuccess: () => toast.success("Lead removed"), onError: (e) => toast.error(e.message) })}
+                          disabled={deleteLead.isPending} destructive />
                       )}
                     </div>
                   </TableCell>
@@ -466,17 +549,11 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
       {/* Pagination */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between">
-          <p className="text-xs text-muted-foreground">
-            {data?.total ?? 0} total leads
-          </p>
+          <p className="text-xs text-muted-foreground">{data?.total ?? 0} total leads</p>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage((p) => p - 1)}>
-              Previous
-            </Button>
+            <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage((p) => p - 1)}>Previous</Button>
             <span className="text-sm text-muted-foreground">{page} / {totalPages}</span>
-            <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
-              Next
-            </Button>
+            <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next</Button>
           </div>
         </div>
       )}
