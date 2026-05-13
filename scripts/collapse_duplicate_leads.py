@@ -141,7 +141,29 @@ def collapse(db_path: str, dry_run: bool) -> None:
                     conn.execute("DELETE FROM leads WHERE id = ?", (nc_id,))
                     deleted += 1
 
+        # ── Sync leads.status from assignment (canonical may have been a
+        # template with status=PENDING whose campaign copy had a later
+        # status — fix the legacy column to match the most-recently-updated
+        # assignment so the stale-status guard in the followup dispatcher
+        # doesn't skip leads unnecessarily). ────────────────────────────
+        sync_cur = conn.execute("""
+UPDATE leads
+SET status = upper((
+    SELECT a.status FROM campaign_lead_assignments a
+    WHERE a.lead_id = leads.id
+    ORDER BY coalesce(a.updated_at, a.created_at) DESC
+    LIMIT 1
+))
+WHERE id IN (
+    SELECT DISTINCT l.id FROM leads l
+    JOIN campaign_lead_assignments a ON a.lead_id = l.id
+    WHERE lower(a.status) != lower(l.status)
+)
+""")
+        status_synced = sync_cur.rowcount
+
         print(f"=== Collapse complete ===")
+        print(f"  leads.status synced from assignment: {status_synced}")
         print(f"  Non-canonical rows deleted:       {deleted}")
         print(f"  Assignments re-pointed:           {assignments_repointed}")
         print(f"  Memberships re-pointed:           {memberships_repointed}")
