@@ -923,6 +923,180 @@ class Repository:
         result = await self.session.execute(stmt)
         return result.scalars().all(), total
 
+    # ── Phase 2 read cutover: campaign-scoped lead listing via assignments ──
+    # Same filters and sort options as `list_leads_paginated`, but the
+    # primary table is `campaign_lead_assignments` joined to `leads` for
+    # identity fields. Returns objects that quack like Lead rows for the
+    # consumer (status/timestamps come from the assignment side).
+
+    async def list_leads_via_assignments_paginated(
+        self,
+        campaign_id: str,
+        page: int = 1,
+        per_page: int = 50,
+        status_filter: str | None = None,
+        search: str | None = None,
+        exclude_removed: bool = False,
+        lead_list_id: str | None = None,
+        sort_by: str | None = None,
+        sort_dir: str = "asc",
+        requested_after: str | None = None,
+        requested_before: str | None = None,
+        skip_reason: str | None = None,
+    ) -> tuple:
+        """Mirror of list_leads_paginated reading from CampaignLeadAssignment.
+
+        The result row shape matches what the export consumer expects —
+        Lead identity fields plus assignment-derived state fields. Returns
+        a list of duck-typed objects with the same attribute names as Lead.
+        """
+        # Inline class so we don't add a public type for what's currently a
+        # transitional shape. Once Phase 3 lands and the legacy path is gone,
+        # we can fold this into a proper return type.
+        class _LeadView:
+            __slots__ = (
+                "id", "linkedin_url", "first_name", "last_name", "company",
+                "title", "email", "phone", "extra_data", "campaign_id",
+                "lead_list_id", "created_at",
+                # State fields sourced from the assignment row
+                "status", "scheduled_at",
+                "connection_requested_at", "connection_accepted_at",
+                "followup_sent_at", "error_message", "retry_count",
+            )
+
+            def __init__(self, **kwargs):
+                for k in self.__slots__:
+                    setattr(self, k, kwargs.get(k))
+
+        # Status comparisons need to bridge the enum/string gap. Legacy
+        # `leads.status` stores upper-case (e.g. "CONNECTION_REQUESTED")
+        # while assignments stores lower-case ("connection_requested").
+        # We normalise inputs to lower-case for the assignment table.
+
+        stmt = (
+            select(
+                CampaignLeadAssignment.id.label("assignment_id"),
+                CampaignLeadAssignment.status,
+                CampaignLeadAssignment.scheduled_at,
+                CampaignLeadAssignment.connection_requested_at,
+                CampaignLeadAssignment.connection_accepted_at,
+                CampaignLeadAssignment.followup_sent_at,
+                CampaignLeadAssignment.error_message,
+                CampaignLeadAssignment.retry_count,
+                CampaignLeadAssignment.lead_list_id.label("asgn_lead_list_id"),
+                Lead.id,
+                Lead.linkedin_url,
+                Lead.first_name,
+                Lead.last_name,
+                Lead.company,
+                Lead.title,
+                Lead.email,
+                Lead.phone,
+                Lead.extra_data,
+                Lead.campaign_id,
+                Lead.lead_list_id,
+                Lead.created_at,
+            )
+            .join(Lead, Lead.id == CampaignLeadAssignment.lead_id)
+            .where(CampaignLeadAssignment.campaign_id == campaign_id)
+        )
+        count_stmt = (
+            select(func.count())
+            .select_from(CampaignLeadAssignment)
+            .join(Lead, Lead.id == CampaignLeadAssignment.lead_id)
+            .where(CampaignLeadAssignment.campaign_id == campaign_id)
+        )
+
+        if status_filter:
+            sf = status_filter.lower()
+            stmt = stmt.where(CampaignLeadAssignment.status == sf)
+            count_stmt = count_stmt.where(CampaignLeadAssignment.status == sf)
+        elif exclude_removed:
+            stmt = stmt.where(CampaignLeadAssignment.status != "removed")
+            count_stmt = count_stmt.where(CampaignLeadAssignment.status != "removed")
+
+        if lead_list_id:
+            stmt = stmt.where(CampaignLeadAssignment.lead_list_id == lead_list_id)
+            count_stmt = count_stmt.where(
+                CampaignLeadAssignment.lead_list_id == lead_list_id
+            )
+
+        if search:
+            pattern = f"%{search}%"
+            search_filter = or_(
+                Lead.first_name.ilike(pattern),
+                Lead.last_name.ilike(pattern),
+                Lead.company.ilike(pattern),
+                Lead.title.ilike(pattern),
+                Lead.linkedin_url.ilike(pattern),
+            )
+            stmt = stmt.where(search_filter)
+            count_stmt = count_stmt.where(search_filter)
+
+        if requested_after:
+            stmt = stmt.where(
+                CampaignLeadAssignment.connection_requested_at >= requested_after
+            )
+            count_stmt = count_stmt.where(
+                CampaignLeadAssignment.connection_requested_at >= requested_after
+            )
+        if requested_before:
+            stmt = stmt.where(
+                CampaignLeadAssignment.connection_requested_at <= requested_before
+            )
+            count_stmt = count_stmt.where(
+                CampaignLeadAssignment.connection_requested_at <= requested_before
+            )
+
+        if skip_reason:
+            stmt = stmt.where(CampaignLeadAssignment.error_message == skip_reason)
+            count_stmt = count_stmt.where(
+                CampaignLeadAssignment.error_message == skip_reason
+            )
+
+        total = (await self.session.execute(count_stmt)).scalar_one()
+
+        _SORT_COLS = {
+            "name": Lead.first_name,
+            "company": Lead.company,
+            "status": CampaignLeadAssignment.status,
+            "requested_at": CampaignLeadAssignment.connection_requested_at,
+            "created_at": Lead.created_at,
+        }
+        col = _SORT_COLS.get(sort_by or "created_at", Lead.created_at)
+        order_col = col.desc() if sort_dir == "desc" else col.asc()
+        stmt = stmt.order_by(order_col).offset((page - 1) * per_page).limit(per_page)
+
+        result = await self.session.execute(stmt)
+        rows = result.all()
+        views = []
+        for row in rows:
+            m = row._mapping
+            views.append(_LeadView(
+                id=m["id"],
+                linkedin_url=m["linkedin_url"],
+                first_name=m["first_name"],
+                last_name=m["last_name"],
+                company=m["company"],
+                title=m["title"],
+                email=m["email"],
+                phone=m["phone"],
+                extra_data=m["extra_data"],
+                campaign_id=m["campaign_id"],
+                # Prefer the assignment's lead_list_id (which lead-list
+                # brought this lead into THIS campaign); fall back to Lead's.
+                lead_list_id=m["asgn_lead_list_id"] or m["lead_list_id"],
+                created_at=m["created_at"],
+                status=m["status"],  # lower-case from assignment
+                scheduled_at=m["scheduled_at"],
+                connection_requested_at=m["connection_requested_at"],
+                connection_accepted_at=m["connection_accepted_at"],
+                followup_sent_at=m["followup_sent_at"],
+                error_message=m["error_message"],
+                retry_count=m["retry_count"],
+            ))
+        return views, total
+
     async def list_action_log(
         self,
         account_id: str | None = None,

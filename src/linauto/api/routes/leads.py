@@ -96,6 +96,15 @@ async def export_campaign_leads_csv(
     search: Optional[str] = Query(None),
     exclude_removed: bool = Query(False),
     lead_list_id: Optional[str] = Query(None),
+    read_source: str = Query(
+        "legacy",
+        description=(
+            "Phase 2 read cutover knob. 'legacy' reads from leads.campaign_id "
+            "(unchanged behavior). 'new' reads from campaign_lead_assignments. "
+            "Default flips to 'new' once parity is verified on prod. "
+            "Remove this param entirely in Phase 3."
+        ),
+    ),
     repo: Repository = Depends(get_repo),
 ):
     """Download filtered campaign leads as a CSV file.
@@ -112,15 +121,26 @@ async def export_campaign_leads_csv(
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    leads, _ = await repo.list_leads_paginated(
-        campaign_id=campaign_id,
-        page=1,
-        per_page=100000,
-        status_filter=status,
-        search=search,
-        exclude_removed=exclude_removed,
-        lead_list_id=lead_list_id,
-    )
+    if read_source == "new":
+        leads, _ = await repo.list_leads_via_assignments_paginated(
+            campaign_id=campaign_id,
+            page=1,
+            per_page=100000,
+            status_filter=status,
+            search=search,
+            exclude_removed=exclude_removed,
+            lead_list_id=lead_list_id,
+        )
+    else:
+        leads, _ = await repo.list_leads_paginated(
+            campaign_id=campaign_id,
+            page=1,
+            per_page=100000,
+            status_filter=status,
+            search=search,
+            exclude_removed=exclude_removed,
+            lead_list_id=lead_list_id,
+        )
 
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -131,6 +151,12 @@ async def export_campaign_leads_csv(
         "followup_sent_at", "error_message", "created_at",
     ])
     for lead in leads:
+        # Normalise status so both read paths produce identical CSV output:
+        # legacy returns a LeadStatus enum (`.value` → "connection_requested"),
+        # the new path returns the lowercase string directly. Either way the
+        # column is the lowercase enum value, which is also the dashboard's
+        # canonical representation.
+        status_val = lead.status.value if hasattr(lead.status, "value") else (lead.status or "")
         writer.writerow([
             lead.linkedin_url,
             lead.first_name or "",
@@ -139,7 +165,7 @@ async def export_campaign_leads_csv(
             lead.title or "",
             lead.email or "",
             lead.phone or "",
-            lead.status or "",
+            status_val,
             lead.connection_requested_at.isoformat() if lead.connection_requested_at else "",
             lead.connection_accepted_at.isoformat() if lead.connection_accepted_at else "",
             lead.followup_sent_at.isoformat() if lead.followup_sent_at else "",
@@ -155,6 +181,102 @@ async def export_campaign_leads_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/campaigns/{campaign_id}/leads/export/parity")
+async def export_parity_check(
+    campaign_id: str,
+    status: Optional[str] = Query(None),
+    repo: Repository = Depends(get_repo),
+):
+    """Phase 2 step 1 verification: run BOTH read paths against the same
+    campaign and compare. Returns a structured diff so we can confirm the
+    new schema produces identical CSV output before flipping the default.
+
+    Only counts, set-difference of lead IDs, and per-field mismatch counts —
+    no full row dump (some campaigns have thousands of leads).
+    """
+    campaign = await repo.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    legacy, _ = await repo.list_leads_paginated(
+        campaign_id=campaign_id, page=1, per_page=100000,
+        status_filter=status, exclude_removed=False,
+    )
+    new, _ = await repo.list_leads_via_assignments_paginated(
+        campaign_id=campaign_id, page=1, per_page=100000,
+        status_filter=status, exclude_removed=False,
+    )
+
+    legacy_by_id = {l.id: l for l in legacy}
+    new_by_id = {l.id: l for l in new}
+
+    only_in_legacy = sorted(legacy_by_id.keys() - new_by_id.keys())
+    only_in_new = sorted(new_by_id.keys() - legacy_by_id.keys())
+    common_ids = legacy_by_id.keys() & new_by_id.keys()
+
+    mismatches = {
+        "status": 0,
+        "connection_requested_at": 0,
+        "connection_accepted_at": 0,
+        "followup_sent_at": 0,
+        "scheduled_at": 0,
+        "error_message": 0,
+        "retry_count": 0,
+    }
+    sample_mismatches: list = []
+
+    for lid in common_ids:
+        a = legacy_by_id[lid]
+        b = new_by_id[lid]
+
+        # Status comparison: legacy returns enum, new returns lower-case str.
+        a_status = a.status.value if hasattr(a.status, "value") else (a.status or "")
+        b_status = b.status or ""
+        if a_status != b_status:
+            mismatches["status"] += 1
+            if len(sample_mismatches) < 5:
+                sample_mismatches.append({
+                    "lead_id": lid, "field": "status",
+                    "legacy": a_status, "new": b_status,
+                })
+
+        for field in ("connection_requested_at", "connection_accepted_at",
+                      "followup_sent_at", "scheduled_at"):
+            av = getattr(a, field, None)
+            bv = getattr(b, field, None)
+            if av != bv:
+                mismatches[field] += 1
+                if len(sample_mismatches) < 5:
+                    sample_mismatches.append({
+                        "lead_id": lid, "field": field,
+                        "legacy": av.isoformat() if av else None,
+                        "new": bv.isoformat() if bv else None,
+                    })
+
+        if (a.error_message or "") != (b.error_message or ""):
+            mismatches["error_message"] += 1
+        if (a.retry_count or 0) != (b.retry_count or 0):
+            mismatches["retry_count"] += 1
+
+    return {
+        "campaign_id": campaign_id,
+        "counts": {
+            "legacy": len(legacy),
+            "new": len(new),
+            "only_in_legacy": len(only_in_legacy),
+            "only_in_new": len(only_in_new),
+            "common": len(common_ids),
+        },
+        "field_mismatches": mismatches,
+        "sample_mismatches": sample_mismatches,
+        "all_zero": (
+            len(only_in_legacy) == 0
+            and len(only_in_new) == 0
+            and sum(mismatches.values()) == 0
+        ),
+    }
 
 
 @router.post("/campaigns/{campaign_id}/import", response_model=ImportResponse)
