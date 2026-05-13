@@ -97,12 +97,12 @@ async def export_campaign_leads_csv(
     exclude_removed: bool = Query(False),
     lead_list_id: Optional[str] = Query(None),
     read_source: str = Query(
-        "legacy",
+        "new",
         description=(
-            "Phase 2 read cutover knob. 'legacy' reads from leads.campaign_id "
-            "(unchanged behavior). 'new' reads from campaign_lead_assignments. "
-            "Default flips to 'new' once parity is verified on prod. "
-            "Remove this param entirely in Phase 3."
+            "Phase 2 read cutover knob. 'new' (default) reads from "
+            "campaign_lead_assignments. 'legacy' reads from leads.campaign_id "
+            "and is the rollback escape hatch. Removed entirely in Phase 3 "
+            "once we drop Lead.campaign_id."
         ),
     ),
     repo: Repository = Depends(get_repo),
