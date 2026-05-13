@@ -343,6 +343,53 @@ class Repository:
         )
         return result.scalars().all()
 
+    async def get_followup_due_leads_via_assignments(
+        self, campaign_id: str, before: datetime
+    ) -> Sequence[Lead]:
+        """Phase 2 read cutover mirror of `get_followup_due_leads`.
+
+        Filters via CampaignLeadAssignment instead of Lead.campaign_id /
+        Lead.status, but returns Lead ORM instances so all mutation sites
+        (update_lead, etc.) work without changes.
+        """
+        status_str = LeadStatus.FOLLOWUP_SCHEDULED.value
+        result = await self.session.execute(
+            select(Lead)
+            .join(CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id)
+            .where(
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.status == status_str,
+                CampaignLeadAssignment.scheduled_at <= before,
+            )
+            .order_by(CampaignLeadAssignment.scheduled_at)
+        )
+        return result.scalars().all()
+
+    async def get_pending_leads_via_assignments(
+        self, campaign_id: str, limit: Optional[int] = None
+    ) -> Sequence[Lead]:
+        """Phase 2 read cutover mirror of `get_pending_leads`.
+
+        Filters via CampaignLeadAssignment. Only used by daily_planning_sweep
+        (planned-mode accounts), which is currently a no-op in prod (all
+        accounts are continuous). Included here so Phase 3 can drop the
+        legacy path uniformly.
+        """
+        status_str = LeadStatus.PENDING.value
+        stmt = (
+            select(Lead)
+            .join(CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id)
+            .where(
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.status == status_str,
+            )
+            .order_by(Lead.created_at)
+        )
+        if limit:
+            stmt = stmt.limit(limit)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
     async def get_stranded_followup_leads(self, campaign_id: str) -> Sequence[Lead]:
         """Get CONNECTED leads that never got a followup scheduled or sent.
 

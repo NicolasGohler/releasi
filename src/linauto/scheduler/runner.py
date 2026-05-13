@@ -1311,10 +1311,11 @@ async def dispatch_followups():
                 continue
 
             # Check if any campaign has due follow-ups before acquiring pool
+            # Phase 2 read cutover: use CampaignLeadAssignment as source of truth.
             has_due = False
             for campaign in campaigns:
                 if campaign.followup_enabled:
-                    due = await repo.get_followup_due_leads(campaign.id, before=now)
+                    due = await repo.get_followup_due_leads_via_assignments(campaign.id, before=now)
                     if due:
                         has_due = True
                         break
@@ -1362,7 +1363,7 @@ async def dispatch_followups():
                         )
                         break
 
-                    due_leads = await repo.get_followup_due_leads(campaign.id, before=now)
+                    due_leads = await repo.get_followup_due_leads_via_assignments(campaign.id, before=now)
                     if not due_leads:
                         continue
 
