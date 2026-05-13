@@ -148,7 +148,7 @@ def collapse(db_path: str, dry_run: bool) -> None:
         # doesn't skip leads unnecessarily). ────────────────────────────
         sync_cur = conn.execute("""
 UPDATE leads
-SET status = upper((
+SET status = lower((
     SELECT a.status FROM campaign_lead_assignments a
     WHERE a.lead_id = leads.id
     ORDER BY coalesce(a.updated_at, a.created_at) DESC
