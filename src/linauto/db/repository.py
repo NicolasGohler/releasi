@@ -211,6 +211,32 @@ class Repository:
         )
         return result.scalars().all()
 
+    async def get_leads_by_status_via_assignments(
+        self, campaign_id: str, status: LeadStatus
+    ) -> Sequence[Lead]:
+        """Phase 2 read cutover mirror of `get_leads_by_status`.
+
+        Filters via CampaignLeadAssignment (the source of truth in the new
+        schema) but returns Lead ORM instances so callers that mutate the
+        Lead via `update_lead()` still work without changes. Since dual-
+        write keeps both tables in sync, the resulting Lead set is
+        identical to the legacy query for the same (campaign_id, status).
+
+        The status comparison uses the lowercase enum value because
+        CampaignLeadAssignment.status is stored as a plain string.
+        """
+        status_str = status.value if hasattr(status, "value") else str(status).lower()
+        result = await self.session.execute(
+            select(Lead)
+            .join(CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id)
+            .where(
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.status == status_str,
+            )
+            .order_by(Lead.created_at)
+        )
+        return result.scalars().all()
+
     async def get_scheduled_leads(
         self, campaign_id: str, before: datetime
     ) -> Sequence[Lead]:

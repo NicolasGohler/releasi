@@ -150,7 +150,10 @@ async def run_acceptance_catchup(
             return result
 
     # ── Compute cutoff ─────────────────────────────────────────────────
-    requested_leads = await repo.get_leads_by_status(
+    # Phase 2 read cutover: filter via CampaignLeadAssignment. Identical
+    # result set to the legacy path while dual-write is active; gives us
+    # confidence in the new schema as the source of truth ahead of Phase 3.
+    requested_leads = await repo.get_leads_by_status_via_assignments(
         campaign.id, LeadStatus.CONNECTION_REQUESTED
     )
     if not requested_leads:

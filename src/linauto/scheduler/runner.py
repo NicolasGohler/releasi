@@ -1063,9 +1063,13 @@ async def check_acceptances():
             # Include paused campaigns — acceptances while paused still need recording
             campaigns = await repo.get_operational_campaigns(account.id)
             campaign_map = {c.id: c for c in campaigns}
+            # Phase 2 read cutover: filter via CampaignLeadAssignment
+            # rather than Lead.campaign_id + Lead.status.
             requested_leads = []
             for campaign in campaigns:
-                leads = await repo.get_leads_by_status(campaign.id, LeadStatus.CONNECTION_REQUESTED)
+                leads = await repo.get_leads_by_status_via_assignments(
+                    campaign.id, LeadStatus.CONNECTION_REQUESTED
+                )
                 requested_leads.extend(leads)
 
             needs_browser = bool(requested_leads) or bool(account.withdraw_threshold)
