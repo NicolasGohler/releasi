@@ -51,20 +51,25 @@ class Repository:
     #     here — that's the backfill script's job for legacy rows, and the
     #     explicit creation sites' job for new rows)
 
-    async def _sync_assignment_from_lead(self, lead: Lead) -> None:
+    async def _sync_assignment_from_lead(self, lead: Lead, campaign_id: Optional[str] = None) -> None:
         """Mirror a Lead's per-campaign state to its CampaignLeadAssignment.
 
         UPSERT-ish: if the assignment row exists, UPDATE its sync fields.
         If it doesn't exist (e.g. brand-new Lead created in this transaction),
         INSERT a fresh one mirroring the Lead's full state.
+
+        After Phase 3a row-collapse the canonical lead has campaign_id=None, so
+        callers that know the campaign (dispatcher, acceptance checker, executor)
+        must pass campaign_id explicitly via update_lead(campaign_id_override=...).
         """
-        if not DUAL_WRITE_NEW_SCHEMA or lead.campaign_id is None:
+        effective_campaign_id = campaign_id or lead.campaign_id
+        if not DUAL_WRITE_NEW_SCHEMA or effective_campaign_id is None:
             return
 
         existing = await self.session.execute(
             select(CampaignLeadAssignment).where(
                 CampaignLeadAssignment.lead_id == lead.id,
-                CampaignLeadAssignment.campaign_id == lead.campaign_id,
+                CampaignLeadAssignment.campaign_id == effective_campaign_id,
             )
         )
         assignment = existing.scalar_one_or_none()
@@ -72,7 +77,7 @@ class Repository:
         if assignment is None:
             assignment = CampaignLeadAssignment(
                 lead_id=lead.id,
-                campaign_id=lead.campaign_id,
+                campaign_id=effective_campaign_id,
                 lead_list_id=lead.lead_list_id,
                 status=lead.status.value if hasattr(lead.status, "value") else str(lead.status).lower(),
                 scheduled_at=lead.scheduled_at,
@@ -436,13 +441,25 @@ class Repository:
         )
         return result.scalar_one() > 0
 
-    async def update_lead(self, lead: Lead, **kwargs) -> Lead:
+    async def update_lead(
+        self,
+        lead: Lead,
+        campaign_id_override: Optional[str] = None,
+        **kwargs,
+    ) -> Lead:
+        """Update a lead's fields and sync to CampaignLeadAssignment.
+
+        After Phase 3a row-collapse the canonical lead has campaign_id=None.
+        Callers that know the campaign context (dispatcher, acceptance checker,
+        executor) MUST pass campaign_id_override=campaign.id so the assignment
+        sync does not silently skip.
+        """
         for key, value in kwargs.items():
             setattr(lead, key, value)
         # Dual-write: mirror state changes to the assignment row and ensure
-        # membership exists. Both are no-ops if the lead has no campaign/list
+        # membership exists. Both are no-ops if no campaign can be resolved
         # or DUAL_WRITE_NEW_SCHEMA is False.
-        await self._sync_assignment_from_lead(lead)
+        await self._sync_assignment_from_lead(lead, campaign_id=campaign_id_override)
         await self._sync_membership_from_lead(lead)
         await self.session.commit()
         await self.session.refresh(lead)

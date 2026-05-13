@@ -638,6 +638,7 @@ async def _dispatch_planned(
                 _slot_time = _anchor + timedelta(seconds=_i * _intra_gap)
                 await repo.update_lead(
                     _bl,
+                    campaign_id_override=campaign.id,
                     status=LeadStatus.SCHEDULED,
                     scheduled_at=_slot_time,
                 )
@@ -1064,17 +1065,18 @@ async def check_acceptances():
 
             # Include paused campaigns — acceptances while paused still need recording
             campaigns = await repo.get_operational_campaigns(account.id)
-            campaign_map = {c.id: c for c in campaigns}
-            # Phase 2 read cutover: filter via CampaignLeadAssignment
-            # rather than Lead.campaign_id + Lead.status.
-            requested_leads = []
+            # Phase 2 read cutover: filter via CampaignLeadAssignment.
+            # Store (lead, campaign) tuples so the campaign is always available
+            # even after Phase 3a collapse when lead.campaign_id is NULL.
+            requested_lead_pairs: list[tuple] = []
             for campaign in campaigns:
                 leads = await repo.get_leads_by_status_via_assignments(
                     campaign.id, LeadStatus.CONNECTION_REQUESTED
                 )
-                requested_leads.extend(leads)
+                for lead in leads:
+                    requested_lead_pairs.append((lead, campaign))
 
-            needs_browser = bool(requested_leads) or bool(account.withdraw_threshold)
+            needs_browser = bool(requested_lead_pairs) or bool(account.withdraw_threshold)
             if not needs_browser:
                 _acceptance_checked[account.id] = acct_today
                 continue
@@ -1114,17 +1116,15 @@ async def check_acceptances():
                 recent_slugs = set(conn_result.slugs)  # e.g. {"/in/john-doe", ...}
                 newly_connected = []  # (lead, campaign) pairs
 
-                if requested_leads and conn_result.success:
-                    for lead in requested_leads:
+                if requested_lead_pairs and conn_result.success:
+                    for lead, campaign in requested_lead_pairs:
                         slug = _normalize_li_url(lead.linkedin_url)
                         if not slug or slug not in recent_slugs:
-                            continue
-                        campaign = campaign_map.get(lead.campaign_id)
-                        if campaign is None:
                             continue
                         validate_transition(lead.status, LeadStatus.CONNECTED)
                         await repo.update_lead(
                             lead,
+                            campaign_id_override=campaign.id,
                             status=LeadStatus.CONNECTED,
                             connection_accepted_at=datetime.utcnow(),
                         )
@@ -1167,6 +1167,7 @@ async def check_acceptances():
                             if info.get("email") or info.get("phone"):
                                 await repo.update_lead(
                                     lead,
+                                    campaign_id_override=_campaign.id,
                                     email=info.get("email"),
                                     phone=info.get("phone"),
                                 )
@@ -1202,6 +1203,7 @@ async def check_acceptances():
                         validate_transition(lead.status, LeadStatus.FOLLOWUP_SCHEDULED)
                         await repo.update_lead(
                             lead,
+                            campaign_id_override=campaign.id,
                             status=LeadStatus.FOLLOWUP_SCHEDULED,
                             scheduled_at=followup_time,
                         )
@@ -1229,6 +1231,7 @@ async def check_acceptances():
                                 validate_transition(lead.status, LeadStatus.FOLLOWUP_SENT)
                                 await repo.update_lead(
                                     lead,
+                                    campaign_id_override=campaign.id,
                                     status=LeadStatus.FOLLOWUP_SENT,
                                     followup_sent_at=datetime.utcnow(),
                                 )
@@ -1412,6 +1415,7 @@ async def dispatch_followups():
                             validate_transition(lead.status, LeadStatus.FOLLOWUP_SENT)
                             await repo.update_lead(
                                 lead,
+                                campaign_id_override=campaign.id,
                                 status=LeadStatus.FOLLOWUP_SENT,
                                 followup_sent_at=datetime.utcnow(),
                             )
@@ -1430,6 +1434,7 @@ async def dispatch_followups():
                             validate_transition(lead.status, LeadStatus.FOLLOWUP_SENT)
                             await repo.update_lead(
                                 lead,
+                                campaign_id_override=campaign.id,
                                 status=LeadStatus.FOLLOWUP_SENT,
                                 followup_sent_at=datetime.utcnow(),
                             )
@@ -1512,6 +1517,7 @@ async def dispatch_followups():
                             validate_transition(lead.status, LeadStatus.ERROR)
                             await repo.update_lead(
                                 lead,
+                                campaign_id_override=campaign.id,
                                 status=LeadStatus.ERROR,
                                 retry_count=1,
                             )

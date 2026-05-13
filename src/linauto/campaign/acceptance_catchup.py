@@ -243,6 +243,7 @@ async def run_acceptance_catchup(
             already_accepted = lead.connection_accepted_at is not None
             await repo.update_lead(
                 lead,
+                campaign_id_override=campaign_id,
                 status=LeadStatus.CONNECTED,
                 connection_accepted_at=datetime.utcnow(),
             )
@@ -268,6 +269,7 @@ async def run_acceptance_catchup(
                         validate_transition(lead.status, LeadStatus.FOLLOWUP_SCHEDULED)
                         await repo.update_lead(
                             lead,
+                            campaign_id_override=campaign_id,
                             status=LeadStatus.FOLLOWUP_SCHEDULED,
                             scheduled_at=followup_time,
                         )

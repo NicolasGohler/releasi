@@ -117,6 +117,7 @@ class CampaignExecutor:
                 validate_transition(lead.status, LeadStatus.CONNECTION_REQUESTED)
                 await self.repo.update_lead(
                     lead,
+                    campaign_id_override=campaign.id,
                     status=LeadStatus.CONNECTION_REQUESTED,
                     connection_requested_at=datetime.utcnow(),
                 )
@@ -161,7 +162,8 @@ class CampaignExecutor:
                 # Lead data is permanently bad (404, deleted profile) — never retry.
                 validate_transition(lead.status, LeadStatus.INVALID)
                 await self.repo.update_lead(
-                    lead, status=LeadStatus.INVALID, error_message=action_result.reason
+                    lead,
+                    campaign_id_override=campaign.id, status=LeadStatus.INVALID, error_message=action_result.reason
                 )
                 await self.repo.log_action(
                     account_id=account.id,
