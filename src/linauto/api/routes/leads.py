@@ -28,13 +28,26 @@ async def list_leads(
     requested_after: Optional[str] = Query(None),
     requested_before: Optional[str] = Query(None),
     skip_reason: Optional[str] = Query(None),
+    read_source: str = Query(
+        "new",
+        description=(
+            "Phase 2 read cutover knob. 'new' (default) reads from "
+            "campaign_lead_assignments. 'legacy' is the rollback escape "
+            "hatch — removed in Phase 3."
+        ),
+    ),
     repo: Repository = Depends(get_repo),
 ):
     campaign = await repo.get_campaign(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    leads, total = await repo.list_leads_paginated(
+    paginator = (
+        repo.list_leads_via_assignments_paginated
+        if read_source == "new"
+        else repo.list_leads_paginated
+    )
+    leads, total = await paginator(
         campaign_id=campaign_id,
         page=page,
         per_page=per_page,
