@@ -321,8 +321,8 @@ async def import_csv(
         tmp.write(contents)
         tmp_path = tmp.name
 
-    # Get existing URLs for dedup
-    existing_leads, _ = await repo.list_leads_paginated(
+    # Get existing URLs for dedup via assignments (Phase 3b)
+    existing_leads, _ = await repo.list_leads_via_assignments_paginated(
         campaign_id=campaign_id, page=1, per_page=100000
     )
     existing_urls = {l.linkedin_url for l in existing_leads}

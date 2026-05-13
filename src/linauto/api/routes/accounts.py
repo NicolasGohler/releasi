@@ -674,15 +674,11 @@ async def replan_account(
     total_scheduled = 0
 
     for campaign in campaigns:
-        # Reset today's SCHEDULED leads back to PENDING and clear their scheduled_at
-        await repo.session.execute(
-            _sql_update(Lead)
-            .where(Lead.campaign_id == campaign.id, Lead.status == LeadStatus.SCHEDULED)
-            .values(status=LeadStatus.PENDING, scheduled_at=None)
-        )
-        await repo.session.commit()
+        # Reset today's SCHEDULED assignments back to PENDING
+        # Phase 3b: uses repo helper which now writes to CampaignLeadAssignment only
+        await repo.reset_stale_scheduled_leads(campaign.id)
 
-        pending = await repo.get_pending_leads(campaign.id)
+        pending = await repo.get_pending_leads_via_assignments(campaign.id)
         if not pending:
             continue
 

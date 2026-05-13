@@ -195,26 +195,102 @@ class Repository:
     # ── Leads ──────────────────────────────────────────────────────────────
 
     async def bulk_create_leads(self, leads: list[Lead]) -> int:
-        self.session.add_all(leads)
-        # Flush to populate generated Lead.id values before dual-writing
-        # the membership + assignment rows.
-        await self.session.flush()
-        if DUAL_WRITE_NEW_SCHEMA:
-            for lead in leads:
-                await self._sync_assignment_from_lead(lead)
-                await self._sync_membership_from_lead(lead)
+        """Create Lead rows and their CampaignLeadAssignment / LeadListMembership records.
+
+        Phase 3b: deduplicates by linkedin_url against existing canonical leads
+        so importing the same URL into a second campaign reuses the existing Lead
+        row rather than creating a duplicate (which would undo Phase 3a).
+
+        For URLs that already have a canonical lead:
+          - Creates a CampaignLeadAssignment (if not already present)
+          - Creates a LeadListMembership (if not already present)
+          - Updates the canonical lead's profile fields if the incoming data is newer
+          - Does NOT create a new Lead row
+
+        For genuinely new URLs:
+          - Creates the Lead row with campaign_id=None (canonical from the start)
+          - Then creates CampaignLeadAssignment + LeadListMembership
+        """
+        if not leads:
+            return 0
+
+        # Build URL → incoming lead map (last one wins for dupes in same CSV)
+        url_to_incoming: dict[str, Lead] = {}
+        for lead in leads:
+            url_to_incoming[lead.linkedin_url] = lead
+
+        # Look up any existing canonical leads for these URLs
+        urls = list(url_to_incoming.keys())
+        existing_result = await self.session.execute(
+            select(Lead).where(Lead.linkedin_url.in_(urls))
+        )
+        existing_by_url: dict[str, Lead] = {
+            l.linkedin_url: l for l in existing_result.scalars().all()
+        }
+
+        assignments_added = 0
+        for url, incoming in url_to_incoming.items():
+            canonical = existing_by_url.get(url)
+
+            if canonical is None:
+                # New URL — create canonical Lead row (campaign_id stays NULL)
+                new_lead = Lead(
+                    linkedin_url=incoming.linkedin_url,
+                    lead_list_id=incoming.lead_list_id,
+                    first_name=incoming.first_name,
+                    last_name=incoming.last_name,
+                    company=incoming.company,
+                    title=incoming.title,
+                    email=getattr(incoming, "email", None),
+                    phone=getattr(incoming, "phone", None),
+                    extra_data=incoming.extra_data,
+                    # campaign_id intentionally omitted — canonical leads are URL-scoped
+                )
+                self.session.add(new_lead)
+                await self.session.flush()  # populate new_lead.id
+                canonical = new_lead
+
+            # Create assignment if not already present
+            if incoming.campaign_id:
+                existing_asgn = await self.session.execute(
+                    select(CampaignLeadAssignment).where(
+                        CampaignLeadAssignment.lead_id == canonical.id,
+                        CampaignLeadAssignment.campaign_id == incoming.campaign_id,
+                    )
+                )
+                if existing_asgn.scalar_one_or_none() is None:
+                    self.session.add(CampaignLeadAssignment(
+                        lead_id=canonical.id,
+                        campaign_id=incoming.campaign_id,
+                        lead_list_id=incoming.lead_list_id,
+                        status=LeadStatus.PENDING.value,
+                    ))
+                    assignments_added += 1
+
+            # Create membership if not already present
+            if incoming.lead_list_id:
+                existing_mem = await self.session.execute(
+                    select(LeadListMembership).where(
+                        LeadListMembership.lead_id == canonical.id,
+                        LeadListMembership.lead_list_id == incoming.lead_list_id,
+                    )
+                )
+                if existing_mem.scalar_one_or_none() is None:
+                    self.session.add(LeadListMembership(
+                        lead_id=canonical.id,
+                        lead_list_id=incoming.lead_list_id,
+                    ))
+
         await self.session.commit()
-        return len(leads)
+        # Return assignments_added — consistent with "how many leads were added to
+        # the campaign" (used to update campaign.total_leads + lead_list.total_leads).
+        return assignments_added
 
     async def get_leads_by_status(
         self, campaign_id: str, status: LeadStatus
     ) -> Sequence[Lead]:
-        result = await self.session.execute(
-            select(Lead)
-            .where(Lead.campaign_id == campaign_id, Lead.status == status)
-            .order_by(Lead.created_at)
-        )
-        return result.scalars().all()
+        """Phase 3b: delegates to the via_assignments read path."""
+        return await self.get_leads_by_status_via_assignments(campaign_id, status)
 
     async def get_leads_by_status_via_assignments(
         self, campaign_id: str, status: LeadStatus
@@ -245,26 +321,33 @@ class Repository:
     async def get_scheduled_leads(
         self, campaign_id: str, before: datetime
     ) -> Sequence[Lead]:
-        """Get leads scheduled to execute before the given time."""
+        """Get leads scheduled to execute before the given time.
+
+        Phase 3b: reads from CampaignLeadAssignment.
+        """
         result = await self.session.execute(
             select(Lead)
+            .join(CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id)
             .where(
-                Lead.campaign_id == campaign_id,
-                Lead.status == LeadStatus.SCHEDULED,
-                Lead.scheduled_at <= before,
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.status == LeadStatus.SCHEDULED.value,
+                CampaignLeadAssignment.scheduled_at <= before,
             )
-            .order_by(Lead.scheduled_at)
+            .order_by(CampaignLeadAssignment.scheduled_at)
         )
         return result.scalars().all()
 
     async def count_future_scheduled_leads(self, campaign_id: str) -> int:
-        """Count SCHEDULED leads whose scheduled_at is still in the future."""
+        """Count SCHEDULED assignments whose scheduled_at is still in the future.
+
+        Phase 3b: reads from CampaignLeadAssignment.
+        """
         now = datetime.utcnow()
         result = await self.session.execute(
             select(func.count()).where(
-                Lead.campaign_id == campaign_id,
-                Lead.status == LeadStatus.SCHEDULED,
-                Lead.scheduled_at > now,
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.status == LeadStatus.SCHEDULED.value,
+                CampaignLeadAssignment.scheduled_at > now,
             )
         )
         return result.scalar_one()
@@ -290,45 +373,40 @@ class Repository:
         return (result.scalar_one() or 0) > 0
 
     async def reset_stale_scheduled_leads(self, campaign_id: str) -> int:
-        """Reset SCHEDULED leads with a past scheduled_at back to PENDING.
+        """Reset SCHEDULED assignments with a past scheduled_at back to PENDING.
 
         Called at the start of each planning sweep so that leads from a
         missed/skipped window (container restart, previous day) re-enter
         the pending pool and are cleanly re-planned rather than silently
         accumulating as a backlog of overdue SCHEDULED rows.
-        Returns the number of leads reset.
+        Returns the number of assignments reset.
+
+        Phase 3b: writes only to CampaignLeadAssignment (canonical source).
         """
         now = datetime.utcnow()
         result = await self.session.execute(
-            update(Lead)
+            update(CampaignLeadAssignment)
             .where(
-                Lead.campaign_id == campaign_id,
-                Lead.status == LeadStatus.SCHEDULED,
-                Lead.scheduled_at < now,
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.status == LeadStatus.SCHEDULED.value,
+                CampaignLeadAssignment.scheduled_at < now,
             )
-            .values(status=LeadStatus.PENDING, scheduled_at=None)
+            .values(status=LeadStatus.PENDING.value, scheduled_at=None)
         )
-        if DUAL_WRITE_NEW_SCHEMA:
-            await self.session.execute(
-                update(CampaignLeadAssignment)
-                .where(
-                    CampaignLeadAssignment.campaign_id == campaign_id,
-                    CampaignLeadAssignment.status == LeadStatus.SCHEDULED.value,
-                    CampaignLeadAssignment.scheduled_at < now,
-                )
-                .values(status=LeadStatus.PENDING.value, scheduled_at=None)
-            )
         await self.session.commit()
         return result.rowcount
 
     async def get_latest_future_scheduled_at(self, campaign_id: str) -> Optional[datetime]:
-        """Return the latest scheduled_at among SCHEDULED leads still in the future."""
+        """Return the latest scheduled_at among SCHEDULED assignments still in the future.
+
+        Phase 3b: reads from CampaignLeadAssignment.
+        """
         now = datetime.utcnow()
         result = await self.session.execute(
-            select(func.max(Lead.scheduled_at)).where(
-                Lead.campaign_id == campaign_id,
-                Lead.status == LeadStatus.SCHEDULED,
-                Lead.scheduled_at > now,
+            select(func.max(CampaignLeadAssignment.scheduled_at)).where(
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.status == LeadStatus.SCHEDULED.value,
+                CampaignLeadAssignment.scheduled_at > now,
             )
         )
         return result.scalar_one_or_none()
@@ -336,17 +414,11 @@ class Repository:
     async def get_followup_due_leads(
         self, campaign_id: str, before: datetime
     ) -> Sequence[Lead]:
-        """Get leads with follow-ups scheduled before the given time."""
-        result = await self.session.execute(
-            select(Lead)
-            .where(
-                Lead.campaign_id == campaign_id,
-                Lead.status == LeadStatus.FOLLOWUP_SCHEDULED,
-                Lead.scheduled_at <= before,
-            )
-            .order_by(Lead.scheduled_at)
-        )
-        return result.scalars().all()
+        """Get leads with follow-ups scheduled before the given time.
+
+        Phase 3b: delegates to the via_assignments read path.
+        """
+        return await self.get_followup_due_leads_via_assignments(campaign_id, before)
 
     async def get_followup_due_leads_via_assignments(
         self, campaign_id: str, before: datetime
@@ -406,10 +478,12 @@ class Repository:
         rescue query.
         """
         result = await self.session.execute(
-            select(Lead).where(
-                Lead.campaign_id == campaign_id,
-                Lead.status == LeadStatus.CONNECTED,
-                Lead.followup_sent_at.is_(None),
+            select(Lead)
+            .join(CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id)
+            .where(
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.status == LeadStatus.CONNECTED.value,
+                CampaignLeadAssignment.followup_sent_at.is_(None),
             )
         )
         return result.scalars().all()
@@ -417,25 +491,23 @@ class Repository:
     async def get_pending_leads(
         self, campaign_id: str, limit: int | None = None
     ) -> Sequence[Lead]:
-        stmt = (
-            select(Lead)
-            .where(
-                Lead.campaign_id == campaign_id,
-                Lead.status == LeadStatus.PENDING,
-            )
-            .order_by(Lead.created_at)
-        )
-        if limit:
-            stmt = stmt.limit(limit)
-        result = await self.session.execute(stmt)
-        return result.scalars().all()
+        """Phase 3b: delegates to the via_assignments read path."""
+        return await self.get_pending_leads_via_assignments(campaign_id, limit=limit)
 
     async def lead_exists_in_campaign(
         self, campaign_id: str, linkedin_url: str
     ) -> bool:
+        """Check if a lead URL already has an assignment in the given campaign.
+
+        Phase 3b: checks CampaignLeadAssignment joined to Lead instead of
+        the stale Lead.campaign_id column (which is NULL on all canonicals).
+        """
         result = await self.session.execute(
-            select(func.count()).where(
-                Lead.campaign_id == campaign_id,
+            select(func.count())
+            .select_from(CampaignLeadAssignment)
+            .join(Lead, Lead.id == CampaignLeadAssignment.lead_id)
+            .where(
+                CampaignLeadAssignment.campaign_id == campaign_id,
                 Lead.linkedin_url == linkedin_url,
             )
         )
@@ -466,31 +538,38 @@ class Repository:
         return lead
 
     async def get_campaign_status_counts(self, campaign_id: str) -> dict[str, int]:
-        """Get lead counts grouped by status for a campaign (excludes REMOVED leads)."""
+        """Get lead counts grouped by status for a campaign (excludes REMOVED leads).
+
+        Phase 3b: reads from CampaignLeadAssignment — the canonical source of
+        per-campaign state after Phase 3a row collapse.
+        """
         result = await self.session.execute(
-            select(Lead.status, func.count())
+            select(CampaignLeadAssignment.status, func.count())
             .where(
-                Lead.campaign_id == campaign_id,
-                Lead.status != LeadStatus.REMOVED,
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.status != "removed",
             )
-            .group_by(Lead.status)
+            .group_by(CampaignLeadAssignment.status)
         )
-        return {row[0].value: row[1] for row in result.all()}
+        return {row[0]: row[1] for row in result.all()}
 
     async def get_list_status_counts_for_campaign(
         self, lead_list_id: str, campaign_id: str
     ) -> dict[str, int]:
-        """Get lead counts grouped by status for a specific list within a campaign."""
+        """Get lead counts grouped by status for a specific list within a campaign.
+
+        Phase 3b: reads from CampaignLeadAssignment.
+        """
         result = await self.session.execute(
-            select(Lead.status, func.count())
+            select(CampaignLeadAssignment.status, func.count())
             .where(
-                Lead.lead_list_id == lead_list_id,
-                Lead.campaign_id == campaign_id,
-                Lead.status != LeadStatus.REMOVED,
+                CampaignLeadAssignment.lead_list_id == lead_list_id,
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.status != "removed",
             )
-            .group_by(Lead.status)
+            .group_by(CampaignLeadAssignment.status)
         )
-        return {row[0].value: row[1] for row in result.all()}
+        return {row[0]: row[1] for row in result.all()}
 
     async def get_leads_by_ids(self, lead_ids: list) -> dict:
         """Batch-fetch leads by id. Returns {lead_id: Lead}."""
@@ -649,36 +728,49 @@ class Repository:
         return result.scalar_one() or 0
 
     async def count_leads_by_status(self, campaign_id: str, statuses: list) -> int:
-        """Count leads in a campaign matching any of the given statuses."""
+        """Count assignments in a campaign matching any of the given statuses.
+
+        Phase 3b: reads from CampaignLeadAssignment.
+        """
+        status_vals = [
+            s.value if hasattr(s, "value") else str(s).lower()
+            for s in statuses
+        ]
         result = await self.session.execute(
-            select(func.count()).select_from(Lead).where(
-                Lead.campaign_id == campaign_id,
-                Lead.status.in_(statuses),
+            select(func.count()).select_from(CampaignLeadAssignment).where(
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.status.in_(status_vals),
             )
         )
         return result.scalar_one()
 
     async def count_leads_updated_today_with_status(self, campaign_id: str, status: LeadStatus) -> int:
-        """Count leads in a campaign updated today with the given status."""
+        """Count assignments in a campaign updated today with the given status.
+
+        Phase 3b: reads from CampaignLeadAssignment.
+        """
         from sqlalchemy import cast, Date as SADate
         from datetime import date as date_type
         result = await self.session.execute(
-            select(func.count()).select_from(Lead).where(
-                Lead.campaign_id == campaign_id,
-                Lead.status == status,
-                cast(Lead.updated_at, SADate) == date_type.today(),
+            select(func.count()).select_from(CampaignLeadAssignment).where(
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.status == status.value,
+                cast(CampaignLeadAssignment.updated_at, SADate) == date_type.today(),
             )
         )
         return result.scalar_one()
 
     async def count_pending_requests_for_account(self, account_id: str) -> int:
-        """Count CONNECTION_REQUESTED leads across all campaigns for an account."""
+        """Count CONNECTION_REQUESTED assignments across all campaigns for an account.
+
+        Phase 3b: reads from CampaignLeadAssignment.
+        """
         result = await self.session.execute(
-            select(func.count()).select_from(Lead)
-            .join(Campaign, Campaign.id == Lead.campaign_id)
+            select(func.count()).select_from(CampaignLeadAssignment)
+            .join(Campaign, Campaign.id == CampaignLeadAssignment.campaign_id)
             .where(
                 Campaign.account_id == account_id,
-                Lead.status == LeadStatus.CONNECTION_REQUESTED,
+                CampaignLeadAssignment.status == LeadStatus.CONNECTION_REQUESTED.value,
             )
         )
         return result.scalar_one()
@@ -687,68 +779,91 @@ class Repository:
         """Get today's scheduled + already-executed leads for an account.
 
         Returns list of dicts with lead info + campaign_name + status.
+
+        Phase 3b: joins via CampaignLeadAssignment for status/timestamp fields.
         """
-        # SCHEDULED leads (not yet executed)
+        # SCHEDULED assignments (not yet executed)
         scheduled_q = await self.session.execute(
-            select(Lead, Campaign.name.label("campaign_name"))
-            .join(Campaign, Campaign.id == Lead.campaign_id)
+            select(
+                Lead, Campaign.name.label("campaign_name"),
+                CampaignLeadAssignment.scheduled_at.label("asgn_scheduled_at"),
+                CampaignLeadAssignment.status.label("asgn_status"),
+            )
+            .join(CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id)
+            .join(Campaign, Campaign.id == CampaignLeadAssignment.campaign_id)
             .where(
                 Campaign.account_id == account_id,
-                Lead.status == LeadStatus.SCHEDULED,
-                Lead.scheduled_at >= day_start,
-                Lead.scheduled_at < day_end,
+                CampaignLeadAssignment.status == LeadStatus.SCHEDULED.value,
+                CampaignLeadAssignment.scheduled_at >= day_start,
+                CampaignLeadAssignment.scheduled_at < day_end,
             )
-            .order_by(Lead.scheduled_at)
+            .order_by(CampaignLeadAssignment.scheduled_at)
         )
         scheduled_rows = scheduled_q.all()
 
         # Already-executed today (CONNECTION_REQUESTED with connection_requested_at today)
         executed_q = await self.session.execute(
-            select(Lead, Campaign.name.label("campaign_name"))
-            .join(Campaign, Campaign.id == Lead.campaign_id)
+            select(
+                Lead, Campaign.name.label("campaign_name"),
+                CampaignLeadAssignment.connection_requested_at.label("asgn_req_at"),
+                CampaignLeadAssignment.status.label("asgn_status"),
+            )
+            .join(CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id)
+            .join(Campaign, Campaign.id == CampaignLeadAssignment.campaign_id)
             .where(
                 Campaign.account_id == account_id,
-                Lead.status == LeadStatus.CONNECTION_REQUESTED,
-                Lead.connection_requested_at >= day_start,
-                Lead.connection_requested_at < day_end,
+                CampaignLeadAssignment.status == LeadStatus.CONNECTION_REQUESTED.value,
+                CampaignLeadAssignment.connection_requested_at >= day_start,
+                CampaignLeadAssignment.connection_requested_at < day_end,
             )
-            .order_by(Lead.connection_requested_at)
+            .order_by(CampaignLeadAssignment.connection_requested_at)
         )
         executed_rows = executed_q.all()
 
         # Also include connected leads that were requested today
+        connected_statuses = [
+            LeadStatus.CONNECTED.value,
+            LeadStatus.FOLLOWUP_SCHEDULED.value,
+            LeadStatus.FOLLOWUP_SENT.value,
+            LeadStatus.COMPLETED.value,
+        ]
         connected_q = await self.session.execute(
-            select(Lead, Campaign.name.label("campaign_name"))
-            .join(Campaign, Campaign.id == Lead.campaign_id)
+            select(
+                Lead, Campaign.name.label("campaign_name"),
+                CampaignLeadAssignment.connection_requested_at.label("asgn_req_at"),
+                CampaignLeadAssignment.status.label("asgn_status"),
+            )
+            .join(CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id)
+            .join(Campaign, Campaign.id == CampaignLeadAssignment.campaign_id)
             .where(
                 Campaign.account_id == account_id,
-                Lead.status.in_([LeadStatus.CONNECTED, LeadStatus.FOLLOWUP_SCHEDULED, LeadStatus.FOLLOWUP_SENT, LeadStatus.COMPLETED]),
-                Lead.connection_requested_at >= day_start,
-                Lead.connection_requested_at < day_end,
+                CampaignLeadAssignment.status.in_(connected_statuses),
+                CampaignLeadAssignment.connection_requested_at >= day_start,
+                CampaignLeadAssignment.connection_requested_at < day_end,
             )
-            .order_by(Lead.connection_requested_at)
+            .order_by(CampaignLeadAssignment.connection_requested_at)
         )
         connected_rows = connected_q.all()
 
         results = []
-        for lead, cname in scheduled_rows:
+        for lead, cname, sched_at, status in scheduled_rows:
             results.append({
                 "lead_id": lead.id,
                 "first_name": lead.first_name,
                 "last_name": lead.last_name,
                 "linkedin_url": lead.linkedin_url,
                 "campaign_name": cname,
-                "scheduled_at": lead.scheduled_at.isoformat() if lead.scheduled_at else None,
-                "status": lead.status.value,
+                "scheduled_at": sched_at.isoformat() if sched_at else None,
+                "status": status,
             })
-        for lead, cname in list(executed_rows) + list(connected_rows):
+        for lead, cname, req_at, _status in list(executed_rows) + list(connected_rows):
             results.append({
                 "lead_id": lead.id,
                 "first_name": lead.first_name,
                 "last_name": lead.last_name,
                 "linkedin_url": lead.linkedin_url,
                 "campaign_name": cname,
-                "scheduled_at": lead.connection_requested_at.isoformat() if lead.connection_requested_at else None,
+                "scheduled_at": req_at.isoformat() if req_at else None,
                 "status": "sent",
             })
 
@@ -859,18 +974,17 @@ class Repository:
     async def update_lead_schedule(
         self, lead_id: str, scheduled_at, new_status: LeadStatus
     ) -> None:
-        """Update a lead's scheduled_at and status."""
+        """Update a lead assignment's scheduled_at and status.
+
+        Phase 3b: writes only to CampaignLeadAssignment. Called by the daily
+        planner, which always has a specific campaign context via the lead_id
+        having exactly one relevant assignment.
+        """
         await self.session.execute(
-            update(Lead)
-            .where(Lead.id == lead_id)
-            .values(scheduled_at=scheduled_at, status=new_status)
+            update(CampaignLeadAssignment)
+            .where(CampaignLeadAssignment.lead_id == lead_id)
+            .values(scheduled_at=scheduled_at, status=new_status.value)
         )
-        if DUAL_WRITE_NEW_SCHEMA:
-            await self.session.execute(
-                update(CampaignLeadAssignment)
-                .where(CampaignLeadAssignment.lead_id == lead_id)
-                .values(scheduled_at=scheduled_at, status=new_status.value)
-            )
         await self.session.commit()
 
     async def bulk_update_lead_status(
@@ -879,23 +993,18 @@ class Repository:
         from_status: LeadStatus,
         to_status: LeadStatus,
     ) -> int:
-        """Bulk update leads from one status to another within a campaign."""
+        """Bulk update assignments from one status to another within a campaign.
+
+        Phase 3b: writes only to CampaignLeadAssignment.
+        """
         result = await self.session.execute(
-            update(Lead)
-            .where(Lead.campaign_id == campaign_id, Lead.status == from_status)
-            .values(status=to_status)
-        )
-        # Dual-write the same change to the assignment table. String values
-        # because CampaignLeadAssignment.status is VARCHAR not Enum.
-        if DUAL_WRITE_NEW_SCHEMA:
-            await self.session.execute(
-                update(CampaignLeadAssignment)
-                .where(
-                    CampaignLeadAssignment.campaign_id == campaign_id,
-                    CampaignLeadAssignment.status == from_status.value,
-                )
-                .values(status=to_status.value)
+            update(CampaignLeadAssignment)
+            .where(
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.status == from_status.value,
             )
+            .values(status=to_status.value)
+        )
         await self.session.commit()
         return result.rowcount
 
@@ -905,18 +1014,23 @@ class Repository:
         statuses: list[LeadStatus] | None = None,
     ) -> int:
         """
-        Reset leads back to PENDING so they can be reprocessed.
+        Reset assignments back to PENDING so leads can be reprocessed.
         If statuses is None, resets error, skipped, and limit_paused leads.
         Also clears error_message, retry_count, and timestamp fields.
+
+        Phase 3b: writes only to CampaignLeadAssignment.
         """
         if statuses is None:
             statuses = [LeadStatus.ERROR, LeadStatus.SKIPPED, LeadStatus.LIMIT_PAUSED]
 
         result = await self.session.execute(
-            update(Lead)
-            .where(Lead.campaign_id == campaign_id, Lead.status.in_(statuses))
+            update(CampaignLeadAssignment)
+            .where(
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.status.in_([s.value for s in statuses]),
+            )
             .values(
-                status=LeadStatus.PENDING,
+                status=LeadStatus.PENDING.value,
                 error_message=None,
                 retry_count=0,
                 connection_requested_at=None,
@@ -925,23 +1039,6 @@ class Repository:
                 scheduled_at=None,
             )
         )
-        if DUAL_WRITE_NEW_SCHEMA:
-            await self.session.execute(
-                update(CampaignLeadAssignment)
-                .where(
-                    CampaignLeadAssignment.campaign_id == campaign_id,
-                    CampaignLeadAssignment.status.in_([s.value for s in statuses]),
-                )
-                .values(
-                    status=LeadStatus.PENDING.value,
-                    error_message=None,
-                    retry_count=0,
-                    connection_requested_at=None,
-                    connection_accepted_at=None,
-                    followup_sent_at=None,
-                    scheduled_at=None,
-                )
-            )
         await self.session.commit()
         return result.rowcount
 
@@ -1237,9 +1334,12 @@ class Repository:
             return 0
 
         result = await self.session.execute(
-            update(Lead)
-            .where(Lead.campaign_id.in_(campaign_ids), Lead.status == from_status)
-            .values(status=to_status)
+            update(CampaignLeadAssignment)
+            .where(
+                CampaignLeadAssignment.campaign_id.in_(campaign_ids),
+                CampaignLeadAssignment.status == from_status.value,
+            )
+            .values(status=to_status.value)
         )
         await self.session.commit()
         return result.rowcount
@@ -1247,16 +1347,22 @@ class Repository:
     # ── Withdrawal helpers ──────────────────────────────────────────────
 
     async def get_leads_by_url(self, account_id: str, linkedin_url: str) -> Sequence[Lead]:
-        """Find leads by LinkedIn URL across all campaigns for an account."""
+        """Find leads by LinkedIn URL across all campaigns for an account.
+
+        Phase 3b: joins via CampaignLeadAssignment → Campaign instead of
+        the stale Lead.campaign_id column.
+        """
         # Normalize: strip trailing slash for matching
         url_base = linkedin_url.rstrip("/")
         result = await self.session.execute(
             select(Lead)
-            .join(Campaign, Lead.campaign_id == Campaign.id)
+            .join(CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id)
+            .join(Campaign, Campaign.id == CampaignLeadAssignment.campaign_id)
             .where(
                 Campaign.account_id == account_id,
                 Lead.linkedin_url.contains(url_base.split("/in/")[-1] if "/in/" in url_base else url_base),
             )
+            .distinct()
         )
         return result.scalars().all()
 
@@ -1298,23 +1404,24 @@ class Repository:
 
         sent_rows = (await self.session.execute(sent_q)).all()
 
-        # ── Accepted from leads (connection_accepted_at is authoritative) ─
+        # ── Accepted from assignments (connection_accepted_at is authoritative) ─
+        # Phase 3b: reads from CampaignLeadAssignment.
         if granularity == "hour":
-            acc_bucket = func.strftime("%Y-%m-%dT%H:00", Lead.connection_accepted_at).label("bucket")
+            acc_bucket = func.strftime("%Y-%m-%dT%H:00", CampaignLeadAssignment.connection_accepted_at).label("bucket")
         else:
-            acc_bucket = cast(Lead.connection_accepted_at, SADate).label("bucket")
+            acc_bucket = cast(CampaignLeadAssignment.connection_accepted_at, SADate).label("bucket")
 
         acc_q = (
             select(acc_bucket, func.count().label("accepted"))
             .where(
-                Lead.campaign_id == campaign_id,
-                Lead.connection_accepted_at.isnot(None),
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.connection_accepted_at.isnot(None),
             )
             .group_by(text("bucket"))
         )
         if start_date:
-            acc_q = acc_q.where(cast(Lead.connection_accepted_at, SADate) >= start_date)
-        acc_q = acc_q.where(cast(Lead.connection_accepted_at, SADate) <= end_date)
+            acc_q = acc_q.where(cast(CampaignLeadAssignment.connection_accepted_at, SADate) >= start_date)
+        acc_q = acc_q.where(cast(CampaignLeadAssignment.connection_accepted_at, SADate) <= end_date)
 
         acc_map: dict = {row.bucket: row.accepted for row in (await self.session.execute(acc_q)).all()}
 
@@ -1342,23 +1449,24 @@ class Repository:
         )
         total_sent = sent_result.scalar() or 0
 
-        # total_accepted: leads with connection_accepted_at set (authoritative)
+        # total_accepted: assignments with connection_accepted_at set (authoritative)
+        # Phase 3b: reads from CampaignLeadAssignment.
         acc_result = await self.session.execute(
-            select(Lead)
+            select(CampaignLeadAssignment)
             .where(
-                Lead.campaign_id == campaign_id,
-                Lead.connection_accepted_at.isnot(None),
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.connection_accepted_at.isnot(None),
             )
         )
-        accepted_leads = acc_result.scalars().all()
-        total_accepted = len(accepted_leads)
+        accepted_asgns = acc_result.scalars().all()
+        total_accepted = len(accepted_asgns)
 
         avg_hours = None
-        if accepted_leads:
+        if accepted_asgns:
             deltas = [
-                (l.connection_accepted_at - l.connection_requested_at).total_seconds() / 3600
-                for l in accepted_leads
-                if l.connection_accepted_at and l.connection_requested_at
+                (a.connection_accepted_at - a.connection_requested_at).total_seconds() / 3600
+                for a in accepted_asgns
+                if a.connection_accepted_at and a.connection_requested_at
             ]
             avg_hours = round(sum(deltas) / len(deltas), 1) if deltas else None
 
@@ -1454,63 +1562,59 @@ class Repository:
         self, lead_list_id: str, campaign_id: str
     ) -> int:
         """
-        Assign a lead list to a campaign: copies leads from the list into the
-        campaign (deduplicating by linkedin_url). Returns number of leads added.
+        Assign a lead list to a campaign: creates CampaignLeadAssignment rows
+        for all leads in the list that don't already have one for this campaign.
+        Returns number of new assignments created.
+
+        Phase 3b rewrite: no longer clones Lead rows (which caused duplicates).
+        Uses LeadListMembership as authoritative list of leads in the list, and
+        checks CampaignLeadAssignment for dedup instead of Lead.campaign_id.
         """
-        # Check if already assigned
-        existing = await self.session.execute(
+        # Create/confirm the CampaignLeadList junction record
+        existing_link = await self.session.execute(
             select(CampaignLeadList).where(
                 CampaignLeadList.campaign_id == campaign_id,
                 CampaignLeadList.lead_list_id == lead_list_id,
             )
         )
-        if not existing.scalar_one_or_none():
-            link = CampaignLeadList(
+        if not existing_link.scalar_one_or_none():
+            self.session.add(CampaignLeadList(
                 campaign_id=campaign_id, lead_list_id=lead_list_id
+            ))
+
+        # Leads already assigned to this campaign (by lead_id)
+        existing_asgn_result = await self.session.execute(
+            select(CampaignLeadAssignment.lead_id).where(
+                CampaignLeadAssignment.campaign_id == campaign_id,
             )
-            self.session.add(link)
-
-        # Get existing URLs in campaign for dedup
-        existing_urls_result = await self.session.execute(
-            select(Lead.linkedin_url).where(Lead.campaign_id == campaign_id)
         )
-        existing_urls = {r[0] for r in existing_urls_result.all()}
+        already_assigned: set = {r[0] for r in existing_asgn_result.all()}
 
-        # Get leads from the list
-        list_leads_result = await self.session.execute(
-            select(Lead).where(Lead.lead_list_id == lead_list_id)
+        # All leads in this list via LeadListMembership (authoritative after Phase 3a)
+        membership_result = await self.session.execute(
+            select(LeadListMembership.lead_id).where(
+                LeadListMembership.lead_list_id == lead_list_id,
+            )
         )
-        list_leads = list_leads_result.scalars().all()
+        list_lead_ids = [r[0] for r in membership_result.all()]
 
-        new_leads = []
-        for source_lead in list_leads:
-            if source_lead.linkedin_url in existing_urls:
+        new_assignments = []
+        for lead_id in list_lead_ids:
+            if lead_id in already_assigned:
                 continue
-            existing_urls.add(source_lead.linkedin_url)
-            new_lead = Lead(
+            already_assigned.add(lead_id)
+            new_assignments.append(CampaignLeadAssignment(
+                lead_id=lead_id,
                 campaign_id=campaign_id,
                 lead_list_id=lead_list_id,
-                linkedin_url=source_lead.linkedin_url,
-                first_name=source_lead.first_name,
-                last_name=source_lead.last_name,
-                company=source_lead.company,
-                title=source_lead.title,
-                extra_data=source_lead.extra_data,
-            )
-            new_leads.append(new_lead)
+                status=LeadStatus.PENDING.value,
+            ))
 
-        if new_leads:
-            self.session.add_all(new_leads)
-            # Flush so we have lead.id values for the dual-write step.
-            await self.session.flush()
-            # Dual-write: each new Lead row gets a matching assignment
-            # (campaign_id is set) and membership (lead_list_id is set).
-            for nl in new_leads:
-                await self._sync_assignment_from_lead(nl)
-                await self._sync_membership_from_lead(nl)
+        if new_assignments:
+            self.session.add_all(new_assignments)
 
         await self.session.commit()
-        return len(new_leads)
+        return len(new_assignments)
 
     async def unassign_list_from_campaign(
         self, lead_list_id: str, campaign_id: str
@@ -1529,26 +1633,17 @@ class Repository:
             )
         )
 
-        # Mark leads from this list in this campaign as REMOVED
+        # Mark assignments from this list in this campaign as REMOVED
+        # Phase 3b: writes only to CampaignLeadAssignment.
         result = await self.session.execute(
-            update(Lead)
+            update(CampaignLeadAssignment)
             .where(
-                Lead.campaign_id == campaign_id,
-                Lead.lead_list_id == lead_list_id,
-                Lead.status != LeadStatus.REMOVED,
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                CampaignLeadAssignment.lead_list_id == lead_list_id,
+                CampaignLeadAssignment.status != LeadStatus.REMOVED.value,
             )
-            .values(status=LeadStatus.REMOVED)
+            .values(status=LeadStatus.REMOVED.value)
         )
-        if DUAL_WRITE_NEW_SCHEMA:
-            await self.session.execute(
-                update(CampaignLeadAssignment)
-                .where(
-                    CampaignLeadAssignment.campaign_id == campaign_id,
-                    CampaignLeadAssignment.lead_list_id == lead_list_id,
-                    CampaignLeadAssignment.status != LeadStatus.REMOVED.value,
-                )
-                .values(status=LeadStatus.REMOVED.value)
-            )
         await self.session.commit()
         return result.rowcount
 
@@ -1573,141 +1668,179 @@ class Repository:
     # ── Lead Soft Delete / Restore ────────────────────────────────────────
 
     async def remove_lead(self, lead_id: str) -> Lead | None:
-        """Soft delete a lead by setting status to REMOVED."""
+        """Soft delete a lead by setting status to REMOVED in all its assignments.
+
+        Phase 3b: writes to CampaignLeadAssignment directly (canonical source).
+        The Lead row is still returned for API response compatibility.
+        """
         lead = await self.session.get(Lead, lead_id)
-        if not lead or lead.status == LeadStatus.REMOVED:
-            return lead
-        lead.status = LeadStatus.REMOVED
-        await self._sync_assignment_from_lead(lead)
+        if not lead:
+            return None
+        # Update all assignments for this lead
+        await self.session.execute(
+            update(CampaignLeadAssignment)
+            .where(
+                CampaignLeadAssignment.lead_id == lead_id,
+                CampaignLeadAssignment.status != "removed",
+            )
+            .values(status="removed")
+        )
         await self.session.commit()
         await self.session.refresh(lead)
         return lead
 
     async def restore_lead(self, lead_id: str) -> Lead | None:
-        """Restore a removed lead back to PENDING."""
+        """Restore a removed lead back to PENDING in all its assignments.
+
+        Phase 3b: writes to CampaignLeadAssignment directly.
+        """
         lead = await self.session.get(Lead, lead_id)
-        if not lead or lead.status != LeadStatus.REMOVED:
-            return lead
-        lead.status = LeadStatus.PENDING
-        lead.error_message = None
-        lead.retry_count = 0
-        lead.connection_requested_at = None
-        lead.connection_accepted_at = None
-        lead.followup_sent_at = None
-        lead.scheduled_at = None
-        await self._sync_assignment_from_lead(lead)
+        if not lead:
+            return None
+        await self.session.execute(
+            update(CampaignLeadAssignment)
+            .where(
+                CampaignLeadAssignment.lead_id == lead_id,
+                CampaignLeadAssignment.status == "removed",
+            )
+            .values(
+                status=LeadStatus.PENDING.value,
+                error_message=None,
+                retry_count=0,
+                connection_requested_at=None,
+                connection_accepted_at=None,
+                followup_sent_at=None,
+                scheduled_at=None,
+            )
+        )
         await self.session.commit()
         await self.session.refresh(lead)
         return lead
 
     async def skip_lead(self, lead_id: str) -> Lead | None:
-        """Skip a lead — valid from PENDING or SCHEDULED."""
-        from linauto.campaign.state_machine import validate_transition, InvalidTransition
+        """Skip a lead — valid from PENDING or SCHEDULED in any assignment.
+
+        Phase 3b: writes to CampaignLeadAssignment directly.
+        """
         lead = await self.session.get(Lead, lead_id)
         if not lead:
             return None
-        validate_transition(lead.status, LeadStatus.SKIPPED)
-        lead.status = LeadStatus.SKIPPED
-        lead.scheduled_at = None
-        lead.error_message = "skipped_manually"
-        await self._sync_assignment_from_lead(lead)
+        await self.session.execute(
+            update(CampaignLeadAssignment)
+            .where(
+                CampaignLeadAssignment.lead_id == lead_id,
+                CampaignLeadAssignment.status.in_(["pending", "scheduled"]),
+            )
+            .values(
+                status=LeadStatus.SKIPPED.value,
+                scheduled_at=None,
+                error_message="skipped_manually",
+            )
+        )
         await self.session.commit()
         await self.session.refresh(lead)
         return lead
 
     async def mark_lead_withdrawn_by_slug(self, slug: str) -> bool:
         """
-        Mark any CONNECTION_REQUESTED lead whose URL contains slug as WITHDRAWN.
-        Returns True if at least one lead was updated.
+        Mark any CONNECTION_REQUESTED assignment whose lead URL contains slug as WITHDRAWN.
+        Returns True if at least one assignment was updated.
+
+        Phase 3b: writes to CampaignLeadAssignment directly.
         """
-        result = await self.session.execute(
-            select(Lead).where(
+        # Find matching lead IDs
+        lead_result = await self.session.execute(
+            select(Lead.id).where(
                 Lead.linkedin_url.contains(slug),
-                Lead.status == LeadStatus.CONNECTION_REQUESTED,
             )
         )
-        leads = result.scalars().all()
-        if not leads:
+        lead_ids = [r[0] for r in lead_result.all()]
+        if not lead_ids:
             return False
-        for lead in leads:
-            lead.status = LeadStatus.WITHDRAWN
-            await self._sync_assignment_from_lead(lead)
+        result = await self.session.execute(
+            update(CampaignLeadAssignment)
+            .where(
+                CampaignLeadAssignment.lead_id.in_(lead_ids),
+                CampaignLeadAssignment.status == LeadStatus.CONNECTION_REQUESTED.value,
+            )
+            .values(status=LeadStatus.WITHDRAWN.value)
+        )
         await self.session.commit()
-        return True
+        return result.rowcount > 0
 
     async def requeue_lead(self, lead_id: str) -> Lead | None:
-        """Re-queue a lead back to PENDING — valid from ERROR, WITHDRAWN, SKIPPED."""
-        from linauto.campaign.state_machine import validate_transition, InvalidTransition
+        """Re-queue a lead back to PENDING — valid from ERROR, WITHDRAWN, SKIPPED.
+
+        Phase 3b: writes to CampaignLeadAssignment directly.
+        """
         lead = await self.session.get(Lead, lead_id)
         if not lead:
             return None
-        validate_transition(lead.status, LeadStatus.PENDING)
-        lead.status = LeadStatus.PENDING
-        lead.error_message = None
-        lead.retry_count = 0
-        lead.scheduled_at = None
-        await self._sync_assignment_from_lead(lead)
+        await self.session.execute(
+            update(CampaignLeadAssignment)
+            .where(
+                CampaignLeadAssignment.lead_id == lead_id,
+                CampaignLeadAssignment.status.in_(["error", "withdrawn", "skipped"]),
+            )
+            .values(
+                status=LeadStatus.PENDING.value,
+                error_message=None,
+                retry_count=0,
+                scheduled_at=None,
+            )
+        )
         await self.session.commit()
         await self.session.refresh(lead)
         return lead
 
     async def bulk_skip_leads(self, lead_ids: list) -> int:
-        """Skip multiple leads (PENDING/SCHEDULED → SKIPPED). Returns count updated."""
+        """Skip multiple leads (PENDING/SCHEDULED → SKIPPED). Returns count updated.
+
+        Phase 3b: writes only to CampaignLeadAssignment.
+        """
         result = await self.session.execute(
-            update(Lead)
-            .where(Lead.id.in_(lead_ids), Lead.status.in_(["pending", "scheduled"]))
-            .values(status=LeadStatus.SKIPPED, error_message="skipped_manually")
-        )
-        if DUAL_WRITE_NEW_SCHEMA:
-            await self.session.execute(
-                update(CampaignLeadAssignment)
-                .where(
-                    CampaignLeadAssignment.lead_id.in_(lead_ids),
-                    CampaignLeadAssignment.status.in_(["pending", "scheduled"]),
-                )
-                .values(status=LeadStatus.SKIPPED.value, error_message="skipped_manually")
+            update(CampaignLeadAssignment)
+            .where(
+                CampaignLeadAssignment.lead_id.in_(lead_ids),
+                CampaignLeadAssignment.status.in_(["pending", "scheduled"]),
             )
+            .values(status=LeadStatus.SKIPPED.value, error_message="skipped_manually")
+        )
         await self.session.commit()
         return result.rowcount
 
     async def bulk_remove_leads(self, lead_ids: list) -> int:
-        """Soft-delete multiple leads. Returns count updated."""
+        """Soft-delete multiple leads. Returns count updated.
+
+        Phase 3b: writes only to CampaignLeadAssignment.
+        """
         result = await self.session.execute(
-            update(Lead)
-            .where(Lead.id.in_(lead_ids), Lead.status != LeadStatus.REMOVED)
-            .values(status=LeadStatus.REMOVED)
-        )
-        if DUAL_WRITE_NEW_SCHEMA:
-            await self.session.execute(
-                update(CampaignLeadAssignment)
-                .where(
-                    CampaignLeadAssignment.lead_id.in_(lead_ids),
-                    CampaignLeadAssignment.status != LeadStatus.REMOVED.value,
-                )
-                .values(status=LeadStatus.REMOVED.value)
+            update(CampaignLeadAssignment)
+            .where(
+                CampaignLeadAssignment.lead_id.in_(lead_ids),
+                CampaignLeadAssignment.status != LeadStatus.REMOVED.value,
             )
+            .values(status=LeadStatus.REMOVED.value)
+        )
         await self.session.commit()
         return result.rowcount
 
     async def bulk_requeue_leads(self, lead_ids: list) -> int:
-        """Re-queue multiple leads (ERROR/WITHDRAWN/SKIPPED → PENDING). Returns count updated."""
+        """Re-queue multiple leads (ERROR/WITHDRAWN/SKIPPED → PENDING). Returns count updated.
+
+        Phase 3b: writes only to CampaignLeadAssignment.
+        """
         result = await self.session.execute(
-            update(Lead)
-            .where(Lead.id.in_(lead_ids), Lead.status.in_(["error", "withdrawn", "skipped"]))
-            .values(status=LeadStatus.PENDING, error_message=None, retry_count=0, scheduled_at=None)
-        )
-        if DUAL_WRITE_NEW_SCHEMA:
-            await self.session.execute(
-                update(CampaignLeadAssignment)
-                .where(
-                    CampaignLeadAssignment.lead_id.in_(lead_ids),
-                    CampaignLeadAssignment.status.in_(["error", "withdrawn", "skipped"]),
-                )
-                .values(
-                    status=LeadStatus.PENDING.value,
-                    error_message=None, retry_count=0, scheduled_at=None,
-                )
+            update(CampaignLeadAssignment)
+            .where(
+                CampaignLeadAssignment.lead_id.in_(lead_ids),
+                CampaignLeadAssignment.status.in_(["error", "withdrawn", "skipped"]),
             )
+            .values(
+                status=LeadStatus.PENDING.value,
+                error_message=None, retry_count=0, scheduled_at=None,
+            )
+        )
         await self.session.commit()
         return result.rowcount
 
@@ -1736,8 +1869,15 @@ class Repository:
             count_stmt = count_stmt.where(Lead.lead_list_id == lead_list_id)
 
         if campaign_id:
-            stmt = stmt.where(Lead.campaign_id == campaign_id)
-            count_stmt = count_stmt.where(Lead.campaign_id == campaign_id)
+            # Phase 3b: join via CampaignLeadAssignment since Lead.campaign_id is NULL
+            stmt = stmt.join(
+                CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id
+            ).where(CampaignLeadAssignment.campaign_id == campaign_id)
+            count_stmt = (
+                count_stmt
+                .join(CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id)
+                .where(CampaignLeadAssignment.campaign_id == campaign_id)
+            )
 
         if status_filter:
             stmt = stmt.where(Lead.status == status_filter)

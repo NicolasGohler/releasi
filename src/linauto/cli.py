@@ -298,12 +298,14 @@ def campaign_import(
             console.print(f"[red]File not found: {csv_path}[/red]")
             raise typer.Exit(1)
 
-        # Get existing URLs for dedup
-        from linauto.db.models import LeadStatus
+        # Get existing URLs for dedup via CampaignLeadAssignment (Phase 3b)
+        from linauto.db.models import LeadStatus, CampaignLeadAssignment
         from sqlalchemy import select
         from linauto.db.models import Lead
         result = await session.execute(
-            select(Lead.linkedin_url).where(Lead.campaign_id == campaign.id)
+            select(Lead.linkedin_url)
+            .join(CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id)
+            .where(CampaignLeadAssignment.campaign_id == campaign.id)
         )
         existing_urls = {row[0] for row in result.all()}
 
@@ -617,8 +619,8 @@ def execute_once(
             console.print("[red]Account not found.[/red]")
             raise typer.Exit(1)
 
-        # Get pending leads
-        leads = await repo.get_pending_leads(campaign.id, limit=limit)
+        # Get pending leads via CampaignLeadAssignment (Phase 3b)
+        leads = await repo.get_pending_leads_via_assignments(campaign.id, limit=limit)
         if not leads:
             console.print("[yellow]No pending leads to process.[/yellow]")
             return
