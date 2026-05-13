@@ -224,7 +224,8 @@ async def _dispatch_continuous(
         if stop_account or remaining_batch <= 0:
             break
 
-        pending = list(await repo.get_pending_leads(campaign.id, limit=remaining_batch * 4))
+        # Phase 2 read cutover: use CampaignLeadAssignment as source of truth.
+        pending = list(await repo.get_pending_leads_via_assignments(campaign.id, limit=remaining_batch * 4))
         if not pending:
             continue
 
@@ -888,9 +889,10 @@ async def dispatch():
             campaigns_preview = await repo.get_active_campaigns(account.id)
             any_due = False
             if _is_continuous:
-                # Continuous: look for any PENDING leads
+                # Continuous: look for any PENDING leads.
+                # Phase 2 read cutover: use CampaignLeadAssignment as source of truth.
                 for _c in campaigns_preview:
-                    _pending_check = await repo.get_pending_leads(_c.id, limit=1)
+                    _pending_check = await repo.get_pending_leads_via_assignments(_c.id, limit=1)
                     if _pending_check:
                         any_due = True
                         break
