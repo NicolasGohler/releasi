@@ -194,9 +194,21 @@ class CampaignExecutor:
                         details={"reason": "already_connected"},
                     )
                 else:
-                    validate_transition(lead.status, LeadStatus.SKIPPED)
+                    # Phase 3b: Lead.status is a legacy column that can be stale relative
+                    # to CLA.status. A lead dispatched by the scheduler always has a valid
+                    # CLA state (scheduled/pending), so this transition is safe. If the
+                    # legacy column disagrees, skip the guard rather than looping forever.
+                    try:
+                        validate_transition(lead.status, LeadStatus.SKIPPED)
+                    except Exception:
+                        logger.warning(
+                            "executor.skip_transition_stale_status",
+                            lead_id=lead.id,
+                            lead_status=lead.status,
+                        )
                     await self.repo.update_lead(
-                        lead, status=LeadStatus.SKIPPED, error_message=action_result.reason
+                        lead, campaign_id_override=campaign.id,
+                        status=LeadStatus.SKIPPED, error_message=action_result.reason
                     )
                     await self.repo.log_action(
                         account_id=account.id,
