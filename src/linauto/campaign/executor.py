@@ -114,7 +114,11 @@ class CampaignExecutor:
             action_result = await actions.send_connection_request(lead.linkedin_url, message, filters=filters)
 
             if action_result.status == ActionStatus.SUCCESS:
-                validate_transition(lead.status, LeadStatus.CONNECTION_REQUESTED)
+                try:
+                    validate_transition(lead.status, LeadStatus.CONNECTION_REQUESTED)
+                except Exception:
+                    logger.warning("executor.transition_stale_status", lead_id=lead.id,
+                                   lead_status=lead.status, target="CONNECTION_REQUESTED")
                 await self.repo.update_lead(
                     lead,
                     campaign_id_override=campaign.id,
@@ -160,7 +164,11 @@ class CampaignExecutor:
 
             elif action_result.status == ActionStatus.INVALID:
                 # Lead data is permanently bad (404, deleted profile) — never retry.
-                validate_transition(lead.status, LeadStatus.INVALID)
+                try:
+                    validate_transition(lead.status, LeadStatus.INVALID)
+                except Exception:
+                    logger.warning("executor.transition_stale_status", lead_id=lead.id,
+                                   lead_status=lead.status, target="INVALID")
                 await self.repo.update_lead(
                     lead,
                     campaign_id_override=campaign.id, status=LeadStatus.INVALID, error_message=action_result.reason
@@ -179,7 +187,11 @@ class CampaignExecutor:
                 if action_result.reason == "already_connected":
                     # Already a 1st-degree connection — mark CONNECTED, not SKIPPED.
                     # Don't count as a new send; just update the DB to reflect reality.
-                    validate_transition(lead.status, LeadStatus.CONNECTED)
+                    try:
+                        validate_transition(lead.status, LeadStatus.CONNECTED)
+                    except Exception:
+                        logger.warning("executor.transition_stale_status", lead_id=lead.id,
+                                       lead_status=lead.status, target="CONNECTED")
                     await self.repo.update_lead(
                         lead,
                         status=LeadStatus.CONNECTED,
