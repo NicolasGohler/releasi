@@ -1074,9 +1074,11 @@ class Repository:
 
         if search:
             pattern = f"%{search}%"
+            full_name = func.coalesce(Lead.first_name, "") + " " + func.coalesce(Lead.last_name, "")
             search_filter = or_(
                 Lead.first_name.ilike(pattern),
                 Lead.last_name.ilike(pattern),
+                full_name.ilike(pattern),
                 Lead.company.ilike(pattern),
                 Lead.title.ilike(pattern),
                 Lead.linkedin_url.ilike(pattern),
@@ -1210,9 +1212,11 @@ class Repository:
 
         if search:
             pattern = f"%{search}%"
+            full_name = func.coalesce(Lead.first_name, "") + " " + func.coalesce(Lead.last_name, "")
             search_filter = or_(
                 Lead.first_name.ilike(pattern),
                 Lead.last_name.ilike(pattern),
+                full_name.ilike(pattern),
                 Lead.company.ilike(pattern),
                 Lead.title.ilike(pattern),
                 Lead.linkedin_url.ilike(pattern),
@@ -1887,9 +1891,11 @@ class Repository:
 
         if search:
             pattern = f"%{search}%"
+            full_name = func.coalesce(Lead.first_name, "") + " " + func.coalesce(Lead.last_name, "")
             search_filter = or_(
                 Lead.first_name.ilike(pattern),
                 Lead.last_name.ilike(pattern),
+                full_name.ilike(pattern),
                 Lead.company.ilike(pattern),
                 Lead.title.ilike(pattern),
                 Lead.linkedin_url.ilike(pattern),

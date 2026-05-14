@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   useGlobalLeads,
   useLeadLists,
@@ -131,9 +131,19 @@ function SortIcon({ col, sortBy, sortDir }: { col: SortKey; sortBy: SortKey | nu
     : <ChevronDown className="ml-1 h-3 w-3 inline" />;
 }
 
+function useDebounce<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debounced;
+}
+
 export default function GlobalLeadsPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebounce(search, 300);
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [listFilter, setListFilter] = useState<string | undefined>();
   const [campaignFilter, setCampaignFilter] = useState<string | undefined>();
@@ -144,9 +154,11 @@ export default function GlobalLeadsPage() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
+  useEffect(() => { setPage(1); }, [debouncedSearch]);
+
   const { data: leadsData, isLoading } = useGlobalLeads({
     page, per_page: 50,
-    search: search || undefined,
+    search: debouncedSearch || undefined,
     status: statusFilter,
     lead_list_id: listFilter,
     campaign_id: campaignFilter,
@@ -179,7 +191,7 @@ export default function GlobalLeadsPage() {
     setPage(1);
   }
 
-  const hasActiveFilters = search || statusFilter || listFilter || campaignFilter || skipReasonFilter || requestedAfter || requestedBefore || sortBy;
+  const hasActiveFilters = debouncedSearch || statusFilter || listFilter || campaignFilter || skipReasonFilter || requestedAfter || requestedBefore || sortBy;
 
   function resetFilters() {
     setSearch(""); setStatusFilter(undefined); setListFilter(undefined); setCampaignFilter(undefined);
@@ -214,7 +226,7 @@ export default function GlobalLeadsPage() {
         <Input
           placeholder="Search leads..."
           value={search}
-          onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+          onChange={(e) => setSearch(e.target.value)}
           className="max-w-xs"
         />
         <select

@@ -25,8 +25,123 @@ from linauto.safety.cooldown import is_cooldown_expired, calculate_cooldown_resu
 from linauto.safety import limits as rate_limits
 from linauto.campaign.state_machine import validate_transition
 from linauto.notifications.slack import notify as slack_notify
+from linauto.safety.dispatch_decisions import (
+    classify_connection_result,
+    classify_followup_result,
+    DispatchIntent,
+    AccountAction,
+    LeadAction,
+)
 
 logger = structlog.get_logger()
+
+
+async def _apply_connection_intent(
+    intent: DispatchIntent,
+    repo: "Repository",
+    account,
+    campaign,
+) -> None:
+    """Execute DB writes, Slack pings, and logging encoded in a DispatchIntent
+    for connection-request dispatchers.  Does NOT set stop_account or break."""
+    if intent.log_event:
+        if "network" in intent.log_event or "proxy" in intent.log_event:
+            logger.warning(
+                intent.log_event,
+                account=account.name,
+                campaign=campaign.name,
+                consecutive=intent.consecutive_network,
+            )
+        else:
+            logger.error(
+                intent.log_event,
+                account=account.name,
+                campaign=campaign.name,
+                consecutive=max(intent.consecutive_session, intent.consecutive_network),
+            )
+        await repo.log_action(
+            account_id=account.id,
+            campaign_id=campaign.id,
+            action_type=ActionType.ERROR,
+            status=ActionLogStatus.FAILED,
+            details={k: v for k, v in {
+                "reason": intent.log_reason,
+                "count": max(intent.consecutive_session, intent.consecutive_network) or None,
+            }.items() if v is not None},
+        )
+    if intent.account_action == AccountAction.MARK_COOKIE_EXPIRED:
+        await repo.update_account(account, status="cookie_expired")
+    if intent.slack_message:
+        await slack_notify(intent.slack_message)
+    if intent.reset_scheduled_to_pending:
+        await repo.bulk_update_lead_status(
+            campaign.id,
+            from_status=LeadStatus.SCHEDULED,
+            to_status=LeadStatus.PENDING,
+        )
+
+
+async def _apply_followup_intent(
+    intent: DispatchIntent,
+    repo: "Repository",
+    account,
+    campaign,
+    lead,
+) -> None:
+    """Execute DB writes, Slack pings, and logging for followup dispatchers."""
+    if intent.lead_action == LeadAction.MARK_SENT:
+        validate_transition(lead.status, LeadStatus.FOLLOWUP_SENT)
+        await repo.update_lead(
+            lead,
+            campaign_id_override=campaign.id,
+            status=LeadStatus.FOLLOWUP_SENT,
+            followup_sent_at=datetime.utcnow(),
+        )
+    elif intent.lead_action == LeadAction.MARK_ERROR:
+        validate_transition(lead.status, LeadStatus.ERROR)
+        await repo.update_lead(
+            lead,
+            campaign_id_override=campaign.id,
+            status=LeadStatus.ERROR,
+            retry_count=1,
+        )
+    if intent.account_action == AccountAction.MARK_COOKIE_EXPIRED:
+        await repo.update_account(account, status="cookie_expired")
+    if intent.slack_message:
+        await slack_notify(intent.slack_message)
+    if intent.log_event:
+        if "network" in intent.log_event or "proxy" in intent.log_event:
+            logger.warning(
+                intent.log_event,
+                account=account.name,
+                campaign=campaign.name,
+                url=lead.linkedin_url,
+                consecutive=intent.consecutive_network,
+            )
+        else:
+            log_fn = logger.error if (
+                "expired" in intent.log_event
+                or "consecutive" in intent.log_event
+                or "fatal" in intent.log_event
+            ) else logger.warning
+            log_fn(
+                intent.log_event,
+                account=account.name,
+                campaign=campaign.name,
+                url=lead.linkedin_url,
+                consecutive=max(intent.consecutive_session, intent.consecutive_network),
+            )
+        await repo.log_action(
+            account_id=account.id,
+            campaign_id=campaign.id,
+            lead_id=lead.id,
+            action_type=ActionType.ERROR,
+            status=ActionLogStatus.FAILED,
+            details={k: v for k, v in {
+                "reason": intent.log_reason,
+                "count": max(intent.consecutive_session, intent.consecutive_network) or None,
+            }.items() if v is not None},
+        )
 
 # Per-account session tracking: when the last dispatch session ended (UTC naive).
 # Prevents rapid-fire dispatching across 5-min cycles — enforces inter-session gap.
@@ -271,57 +386,25 @@ async def _dispatch_continuous(
                 stop_account = True
                 break
 
-            if result.get("fatal"):
+            intent = classify_connection_result(
+                result,
+                consecutive_session_errors,
+                consecutive_network_errors,
+                account.name,
+                campaign.name,
+            )
+            consecutive_session_errors = intent.consecutive_session
+            consecutive_network_errors = intent.consecutive_network
+            await _apply_connection_intent(intent, repo, account, campaign)
+            if intent.stop_account:
                 stop_account = True
                 break
 
             if result.get("success"):
                 successful_sends += 1
                 total_sent += 1
-                consecutive_session_errors = 0
-                consecutive_network_errors = 0
                 await repo.add_proxy_mb(account.id, 2.0)
-
-            elif result.get("skipped"):
-                # No backfill in continuous mode — next session picks fresh pending leads
-                consecutive_session_errors = 0
-                consecutive_network_errors = 0
-
-            elif result.get("network_error"):
-                consecutive_network_errors += 1
-                consecutive_session_errors = 0
-                if consecutive_network_errors >= 3:
-                    logger.warning(
-                        "dispatch.continuous_proxy_issues",
-                        account=account.name,
-                        campaign=campaign.name,
-                        consecutive=consecutive_network_errors,
-                    )
-                    stop_account = True
-                    break
-
-            else:
-                consecutive_session_errors += 1
-                consecutive_network_errors = 0
-                if consecutive_session_errors >= 3:
-                    logger.error(
-                        "dispatch.continuous_consecutive_errors",
-                        account=account.name,
-                        campaign=campaign.name,
-                        consecutive=consecutive_session_errors,
-                    )
-                    await repo.update_account(account, status="cookie_expired")
-                    await slack_notify(
-                        f":warning: *Cookie expired* — account *{account.name}* "
-                        f"({consecutive_session_errors} consecutive errors on *{campaign.name}*)."
-                    )
-                    await repo.bulk_update_lead_status(
-                        campaign.id,
-                        from_status=LeadStatus.SCHEDULED,
-                        to_status=LeadStatus.PENDING,
-                    )
-                    stop_account = True
-                    break
+            # skipped and non-3-strike failures: no backfill in continuous mode
 
         remaining_batch -= successful_sends
 
@@ -462,119 +545,27 @@ async def _dispatch_planned(
                 stop_account = True
                 break
 
-            # Explicit session-expiry signal — flag immediately without
-            # waiting for the 3-strike rule. The lead is NOT marked ERROR
-            # (executor leaves it in its prior status) so it'll be picked
-            # up after cookie renewal. Mirrors the followup dispatcher.
-            if result.get("session_expired"):
-                logger.error(
-                    "dispatch.session_expired_detected",
-                    account=account.name,
-                    campaign=campaign.name,
-                )
-                await repo.update_account(account, status="cookie_expired")
-                await slack_notify(
-                    f":warning: *Cookie expired* — account *{account.name}* "
-                    f"(detected by connection dispatcher; SCHEDULED leads reverted to PENDING for retry)."
-                )
-                await repo.bulk_update_lead_status(
-                    campaign.id,
-                    from_status=LeadStatus.SCHEDULED,
-                    to_status=LeadStatus.PENDING,
-                )
-                await repo.log_action(
-                    account_id=account.id,
-                    campaign_id=campaign.id,
-                    action_type=ActionType.ERROR,
-                    status=ActionLogStatus.FAILED,
-                    details={"reason": "connection_session_expired"},
-                )
-                stop_account = True
-                break
-
-            if result.get("fatal"):
-                # CAPTCHA or other fatal (non-session) — stop this account
-                # and ping Slack so a human can investigate.
-                logger.error(
-                    "dispatch.fatal_error",
-                    account=account.name,
-                    campaign=campaign.name,
-                )
-                await slack_notify(
-                    f":no_entry: *CAPTCHA or fatal action error* — account *{account.name}* "
-                    f"on campaign *{campaign.name}* — account paused, manual review needed."
-                )
+            intent = classify_connection_result(
+                result,
+                consecutive_session_errors,
+                consecutive_network_errors,
+                account.name,
+                campaign.name,
+            )
+            consecutive_session_errors = intent.consecutive_session
+            consecutive_network_errors = intent.consecutive_network
+            await _apply_connection_intent(intent, repo, account, campaign)
+            if intent.stop_account:
                 stop_account = True
                 break
 
             if result.get("success"):
                 successful_sends += 1
-                consecutive_session_errors = 0
-                consecutive_network_errors = 0
                 await repo.add_proxy_mb(account.id, 2.0)  # ~2 MB per connection request
             elif result.get("skipped"):
-                # Profile was skipped (already connected, already accepted,
-                # email required, etc.). Never counts against session health.
-                # Don't inject a replacement into this session — schedule it
-                # after the current day's last slot to avoid rapid-fire sends.
-                consecutive_session_errors = 0
-                consecutive_network_errors = 0
                 backfill_count += 1
-            elif result.get("network_error"):
-                # Proxy/timeout failure — don't penalise the session
-                consecutive_network_errors += 1
-                consecutive_session_errors = 0
-                if consecutive_network_errors >= 3:
-                    logger.warning(
-                        "dispatch.proxy_connectivity_issues",
-                        account=account.name,
-                        campaign=campaign.name,
-                        consecutive=consecutive_network_errors,
-                    )
-                    await repo.log_action(
-                        account_id=account.id,
-                        campaign_id=campaign.id,
-                        action_type=ActionType.ERROR,
-                        status=ActionLogStatus.FAILED,
-                        details={"reason": "consecutive_network_errors", "count": consecutive_network_errors},
-                    )
-                    stop_account = True
-                    break
-            else:
-                consecutive_session_errors += 1
-                consecutive_network_errors = 0
-
-                # 3+ consecutive session errors → cookie likely expired
-                if consecutive_session_errors >= 3:
-                    logger.error(
-                        "dispatch.consecutive_errors_detected",
-                        account=account.name,
-                        campaign=campaign.name,
-                        consecutive=consecutive_session_errors,
-                    )
-                    await repo.update_account(account, status="cookie_expired")
-                    await slack_notify(
-                        f":warning: *Cookie expired* — account *{account.name}* "
-                        f"({consecutive_session_errors} consecutive session errors on campaign *{campaign.name}*)."
-                    )
-                    # Reset SCHEDULED leads back to PENDING so they're
-                    # re-planned when the cookie is renewed
-                    await repo.bulk_update_lead_status(
-                        campaign.id,
-                        from_status=LeadStatus.SCHEDULED,
-                        to_status=LeadStatus.PENDING,
-                    )
-                    await repo.log_action(
-                        account_id=account.id,
-                        campaign_id=campaign.id,
-                        action_type=ActionType.ERROR,
-                        status=ActionLogStatus.FAILED,
-                        details={"reason": "consecutive_navigation_errors", "count": consecutive_session_errors},
-                    )
-                    stop_account = True
-                    break
-
-                # Lead errored — schedule a replacement later in the day
+            elif not result.get("network_error") and not result.get("session_expired") and not result.get("fatal"):
+                # Generic failure that didn't hit 3-strike stop — schedule a backfill slot
                 backfill_count += 1
 
         # Post-session: schedule backfills for any skipped/errored leads.
@@ -1411,165 +1402,35 @@ async def dispatch_followups():
                             account, campaign, lead
                         )
                         await repo.add_proxy_mb(account.id, 1.0)  # messaging page
-                        if fu_result["success"]:
-                            validate_transition(lead.status, LeadStatus.FOLLOWUP_SENT)
-                            await repo.update_lead(
-                                lead,
-                                campaign_id_override=campaign.id,
-                                status=LeadStatus.FOLLOWUP_SENT,
-                                followup_sent_at=datetime.utcnow(),
-                            )
-                            sent_this_cycle += 1
-                            remaining_cap -= 1
-                            consecutive_session_errors = 0
-                            consecutive_network_errors = 0
-                            logger.info(
-                                "followup.sequence_done",
-                                url=lead.linkedin_url,
-                                messages_sent=fu_result["messages_sent"],
-                            )
-                        elif fu_result.get("skipped"):
-                            # Prior conversation detected — mark as FOLLOWUP_SENT so
-                            # the lead doesn't show as an error and won't be retried.
-                            validate_transition(lead.status, LeadStatus.FOLLOWUP_SENT)
-                            await repo.update_lead(
-                                lead,
-                                campaign_id_override=campaign.id,
-                                status=LeadStatus.FOLLOWUP_SENT,
-                                followup_sent_at=datetime.utcnow(),
-                            )
-                            consecutive_session_errors = 0
-                            consecutive_network_errors = 0
-                            logger.info(
-                                "followup.skipped_marked_sent",
-                                url=lead.linkedin_url,
-                            )
-                        elif fu_result.get("session_expired"):
-                            # Explicit session-expiry signal (redirect loop,
-                            # authwall, etc.) — the message page never loaded,
-                            # so the message DEFINITELY did not go through.
-                            # Leave the lead in FOLLOWUP_SCHEDULED to retry
-                            # after cookie renewal, mark account cookie_expired
-                            # immediately (don't wait for 3 consecutive — this
-                            # is unambiguous).
-                            logger.error(
-                                "followup.session_expired_detected",
-                                account=account.name,
-                                campaign=campaign.name,
-                                url=lead.linkedin_url,
-                                reason=fu_result.get("reason"),
-                            )
-                            await repo.update_account(account, status="cookie_expired")
-                            await slack_notify(
-                                f":warning: *Cookie expired* — account *{account.name}* "
-                                f"(detected by followup dispatcher; lead preserved in FOLLOWUP_SCHEDULED for retry)."
-                            )
-                            await repo.log_action(
-                                account_id=account.id,
-                                campaign_id=campaign.id,
-                                lead_id=lead.id,
-                                action_type=ActionType.ERROR,
-                                status=ActionLogStatus.FAILED,
-                                details={
-                                    "reason": "followup_session_expired",
-                                    "detail": fu_result.get("reason"),
-                                },
-                            )
+
+                        intent = classify_followup_result(
+                            fu_result,
+                            consecutive_session_errors,
+                            consecutive_network_errors,
+                            account.name,
+                            campaign.name,
+                        )
+                        consecutive_session_errors = intent.consecutive_session
+                        consecutive_network_errors = intent.consecutive_network
+                        await _apply_followup_intent(intent, repo, account, campaign, lead)
+                        if intent.stop_account:
                             stop_account = True
                             break
-                        elif fu_result.get("network_error"):
-                            # Proxy/timeout — don't mark the lead as ERROR
-                            # since the message never went through. Leave it
-                            # in FOLLOWUP_SCHEDULED for the next cycle.
-                            consecutive_network_errors += 1
-                            consecutive_session_errors = 0
-                            logger.warning(
-                                "followup.network_error",
-                                account=account.name,
-                                url=lead.linkedin_url,
-                                consecutive=consecutive_network_errors,
-                                reason=fu_result.get("reason"),
-                            )
-                            if consecutive_network_errors >= 3:
-                                logger.warning(
-                                    "followup.proxy_connectivity_issues",
-                                    account=account.name,
-                                    consecutive=consecutive_network_errors,
+
+                        if intent.lead_action == LeadAction.MARK_SENT:
+                            if fu_result.get("success"):
+                                sent_this_cycle += 1
+                                remaining_cap -= 1
+                                logger.info(
+                                    "followup.sequence_done",
+                                    url=lead.linkedin_url,
+                                    messages_sent=fu_result["messages_sent"],
                                 )
-                                await repo.log_action(
-                                    account_id=account.id,
-                                    campaign_id=campaign.id,
-                                    action_type=ActionType.ERROR,
-                                    status=ActionLogStatus.FAILED,
-                                    details={
-                                        "reason": "followup_consecutive_network_errors",
-                                        "count": consecutive_network_errors,
-                                    },
+                            else:
+                                logger.info(
+                                    "followup.skipped_marked_sent",
+                                    url=lead.linkedin_url,
                                 )
-                                stop_account = True
-                                break
-                        else:
-                            # Generic failure (no explicit session/network
-                            # classification). Messages are NOT idempotent —
-                            # retrying risks duplicates — so mark the lead
-                            # ERROR immediately. Still track for consecutive-
-                            # error heuristics: 3 in a row → cookie suspect.
-                            validate_transition(lead.status, LeadStatus.ERROR)
-                            await repo.update_lead(
-                                lead,
-                                campaign_id_override=campaign.id,
-                                status=LeadStatus.ERROR,
-                                retry_count=1,
-                            )
-                            consecutive_session_errors += 1
-                            consecutive_network_errors = 0
-                            logger.warning(
-                                "followup.failed_no_retry",
-                                url=lead.linkedin_url,
-                                consecutive=consecutive_session_errors,
-                                reason=fu_result.get("reason", "unknown"),
-                            )
-                            if consecutive_session_errors >= 3:
-                                logger.error(
-                                    "followup.consecutive_errors_detected",
-                                    account=account.name,
-                                    campaign=campaign.name,
-                                    consecutive=consecutive_session_errors,
-                                )
-                                await repo.update_account(account, status="cookie_expired")
-                                await slack_notify(
-                                    f":warning: *Cookie expired* — account *{account.name}* "
-                                    f"({consecutive_session_errors} consecutive followup failures on *{campaign.name}*)."
-                                )
-                                await repo.log_action(
-                                    account_id=account.id,
-                                    campaign_id=campaign.id,
-                                    action_type=ActionType.ERROR,
-                                    status=ActionLogStatus.FAILED,
-                                    details={
-                                        "reason": "followup_consecutive_errors",
-                                        "count": consecutive_session_errors,
-                                    },
-                                )
-                                stop_account = True
-                                break
-                        if fu_result.get("fatal") and not stop_account:
-                            # Non-session fatal (e.g. CAPTCHA) — bail this
-                            # account but don't flag cookie_expired. Ping
-                            # Slack so a human can investigate; CAPTCHA is
-                            # just as urgent as cookie expiry.
-                            logger.error(
-                                "followup.fatal_error",
-                                account=account.name,
-                                campaign=campaign.name,
-                                url=lead.linkedin_url,
-                            )
-                            await slack_notify(
-                                f":no_entry: *CAPTCHA or fatal followup error* — account *{account.name}* "
-                                f"on campaign *{campaign.name}* — account paused, manual review needed."
-                            )
-                            stop_account = True
-                            break
             finally:
                 await pool.release_idle(account.id)
 
