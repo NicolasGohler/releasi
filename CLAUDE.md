@@ -237,6 +237,20 @@ LinkedIn profiles that are already 1st-degree connections must be caught before 
 
 **Failure mode separation** (`executor.py` → `_is_network_error()`): Navigation timeouts and proxy errors set `result["network_error"]=True` and are tracked separately from session errors. Only session errors (non-network) count toward cookie expiry detection.
 
+### Dispatcher Architecture (`runner.py` + `safety/dispatch_decisions.py`)
+The dispatchers (`_dispatch_continuous`, `_dispatch_planned`, `dispatch_followups`) use a two-layer design:
+
+1. **Pure classifiers** (`safety/dispatch_decisions.py`) — `classify_connection_result()` and `classify_followup_result()` take an executor result dict + current consecutive-error counters and return a `DispatchIntent` dataclass encoding exactly what to do (lead action, account action, Slack message, log event, stop flag, scheduled-revert flag). No side effects — fully unit-testable.
+
+2. **Side-effect helpers** (`runner.py`) — `_apply_connection_intent()` and `_apply_followup_intent()` consume a `DispatchIntent` and execute the DB writes, Slack pings, and structured logging. Dispatchers call these helpers then check `intent.stop_account` to decide whether to break.
+
+**Key invariant**: never inline session-health decision logic in a dispatcher. Add a new case to the classifier instead, keep the dispatcher thin. This prevents the classifiers from drifting silently from the dispatchers.
+
+**What the classifiers do NOT cover** (dispatcher handles separately):
+- `soft_limit_reached` / `limit_reached` → cooldown flow (checked before classifier call)
+- `add_proxy_mb` on success (dispatcher-specific accounting)
+- `sent_this_cycle` / `backfill_count` bookkeeping
+
 ### Acceptance Checker (`runner.py` → `check_acceptances`)
 - Runs **once daily at 10:00** (`acceptance_check_hour` setting, default 10).
 - **Connections page only** — loads `linkedin.com/mynetwork/connections/`, infinite-scrolls until the age cutoff (default 30h), collects all profile slugs via content-based JS (anchors on "Connected on" text nodes). No individual profile visits.
@@ -313,6 +327,8 @@ pytest tests/unit/        # Unit tests only
 pytest -x                 # Stop on first failure
 ```
 Note: pydantic-dependent tests (cooldown, planner, warmup) fail locally on ARM Mac due to x86 pydantic_core mismatch. Run in Docker for full suite.
+
+**pytest is NOT installed in the container** — the `linauto` Docker image uses the production `pip install -e .` (not `.[dev]`). To run tests inside the container you'd need to `pip install pytest` first. Unit tests for pure functions (like `safety/dispatch_decisions.py`) can be run locally with a `pip install -e ".[dev]"` virtualenv.
 
 ## Database Migrations
 ```bash

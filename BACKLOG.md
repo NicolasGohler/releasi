@@ -5,14 +5,13 @@ Use this as a working doc — the bar to add is "I'd otherwise forget."
 
 ## High priority
 
-- [ ] **Refactor dispatchers to use the pure classifiers** — Pure
-  `classify_followup_result` / `classify_connection_result` shipped in
-  `safety/dispatch_decisions.py` with 20 unit tests. Dispatchers in
-  `scheduler/runner.py` still inline the same logic. Refactor risk: the
-  classifier output already encodes the intended behaviour, so the
-  refactor is mostly mechanical (call classifier → switch on the intent
-  fields → execute side effects). Without this, the classifiers can
-  drift silently from the actual dispatcher code. _Started 2026-05-12._
+- [x] **Refactor dispatchers to use the pure classifiers** — All three
+  dispatchers (`_dispatch_continuous`, `_dispatch_planned`,
+  `dispatch_followups`) now call the classifiers from
+  `safety/dispatch_decisions.py`. Side effects are handled by two new
+  helpers: `_apply_connection_intent` / `_apply_followup_intent`. Also
+  fixed a latent bug: `_dispatch_continuous` was missing the explicit
+  `session_expired` check. (commit `df5560d`, 2026-05-14)
 
 - [ ] **Centralize session-health detection** — Four places currently
   duplicate variants of "classify exception → mark cookie_expired → notify":
@@ -101,6 +100,7 @@ Use this as a working doc — the bar to add is "I'd otherwise forget."
 
 ## Done
 
+- [x] Full-name search in Leads page — search now matches on `coalesce(first_name,"") || " " || coalesce(last_name,"")` so "John D" returns results. Dashboard debounces 300ms. (commit `df5560d`, 2026-05-14)
 - [x] One-shot acceptance catchup with paused_at tracking + resume dialog (commit `ab66724`)
 - [x] Followup dispatcher cookie-expiry detection via redirect-loop signal (commit `86c0580`)
 - [x] Connection-request + acceptance checker + catchup session-expiry classification + CAPTCHA Slack notify (commit `23fd592`)
