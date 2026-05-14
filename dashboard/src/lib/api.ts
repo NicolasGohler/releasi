@@ -352,8 +352,17 @@ export const fetchGlobalLeads = (params?: {
   const sp = new URLSearchParams();
   if (params?.page) sp.set("page", String(params.page));
   if (params?.per_page) sp.set("per_page", String(params.per_page));
-  if (params?.lead_list_id) sp.set("lead_list_id", params.lead_list_id);
-  if (params?.campaign_id) sp.set("campaign_id", params.campaign_id);
+  // "__unassigned__" is a sentinel value from the filter dropdowns — translate to boolean flags
+  if (params?.lead_list_id === "__unassigned__") {
+    sp.set("unassigned_list", "true");
+  } else if (params?.lead_list_id) {
+    sp.set("lead_list_id", params.lead_list_id);
+  }
+  if (params?.campaign_id === "__unassigned__") {
+    sp.set("unassigned_campaign", "true");
+  } else if (params?.campaign_id) {
+    sp.set("campaign_id", params.campaign_id);
+  }
   if (params?.status) sp.set("status", params.status);
   if (params?.search) sp.set("search", params.search);
   if (params?.sort_by) sp.set("sort_by", params.sort_by);

@@ -233,6 +233,7 @@ export default function GlobalLeadsPage() {
           onChange={(e) => { setListFilter(e.target.value || undefined); setPage(1); }}
         >
           <option value="">All lists</option>
+          <option value="__unassigned__">— Unassigned —</option>
           {lists?.map((ll) => <option key={ll.id} value={ll.id}>{ll.name}</option>)}
         </select>
         <select
@@ -241,6 +242,7 @@ export default function GlobalLeadsPage() {
           onChange={(e) => { setCampaignFilter(e.target.value || undefined); setPage(1); }}
         >
           <option value="">All campaigns</option>
+          <option value="__unassigned__">— Unassigned —</option>
           {campaigns?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <select
