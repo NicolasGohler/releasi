@@ -383,6 +383,8 @@ async def list_leads_global(
     requested_after: Optional[str] = Query(None),
     requested_before: Optional[str] = Query(None),
     skip_reason: Optional[str] = Query(None),
+    unassigned_campaign: bool = Query(False),
+    unassigned_list: bool = Query(False),
     repo: Repository = Depends(get_repo),
 ):
     leads, total = await repo.list_leads_global(
@@ -397,6 +399,8 @@ async def list_leads_global(
         requested_after=requested_after,
         requested_before=requested_before,
         skip_reason=skip_reason,
+        unassigned_campaign=unassigned_campaign,
+        unassigned_list=unassigned_list,
     )
 
     items = await _enrich_leads(repo, leads)

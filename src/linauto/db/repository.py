@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional, Sequence
 
-from sqlalchemy import case, select, func, update, or_
+from sqlalchemy import case, select, func, update, or_, not_, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from linauto.db.models import (
@@ -1859,6 +1859,8 @@ class Repository:
         requested_after: str | None = None,
         requested_before: str | None = None,
         skip_reason: str | None = None,
+        unassigned_campaign: bool = False,
+        unassigned_list: bool = False,
     ) -> tuple:
         """Return (leads, total_count) across all lists/campaigns."""
         stmt = select(Lead)
@@ -1905,6 +1907,24 @@ class Repository:
         if skip_reason:
             stmt = stmt.where(Lead.error_message == skip_reason)
             count_stmt = count_stmt.where(Lead.error_message == skip_reason)
+
+        if unassigned_campaign:
+            no_cla = not_(exists(
+                select(CampaignLeadAssignment.lead_id).where(
+                    CampaignLeadAssignment.lead_id == Lead.id
+                )
+            ))
+            stmt = stmt.where(no_cla)
+            count_stmt = count_stmt.where(no_cla)
+
+        if unassigned_list:
+            no_mem = not_(exists(
+                select(LeadListMembership.lead_id).where(
+                    LeadListMembership.lead_id == Lead.id
+                )
+            ))
+            stmt = stmt.where(no_mem)
+            count_stmt = count_stmt.where(no_mem)
 
         total = (await self.session.execute(count_stmt)).scalar_one()
 
