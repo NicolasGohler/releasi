@@ -594,20 +594,31 @@ class LinkedInActions:
 
         # 5. Click Connect.
         #
-        # The Connect button is now an <a> with href="/preload/custom-invite/?vanityName=..."
-        # We MUST NOT navigate to that URL directly — LinkedIn redirects it to /login
-        # unless the full SPA session state is present (CSRF tokens, etc.), causing
-        # ERR_TOO_MANY_REDIRECTS which corrupts the browser context for the rest of the cycle.
+        # Two cases depending on where the button came from:
         #
-        # Instead: neutralize the href on anchor elements so the browser cannot navigate
-        # even if LinkedIn's JS doesn't call e.preventDefault(), then fire el.click().
-        # LinkedIn's click handler opens the invite modal overlay on the current page.
-        await connect_btn.scroll_into_view_if_needed()
-        await self.delay.micro_delay(0.3, 0.7)
-        await connect_btn.evaluate("""el => {
-            if (el.tagName === 'A') { el.setAttribute('href', 'javascript:void(0)'); }
-            el.click();
-        }""")
+        # a) Primary anchor (<a href="/preload/custom-invite/?vanityName=...">):
+        #    MUST NOT navigate to that URL directly — LinkedIn redirects to /login unless
+        #    the full SPA session state is present, causing ERR_TOO_MANY_REDIRECTS that
+        #    corrupts the browser context. Neutralize the href then fire el.click() so
+        #    LinkedIn's own click handler opens the invite modal in-place.
+        #    scroll_into_view_if_needed() is safe here because the anchor is in the main DOM.
+        #
+        # b) Dropdown menuitem (role="menuitem", typically a <button> or <li>):
+        #    Must NOT call scroll_into_view_if_needed() — scrolling the page closes LinkedIn's
+        #    More dropdown before the click fires, so the invite modal never opens (the element
+        #    is already in the viewport since we just clicked it open). Use Playwright's native
+        #    hover+click instead, which dispatches full pointer events without scrolling.
+        is_anchor = await connect_btn.evaluate("el => el.tagName === 'A'")
+        if is_anchor:
+            await connect_btn.scroll_into_view_if_needed()
+            await self.delay.micro_delay(0.3, 0.7)
+            await connect_btn.evaluate("""el => {
+                el.setAttribute('href', 'javascript:void(0)');
+                el.click();
+            }""")
+        else:
+            await self.delay.micro_delay(0.3, 0.7)
+            await self._hover_and_click(connect_btn)
         logger.info("action.connect_clicked", url=profile_url)
         # Modal renders asynchronously — wait for it
         await self.delay.micro_delay(2.0, 3.5)
