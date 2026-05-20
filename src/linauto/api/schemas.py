@@ -194,8 +194,33 @@ class LeadOut(BaseModel):
     retry_count: int
     scheduled_at: Optional[datetime] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
     campaign_name: Optional[str] = None
     lead_list_name: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class LeadUpdateRequest(BaseModel):
+    """Editable profile fields for PATCH /leads/{lead_id}."""
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    company: Optional[str] = None
+    title: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    twitter_url: Optional[str] = None
+    telegram_username: Optional[str] = None
+
+
+class LeadActivityOut(BaseModel):
+    id: str
+    action_type: str
+    status: str
+    details: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    account_name: Optional[str] = None
 
     class Config:
         from_attributes = True

@@ -399,7 +399,7 @@ export default function GlobalLeadsPage() {
                           </td>
                           <td className="py-2">
                             <div className="flex items-center gap-0.5">
-                              <a href={lead.linkedin_url} target="_blank" rel="noopener noreferrer" className="font-medium hover:underline">
+                              <a href={`/leads/${lead.id}`} className="font-medium hover:underline">
                                 {[lead.first_name, lead.last_name].filter(Boolean).join(" ") || "—"}
                               </a>
                               {lead.email && <EmailCopyButton email={lead.email} />}

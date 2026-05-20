@@ -12,6 +12,8 @@ import type {
   ScrapeStatus,
   ScheduleSlot,
   AccountHealth,
+  LeadUpdateRequest,
+  LeadActivity,
 } from "./types";
 
 // API calls go to same-origin /api/v1/* — the Next.js route handler at
@@ -394,6 +396,18 @@ export const skipLead = (id: string) =>
 
 export const requeueLead = (id: string) =>
   apiFetch<Lead>(`/leads/${id}/requeue`, { method: "POST" });
+
+export const fetchLead = (id: string) =>
+  apiFetch<Lead>(`/leads/${id}`);
+
+export const updateLead = (id: string, data: LeadUpdateRequest) =>
+  apiFetch<Lead>(`/leads/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+
+export const fetchLeadActivity = (id: string, limit = 50) =>
+  apiFetch<LeadActivity[]>(`/leads/${id}/activity?limit=${limit}`);
 
 // ── Activity ──────────────────────────────────────────────────────────────
 

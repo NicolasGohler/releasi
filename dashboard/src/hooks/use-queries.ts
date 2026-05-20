@@ -448,6 +448,37 @@ export function useUnarchiveCampaign() {
   });
 }
 
+// ── Single Lead ───────────────────────────────────────────────────────────
+
+export function useLead(id: string) {
+  return useQuery({
+    queryKey: ["lead", id],
+    queryFn: () => api.fetchLead(id),
+    enabled: !!id,
+  });
+}
+
+export function useUpdateLead(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.updateLead>[1]) =>
+      api.updateLead(id, data),
+    onSuccess: (updated) => {
+      qc.setQueryData(["lead", id], updated);
+      qc.invalidateQueries({ queryKey: ["leads"] });
+      qc.invalidateQueries({ queryKey: ["global-leads"] });
+    },
+  });
+}
+
+export function useLeadActivity(id: string) {
+  return useQuery({
+    queryKey: ["lead-activity", id],
+    queryFn: () => api.fetchLeadActivity(id),
+    enabled: !!id,
+  });
+}
+
 // ── Activity ──────────────────────────────────────────────────────────────
 
 export function useGlobalActivity() {

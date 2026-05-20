@@ -118,8 +118,29 @@ export interface Lead {
   retry_count: number;
   scheduled_at: string | null;
   created_at: string;
+  updated_at: string | null;
   campaign_name: string | null;
   lead_list_name: string | null;
+}
+
+export interface LeadUpdateRequest {
+  first_name?: string | null;
+  last_name?: string | null;
+  company?: string | null;
+  title?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  twitter_url?: string | null;
+  telegram_username?: string | null;
+}
+
+export interface LeadActivity {
+  id: string;
+  action_type: string;
+  status: string;
+  details: Record<string, unknown> | null;
+  created_at: string;
+  account_name: string | null;
 }
 
 export interface LeadPage {

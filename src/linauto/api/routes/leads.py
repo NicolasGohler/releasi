@@ -8,7 +8,11 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile, 
 
 from linauto.api.auth import require_api_key
 from linauto.api.deps import get_repo
-from linauto.api.schemas import LeadOut, LeadPage, ImportResponse, BulkLeadRequest, BulkLeadResponse
+from linauto.api.schemas import (
+    LeadOut, LeadPage, ImportResponse,
+    BulkLeadRequest, BulkLeadResponse,
+    LeadUpdateRequest, LeadActivityOut,
+)
 from linauto.db.repository import Repository
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
@@ -484,6 +488,99 @@ async def bulk_remove_leads(body: BulkLeadRequest, repo: Repository = Depends(ge
 async def bulk_requeue_leads(body: BulkLeadRequest, repo: Repository = Depends(get_repo)):
     updated = await repo.bulk_requeue_leads(body.lead_ids)
     return BulkLeadResponse(updated=updated)
+
+
+# ── Single Lead GET / PATCH ─────────────────────────────────────────
+
+@router.get("/leads/{lead_id}", response_model=LeadOut)
+async def get_lead(lead_id: str, repo: Repository = Depends(get_repo)):
+    """Fetch a single lead with enriched campaign/list names."""
+    lead = await repo.get_lead_by_id(lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    items = await _enrich_leads(repo, [lead])
+    return items[0]
+
+
+@router.patch("/leads/{lead_id}", response_model=LeadOut)
+async def update_lead_profile(
+    lead_id: str,
+    body: LeadUpdateRequest,
+    repo: Repository = Depends(get_repo),
+):
+    """Update editable profile fields on a lead (name, social handles, etc.).
+
+    Only fields present in the request body are updated — absent fields are
+    left unchanged. Pass an explicit null to clear a field.
+    """
+    from linauto.campaign.importer import normalize_twitter_url, normalize_telegram_username
+
+    lead = await repo.get_lead_by_id(lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    updates: dict = {}
+    for field in ("first_name", "last_name", "company", "title", "email", "phone"):
+        if field in body.model_fields_set:
+            val = getattr(body, field)
+            updates[field] = val.strip() if isinstance(val, str) else val
+
+    if "twitter_url" in body.model_fields_set:
+        raw = body.twitter_url
+        updates["twitter_url"] = normalize_twitter_url(raw) if raw else None
+
+    if "telegram_username" in body.model_fields_set:
+        raw = body.telegram_username
+        updates["telegram_username"] = normalize_telegram_username(raw) if raw else None
+
+    if updates:
+        lead = await repo.update_lead(lead, **updates)
+
+    items = await _enrich_leads(repo, [lead])
+    return items[0]
+
+
+@router.get("/leads/{lead_id}/activity", response_model=list[LeadActivityOut])
+async def get_lead_activity(
+    lead_id: str,
+    limit: int = 50,
+    repo: Repository = Depends(get_repo),
+):
+    """Return action log entries for a specific lead, newest first."""
+    from sqlalchemy import select, desc
+    from linauto.db.models import ActionLog, Account
+
+    lead = await repo.get_lead_by_id(lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    result = await repo.session.execute(
+        select(ActionLog)
+        .where(ActionLog.lead_id == lead_id)
+        .order_by(desc(ActionLog.created_at))
+        .limit(limit)
+    )
+    logs = result.scalars().all()
+
+    # Batch-fetch account names
+    account_ids = {l.account_id for l in logs}
+    account_names: dict[str, str] = {}
+    for aid in account_ids:
+        acc = await repo.session.get(Account, aid)
+        if acc:
+            account_names[aid] = acc.name
+
+    return [
+        LeadActivityOut(
+            id=l.id,
+            action_type=l.action_type.value if hasattr(l.action_type, "value") else l.action_type,
+            status=l.status.value if hasattr(l.status, "value") else l.status,
+            details=l.details,
+            created_at=l.created_at,
+            account_name=account_names.get(l.account_id),
+        )
+        for l in logs
+    ]
 
 
 # ── Soft Delete / Restore ────────────────────────────────────────────
