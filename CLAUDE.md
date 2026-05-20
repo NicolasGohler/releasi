@@ -31,9 +31,14 @@ Only rebuild the image when changing **dependencies** (`pyproject.toml`) or **`c
 ```bash
 cat > /root/linauto/.env << 'EOF'
 LINAUTO_API_KEY=REDACTED
+LINAUTO_TELEGRAM_API_ID=<api_id>
+LINAUTO_TELEGRAM_API_HASH=<api_hash>
+LINAUTO_TELEGRAM_SESSION=<telethon_string_session>
 EOF
 chmod 600 /root/linauto/.env
 ```
+
+Telegram credentials are used by `telegram/resolver.py` for per-lead username lookup. They map to `config.telegram_api_id`, `config.telegram_api_hash`, `config.telegram_session` via Pydantic settings (prefix `LINAUTO_`). If unset, the Find Telegram button on the lead detail page will error.
 
 ```bash
 cd /root/linauto && git pull
@@ -103,8 +108,9 @@ Dripify alternative. Automates LinkedIn connection requests and follow-up messag
 - **SQLAlchemy 2.0** async ORM + aiosqlite (SQLite)
 - **FastAPI** + uvicorn for REST API (port 8000)
 - **Typer** CLI + Rich for terminal output
-- **APScheduler** for daemon scheduling (6 jobs)
+- **APScheduler** for daemon scheduling (7 jobs)
 - **Pydantic Settings** for YAML config (`config/settings.yaml`)
+- **Telethon 1.36+** (async) for Telegram username resolution
 
 ## Project Structure
 ```
@@ -113,7 +119,7 @@ src/linauto/
 ├── config.py               # Pydantic settings from YAML
 ├── db/
 │   ├── engine.py           # Async SQLAlchemy engine (NullPool)
-│   ├── models.py           # ORM models (5 tables)
+│   ├── models.py           # ORM models (7 tables incl. lead_events)
 │   └── repository.py       # Data access layer
 ├── campaign/
 │   ├── executor.py         # Orchestrates browser actions + DB updates
@@ -138,6 +144,8 @@ src/linauto/
 │   ├── planner.py          # Clustered daily plan generation
 │   ├── runner.py           # APScheduler daemon (6 jobs)
 │   └── warmup.py           # Warmup ramp with daily variation
+├── telegram/
+│   └── resolver.py         # Async Telethon-based Telegram username finder
 └── api/
     ├── app.py              # FastAPI app factory
     ├── auth.py             # API key auth
@@ -145,7 +153,7 @@ src/linauto/
     └── routes/
         ├── accounts.py     # Account CRUD + login-session endpoints
         ├── campaigns.py    # Campaign management
-        ├── leads.py        # Lead management
+        ├── leads.py        # Lead management + find-telegram background tasks
         ├── lead_lists.py   # Lead list endpoints
         ├── stats.py        # Stats endpoints
         └── health.py       # Health check
@@ -157,6 +165,7 @@ src/linauto/
 - `src/linauto/db/models.py` — SQLAlchemy models. Use `Optional[X]` (not `X | None`) for Mapped[] annotations.
 - `config/settings.yaml.example` — Reference config with all available settings.
 - `src/linauto/campaign/importer.py` — CSV import. Handles `name`/`full_name` columns (splits into first/last) and `project`/`project_name` columns (maps to company). Add new column aliases to `_COLUMN_MAP` or `_FULL_NAME_COLUMNS` here.
+- `src/linauto/telegram/resolver.py` — Async Telethon Telegram username finder. Two-pass: (1) checks Twitter handle on Telegram, (2) scores name+company pattern candidates. Returns `FindResult(best_match, alternatives, logs)`. Credentials from `config.telegram_api_id/hash/session`.
 
 ## Scheduler Jobs (6 total)
 All times are **in the account's configured timezone** (e.g. `America/New_York` for Montreal). Jobs that need per-account timing fire hourly and skip accounts that are outside their window or have already run today.
@@ -330,6 +339,72 @@ Note: pydantic-dependent tests (cooldown, planner, warmup) fail locally on ARM M
 
 **pytest is NOT installed in the container** — the `linauto` Docker image uses the production `pip install -e .` (not `.[dev]`). To run tests inside the container you'd need to `pip install pytest` first. Unit tests for pure functions (like `safety/dispatch_decisions.py`) can be run locally with a `pip install -e ".[dev]"` virtualenv.
 
+## Lead Social Fields & Outreach Tracking
+
+The `leads` table has social/outreach columns that are enriched outside the main LinkedIn automation flow:
+
+| Column | Type | Purpose |
+|--------|------|---------|
+| `twitter_url` | `String` | X/Twitter profile URL (normalized to `https://x.com/...`) |
+| `telegram_username` | `String` | Telegram handle (without `@`) |
+| `telegram_alternatives` | `JSON` | All candidate handles from the resolver (best-first). Cleared when user saves a definitive `telegram_username`. |
+| `tg_contacted_at` | `DateTime` | UTC timestamp set when user marks "contacted via Telegram"; NULL = not yet contacted |
+| `email` | `String` | Email from CSV import |
+
+**Backfill note**: many imported CSVs stored social data in `extra_data` rather than the typed columns. Backfills already applied on 2026-05-20:
+- Twitter/X: 2,152 leads updated from `extra_data["Twitter Url"]` → `twitter_url`
+- Telegram: 143 leads updated from `extra_data` keys → `telegram_username`
+
+If new imports contain social data in `extra_data`, run a similar backfill script targeting the relevant keys.
+
+## lead_events Table (migration 023)
+
+Lightweight event log for lead-level actions that don't require an `account_id` (unlike `action_log`). Used by the lead detail activity feed alongside `action_log` rows.
+
+```sql
+CREATE TABLE lead_events (
+    id          VARCHAR(36) PRIMARY KEY,
+    lead_id     VARCHAR(36) NOT NULL REFERENCES leads(id),
+    event_type  VARCHAR(64) NOT NULL,
+    details     JSON,
+    created_at  DATETIME NOT NULL
+);
+CREATE INDEX ix_lead_events_lead_id ON lead_events(lead_id);
+```
+
+Current `event_type` values: `telegram_found`, `telegram_saved`, `tg_contacted`, `tg_contacted_cleared`.
+
+Add via `repo.log_lead_event(lead_id, event_type, details_dict)`.
+
+## Find Telegram (per-lead background task)
+
+**Endpoints** (in `api/routes/leads.py`):
+- `POST /leads/{lead_id}/find-telegram` — starts background `asyncio.create_task()`, returns `{task_id}` immediately
+- `GET /leads/{lead_id}/find-telegram/{task_id}` — polls status; `status` is `"running" | "done" | "error"`
+
+**In-memory task store**: `_find_tg_tasks: dict[str, dict]` in the leads route module. Tasks live in memory only — they are lost on container restart (client must retry).
+
+**Session factory pattern**: background task creates its own DB session via `get_session_factory()()` (not the request-scoped session). This is the correct pattern for tasks that outlive the HTTP request.
+
+**Two-pass resolver** (`telegram/resolver.py`):
+1. Pass 1: checks if the lead's Twitter handle exists on Telegram (fast, one lookup)
+2. Pass 2: generates name + company shorthand candidates, scores by name similarity, returns best match + all alternatives
+
+On completion, `telegram_alternatives` is persisted to the lead row and a `telegram_found` event is logged. When the user clicks a candidate chip or saves a username via PATCH, `telegram_alternatives` is cleared and `telegram_saved` is logged.
+
+## Global Leads Filters
+
+`GET /api/v1/leads` accepts these social filter query params in addition to the standard ones:
+
+| Param | Type | Behaviour |
+|-------|------|-----------|
+| `has_telegram` | `bool` | `true` = `telegram_username IS NOT NULL`, `false` = IS NULL |
+| `has_twitter` | `bool` | `true` = `twitter_url IS NOT NULL`, `false` = IS NULL |
+| `has_email` | `bool` | `true` = `email IS NOT NULL`, `false` = IS NULL |
+| `tg_contacted` | `bool` | `true` = `tg_contacted_at IS NOT NULL`, `false` = IS NULL |
+
+All implemented in `repository.py → list_leads_global()`. The dashboard renders these as toggle chips above the lead table (6 chips: Has Telegram, No Telegram, Has X/Twitter, Has Email, TG Contacted, TG Not Contacted).
+
 ## Database Migrations
 ```bash
 alembic upgrade head      # Apply all migrations
@@ -348,9 +423,11 @@ Migration files are in `alembic/versions/`. Follow the existing naming pattern (
    c.commit(); c.close()
    "
    # Tell alembic the new revision is applied
+   # NOTE: alembic_version has a UNIQUE constraint — use DELETE + INSERT, not INSERT OR REPLACE
    docker exec linauto python3 -c "
    import sqlite3; c = sqlite3.connect('/app/data/linauto.db')
-   c.execute(\"INSERT OR REPLACE INTO alembic_version VALUES ('016_your_revision')\")
+   c.execute('DELETE FROM alembic_version')
+   c.execute(\"INSERT INTO alembic_version VALUES ('023_your_revision')\")
    c.commit(); c.close()
    "
    ```
@@ -434,3 +511,4 @@ To run a one-off offsite backup: `ssh root@REDACTED 'bash /root/linauto/scripts/
 - Phase 1 (Foundation): COMPLETE — CLI, CSV import, template rendering, browser module
 - Phase 2 (Scheduling & Safety): COMPLETE — Clustered planner, warmup, cooldown, APScheduler, stealth, noise, proxy/timezone
 - Phase 3 (Follow-ups): IN PROGRESS — executor.execute_followup_sequence() implemented, dispatcher wired
+- Phase 4 (Lead Detail & Enrichment): IN PROGRESS — Lead detail page, per-lead Telegram finder, social filter chips, outreach tracking (tg_contacted_at), lead_events activity feed, Twitter/X URL backfill
