@@ -409,6 +409,21 @@ export const updateLead = (id: string, data: LeadUpdateRequest) =>
 export const fetchLeadActivity = (id: string, limit = 50) =>
   apiFetch<LeadActivity[]>(`/leads/${id}/activity?limit=${limit}`);
 
+// ── TG Enrichment ─────────────────────────────────────────────────────────
+
+export interface TgEnrichmentStatus {
+  total: number;
+  enriched: number;
+  missing: number;
+  coverage_pct: number;
+}
+
+export const fetchTgEnrichmentStatus = (campaignId: string) =>
+  apiFetch<TgEnrichmentStatus>(`/campaigns/${campaignId}/leads/enrich/telegram/status`);
+
+export const startTgEnrichment = (campaignId: string) =>
+  apiFetch<{ message: string }>(`/campaigns/${campaignId}/leads/enrich/telegram`, { method: "POST" });
+
 // ── Activity ──────────────────────────────────────────────────────────────
 
 export const fetchGlobalActivity = (limit = 500) =>

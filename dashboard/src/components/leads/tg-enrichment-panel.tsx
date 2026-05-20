@@ -2,18 +2,11 @@
 
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiFetch } from "@/lib/api";
+import { fetchTgEnrichmentStatus, startTgEnrichment, type TgEnrichmentStatus } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { toast } from "sonner";
 import { Send, RefreshCw } from "lucide-react";
-
-interface EnrichmentStatus {
-  total: number;
-  enriched: number;
-  missing: number;
-  coverage_pct: number;
-}
 
 interface TgEnrichmentPanelProps {
   campaignId: string;
@@ -23,14 +16,14 @@ export function TgEnrichmentPanel({ campaignId }: TgEnrichmentPanelProps) {
   const queryClient = useQueryClient();
   const [triggering, setTriggering] = useState(false);
 
-  const { data: status, isLoading, refetch } = useQuery<EnrichmentStatus>({
+  const { data: status, isLoading, refetch } = useQuery<TgEnrichmentStatus>({
     queryKey: ["tg-enrichment-status", campaignId],
-    queryFn: () => apiFetch(`/campaigns/${campaignId}/leads/enrich/telegram/status`),
+    queryFn: () => fetchTgEnrichmentStatus(campaignId),
     staleTime: 30_000,
   });
 
   const trigger = useMutation({
-    mutationFn: () => apiFetch(`/campaigns/${campaignId}/leads/enrich/telegram`, { method: "POST" }),
+    mutationFn: () => startTgEnrichment(campaignId),
     onMutate: () => setTriggering(true),
     onSuccess: () => {
       toast.success("Enrichment started — leads will be updated in the background");
