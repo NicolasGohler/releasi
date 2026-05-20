@@ -1,7 +1,9 @@
 """Lead endpoints — paginated list, CSV upload, soft delete, restore, global library."""
 from __future__ import annotations
 
+import asyncio
 import tempfile
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile, File
@@ -12,10 +14,15 @@ from linauto.api.schemas import (
     LeadOut, LeadPage, ImportResponse,
     BulkLeadRequest, BulkLeadResponse,
     LeadUpdateRequest, LeadActivityOut,
+    FindTelegramTaskOut,
 )
 from linauto.db.repository import Repository
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
+
+# In-memory task store for find-telegram background jobs.
+# { task_id: {status, telegram_username, telegram_alternatives, logs, error} }
+_find_tg_tasks: dict[str, dict] = {}
 
 
 @router.get("/campaigns/{campaign_id}/leads", response_model=LeadPage)
@@ -532,6 +539,9 @@ async def update_lead_profile(
     if "telegram_username" in body.model_fields_set:
         raw = body.telegram_username
         updates["telegram_username"] = normalize_telegram_username(raw) if raw else None
+        # Clear alternatives whenever the user explicitly saves a username
+        # (they've made their choice).
+        updates["telegram_alternatives"] = None
 
     if updates:
         lead = await repo.update_lead(lead, **updates)
@@ -581,6 +591,104 @@ async def get_lead_activity(
         )
         for l in logs
     ]
+
+
+# ── Find Telegram ────────────────────────────────────────────────────
+
+@router.post("/leads/{lead_id}/find-telegram", response_model=FindTelegramTaskOut)
+async def start_find_telegram(lead_id: str, repo: Repository = Depends(get_repo)):
+    """Start a background task to find the Telegram username for a lead.
+
+    Returns immediately with a task_id. Poll GET /leads/{lead_id}/find-telegram/{task_id}
+    to check progress. On completion, telegram_alternatives is also persisted to the DB.
+    """
+    from linauto.config import get_settings
+    from linauto.telegram.resolver import find_telegram
+
+    settings = get_settings()
+    if not settings.telegram_api_id or not settings.telegram_api_hash or not settings.telegram_session:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Telegram credentials not configured. "
+                "Set LINAUTO_TELEGRAM_API_ID, LINAUTO_TELEGRAM_API_HASH, "
+                "and LINAUTO_TELEGRAM_SESSION on the server."
+            ),
+        )
+
+    lead = await repo.get_lead_by_id(lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    person_name = " ".join(
+        p for p in [lead.first_name, lead.last_name] if p
+    ).strip() or None
+    if not person_name:
+        raise HTTPException(status_code=422, detail="Lead has no name — cannot search Telegram")
+
+    task_id = str(uuid.uuid4())
+    _find_tg_tasks[task_id] = {"status": "running", "logs": []}
+
+    async def _run(lid: str, name: str, twitter: Optional[str], company: Optional[str]) -> None:
+        task = _find_tg_tasks[task_id]
+        try:
+            find_result = await find_telegram(
+                name=name,
+                twitter_url=twitter,
+                company=company,
+                api_id=settings.telegram_api_id,
+                api_hash=settings.telegram_api_hash,
+                session_str=settings.telegram_session,
+            )
+            task["status"] = "done"
+            task["telegram_username"] = find_result.best_match
+            task["telegram_alternatives"] = find_result.alternatives
+            task["logs"] = find_result.logs
+
+            # Persist alternatives to the DB so they survive page reload.
+            # We do NOT auto-save telegram_username — the user confirms via the UI.
+            from linauto.db.engine import get_session_factory
+            from linauto.db.repository import Repository as Repo
+            async with get_session_factory()() as session:
+                r = Repo(session)
+                lead_obj = await r.get_lead_by_id(lid)
+                if lead_obj:
+                    # Build the full list: best match first, then alternatives
+                    all_found: list[str] = []
+                    if find_result.best_match:
+                        all_found.append(find_result.best_match)
+                    all_found.extend(find_result.alternatives)
+                    await r.update_lead(lead_obj, telegram_alternatives=all_found or None)
+                    await session.commit()
+        except Exception as exc:
+            _find_tg_tasks[task_id]["status"] = "error"
+            _find_tg_tasks[task_id]["error"] = str(exc)
+            _find_tg_tasks[task_id].setdefault("logs", []).append(f"Exception: {exc}")
+
+    asyncio.create_task(_run(
+        lead_id,
+        person_name,
+        getattr(lead, "twitter_url", None),
+        getattr(lead, "company", None),
+    ))
+
+    return FindTelegramTaskOut(task_id=task_id, status="running")
+
+
+@router.get("/leads/{lead_id}/find-telegram/{task_id}", response_model=FindTelegramTaskOut)
+async def get_find_telegram_status(lead_id: str, task_id: str):
+    """Poll the status of a find-telegram background task."""
+    task = _find_tg_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return FindTelegramTaskOut(
+        task_id=task_id,
+        status=task.get("status", "running"),
+        telegram_username=task.get("telegram_username"),
+        telegram_alternatives=task.get("telegram_alternatives") or [],
+        logs=task.get("logs") or [],
+        error=task.get("error"),
+    )
 
 
 # ── Soft Delete / Restore ────────────────────────────────────────────

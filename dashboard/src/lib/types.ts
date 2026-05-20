@@ -109,6 +109,7 @@ export interface Lead {
   phone: string | null;
   twitter_url: string | null;
   telegram_username: string | null;
+  telegram_alternatives: string[] | null;
   extra_data: Record<string, unknown> | null;
   status: string;
   connection_requested_at: string | null;
@@ -132,6 +133,15 @@ export interface LeadUpdateRequest {
   phone?: string | null;
   twitter_url?: string | null;
   telegram_username?: string | null;
+}
+
+export interface FindTelegramTask {
+  task_id: string;
+  status: "running" | "done" | "error";
+  telegram_username: string | null;
+  telegram_alternatives: string[];
+  logs: string[];
+  error: string | null;
 }
 
 export interface LeadActivity {

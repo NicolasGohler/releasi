@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     api_port: int = 8000
     cors_origins: list[str] = Field(default=[])
 
+    # Telegram enrichment (Telethon)
+    telegram_api_id: int = 0
+    telegram_api_hash: str = ""
+    telegram_session: str = ""   # StringSession string, generated once
+
     model_config = {"env_prefix": "LINAUTO_"}
 
 

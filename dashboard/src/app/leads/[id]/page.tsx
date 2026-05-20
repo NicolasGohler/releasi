@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -11,17 +11,19 @@ import {
   useRequeueLead,
   useDeleteLead,
   useRestoreLead,
+  useFindTelegram,
+  useFindTelegramStatus,
 } from "@/hooks/use-queries";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import type { Lead, LeadActivity } from "@/lib/types";
+import type { Lead, LeadActivity, FindTelegramTask } from "@/lib/types";
 import {
   ArrowLeft, ExternalLink, Pencil, Check, X,
   Copy, Send, RotateCcw, FastForward, Trash2, Undo2,
   Clock, Zap, MessageSquare, UserCheck, AlertCircle,
-  Link2,
+  Link2, Loader2, Search,
 } from "lucide-react";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -72,14 +74,13 @@ interface InlineFieldProps {
   value: string | null | undefined;
   onSave: (val: string | null) => Promise<void>;
   placeholder?: string;
-  prefix?: string;        // shown before value (e.g. "@")
+  prefix?: string;
   hint?: string;
-  transform?: (raw: string) => string;  // applied before display
-  prominent?: boolean;   // extra emphasis (for telegram)
+  transform?: (raw: string) => string;
 }
 
 function InlineField({
-  label, value, onSave, placeholder = "—", prefix, hint, transform, prominent,
+  label, value, onSave, placeholder = "—", prefix, hint, transform,
 }: InlineFieldProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -98,7 +99,7 @@ function InlineField({
   async function handleSave() {
     setSaving(true);
     try {
-      const cleaned = draft.trim().replace(/^@/, ""); // strip leading @ for telegram
+      const cleaned = draft.trim().replace(/^@/, "");
       await onSave(cleaned || null);
       setEditing(false);
     } catch {
@@ -113,15 +114,11 @@ function InlineField({
     if (e.key === "Escape") setEditing(false);
   }
 
-  const displayValue = value
-    ? (transform ? transform(value) : value)
-    : null;
+  const displayValue = value ? (transform ? transform(value) : value) : null;
 
   return (
-    <div className={`group flex flex-col gap-0.5 ${prominent ? "rounded-lg border border-sky-500/30 bg-sky-500/5 px-3 py-2.5" : "py-1.5"}`}>
-      <span className={`text-xs font-medium ${prominent ? "text-sky-600 dark:text-sky-400" : "text-muted-foreground"}`}>
-        {label}
-      </span>
+    <div className="group flex flex-col gap-0.5 py-1.5">
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
       {editing ? (
         <div className="flex items-center gap-1.5">
           {prefix && <span className="text-sm text-muted-foreground">{prefix}</span>}
@@ -134,38 +131,233 @@ function InlineField({
             className="flex-1 rounded border border-border bg-background px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-ring"
             disabled={saving}
           />
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="rounded p-1 text-emerald-500 hover:bg-emerald-500/10 transition-colors"
-          >
+          <button onClick={handleSave} disabled={saving}
+            className="rounded p-1 text-emerald-500 hover:bg-emerald-500/10 transition-colors">
             <Check className="h-3.5 w-3.5" />
           </button>
-          <button
-            onClick={() => setEditing(false)}
-            className="rounded p-1 text-muted-foreground hover:bg-muted transition-colors"
-          >
+          <button onClick={() => setEditing(false)}
+            className="rounded p-1 text-muted-foreground hover:bg-muted transition-colors">
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
       ) : (
         <div className="flex items-center gap-1.5 min-h-[1.75rem]">
           <span className={`text-sm ${displayValue ? "" : "text-muted-foreground/50 italic"}`}>
-            {displayValue
-              ? (prefix ? `${prefix}${displayValue}` : displayValue)
-              : placeholder}
+            {displayValue ? (prefix ? `${prefix}${displayValue}` : displayValue) : placeholder}
           </span>
-          <button
-            onClick={startEdit}
+          <button onClick={startEdit}
             className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-muted-foreground/60 hover:text-muted-foreground transition-all"
-            title={`Edit ${label.toLowerCase()}`}
-          >
+            title={`Edit ${label.toLowerCase()}`}>
             <Pencil className="h-3 w-3" />
           </button>
           {hint && displayValue && (
             <span className="text-xs text-muted-foreground/50">{hint}</span>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ── Telegram section (prominent inline-edit + find button + candidates) ───────
+
+interface TelegramSectionProps {
+  lead: Lead;
+  onSave: (v: string | null) => Promise<void>;
+}
+
+function TelegramSection({ lead, onSave }: TelegramSectionProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const findMutation = useFindTelegram(lead.id);
+  const taskQuery = useFindTelegramStatus(lead.id, taskId);
+
+  const taskData = taskQuery.data as FindTelegramTask | undefined;
+  const isSearching = !!taskId && taskData?.status === "running";
+  const searchDone = !!taskId && (taskData?.status === "done" || taskData?.status === "error");
+
+  // Candidates to show: from active task result, or from DB-persisted alternatives
+  const liveCandidates: string[] = taskId && taskData
+    ? [
+        ...(taskData.telegram_username ? [taskData.telegram_username] : []),
+        ...(taskData.telegram_alternatives ?? []),
+      ]
+    : [];
+  const storedCandidates: string[] = !taskId && lead.telegram_alternatives
+    ? lead.telegram_alternatives
+    : [];
+  const candidates = taskId ? liveCandidates : storedCandidates;
+
+  // Auto-open edit field with best match when search completes
+  useEffect(() => {
+    if (taskData?.status === "done" && taskData.telegram_username && !editing) {
+      setDraft(taskData.telegram_username);
+      setEditing(true);
+    }
+  }, [taskData?.status, taskData?.telegram_username]);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  function startEdit() {
+    setDraft(lead.telegram_username ?? "");
+    setEditing(true);
+  }
+
+  function pickCandidate(handle: string) {
+    setDraft(handle);
+    setEditing(true);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      const cleaned = draft.trim().replace(/^@/, "");
+      await onSave(cleaned || null);
+      setEditing(false);
+      setTaskId(null); // clear search state after save
+    } catch {
+      toast.error("Failed to save Telegram username");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") handleSave();
+    if (e.key === "Escape") setEditing(false);
+  }
+
+  async function handleFind() {
+    setTaskId(null);
+    try {
+      const result = await findMutation.mutateAsync();
+      setTaskId(result.task_id);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to start search";
+      toast.error(msg);
+    }
+  }
+
+  const displayValue = lead.telegram_username;
+
+  return (
+    <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 px-3 py-2.5 space-y-2">
+      {/* Label row */}
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-sky-600 dark:text-sky-400">Telegram</span>
+        <button
+          onClick={handleFind}
+          disabled={findMutation.isPending || isSearching}
+          className="flex items-center gap-1 text-xs text-sky-600 dark:text-sky-400 hover:text-sky-500 disabled:opacity-40 transition-colors"
+          title="Search Telegram for this lead"
+        >
+          {isSearching ? (
+            <><Loader2 className="h-3 w-3 animate-spin" /> Searching…</>
+          ) : (
+            <><Search className="h-3 w-3" /> Find</>
+          )}
+        </button>
+      </div>
+
+      {/* Editable field */}
+      {editing ? (
+        <div className="flex items-center gap-1.5">
+          <span className="text-sm text-muted-foreground">@</span>
+          <input
+            ref={inputRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="username"
+            className="flex-1 rounded border border-border bg-background px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-sky-400"
+            disabled={saving}
+          />
+          <button onClick={handleSave} disabled={saving}
+            className="rounded p-1 text-emerald-500 hover:bg-emerald-500/10 transition-colors">
+            <Check className="h-3.5 w-3.5" />
+          </button>
+          <button onClick={() => setEditing(false)}
+            className="rounded p-1 text-muted-foreground hover:bg-muted transition-colors">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ) : (
+        <div className="group flex items-center gap-1.5 min-h-[1.75rem]">
+          {displayValue ? (
+            <>
+              <span className="text-sm font-medium">@{displayValue}</span>
+              <a
+                href={`https://t.me/${displayValue}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sky-500 hover:text-sky-400 transition-colors"
+                title="Open in Telegram"
+              >
+                <ExternalLink className="h-3 w-3" />
+              </a>
+              <CopyButton text={displayValue} label="Copy handle" />
+            </>
+          ) : (
+            <span className="text-sm text-muted-foreground/50 italic">
+              {isSearching ? "Searching…" : "No handle yet"}
+            </span>
+          )}
+          <button onClick={startEdit}
+            className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-muted-foreground/60 hover:text-muted-foreground transition-all ml-0.5"
+            title="Edit Telegram handle">
+            <Pencil className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+
+      {/* Candidates picker */}
+      {candidates.length > 0 && (
+        <div className="pt-1 border-t border-sky-500/20 space-y-1.5">
+          <p className="text-xs text-sky-600/70 dark:text-sky-400/70">
+            {taskId ? "Found — pick the right one:" : "Saved candidates:"}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {candidates.map((handle) => (
+              <button
+                key={handle}
+                onClick={() => pickCandidate(handle)}
+                className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors
+                  ${lead.telegram_username === handle
+                    ? "border-sky-500 bg-sky-500/20 text-sky-700 dark:text-sky-300"
+                    : "border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-400 hover:bg-sky-500/20 hover:border-sky-500/50"
+                  }`}
+              >
+                @{handle}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Search logs (collapsed by default) */}
+      {searchDone && taskData?.logs && taskData.logs.length > 0 && (
+        <details className="text-xs">
+          <summary className="cursor-pointer text-muted-foreground/60 hover:text-muted-foreground select-none">
+            Search log ({taskData.logs.length} lines)
+          </summary>
+          <div className="mt-1 rounded bg-muted/50 p-2 font-mono text-xs leading-relaxed max-h-40 overflow-y-auto space-y-0.5">
+            {taskData.logs.map((line, i) => (
+              <p key={i} className="text-muted-foreground">{line}</p>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {/* Error state */}
+      {taskData?.status === "error" && (
+        <p className="text-xs text-rose-500">{taskData.error || "Search failed"}</p>
       )}
     </div>
   );
@@ -250,10 +442,10 @@ export default function LeadDetailPage() {
   const remove = useDeleteLead();
   const restore = useRestoreLead();
 
-  async function save(field: string, value: string | null) {
+  const save = useCallback(async (field: string, value: string | null) => {
     await update.mutateAsync({ [field]: value });
     toast.success("Saved");
-  }
+  }, [update]);
 
   if (isLoading) {
     return (
@@ -409,7 +601,7 @@ export default function LeadDetailPage() {
           <div className="rounded-xl border bg-card p-4 space-y-1">
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Social & Links</h2>
 
-            {/* LinkedIn — not editable, shown read-only */}
+            {/* LinkedIn — read-only */}
             <div className="flex flex-col gap-0.5 py-1.5">
               <span className="text-xs font-medium text-muted-foreground">LinkedIn</span>
               <div className="flex items-center gap-2">
@@ -439,15 +631,10 @@ export default function LeadDetailPage() {
               }}
             />
 
-            {/* Telegram — prominent */}
-            <InlineField
-              label="Telegram"
-              value={lead.telegram_username}
-              placeholder="Add username"
-              prefix="@"
-              prominent
-              hint="opens t.me"
-              onSave={(v) => save("telegram_username", v ? v.replace(/^@/, "") : null)}
+            {/* Telegram — prominent with Find button */}
+            <TelegramSection
+              lead={lead}
+              onSave={(v) => save("telegram_username", v)}
             />
           </div>
 
@@ -495,32 +682,12 @@ export default function LeadDetailPage() {
             )}
 
             <div className="space-y-0">
-              <MilestoneRow
-                icon={<Clock className="h-3.5 w-3.5" />}
-                label="Imported"
-                dateStr={lead.created_at}
-              />
-              <MilestoneRow
-                icon={<UserCheck className="h-3.5 w-3.5" />}
-                label="Connection requested"
-                dateStr={lead.connection_requested_at}
-              />
-              <MilestoneRow
-                icon={<UserCheck className="h-3.5 w-3.5" />}
-                label="Connection accepted"
-                dateStr={lead.connection_accepted_at}
-              />
-              <MilestoneRow
-                icon={<MessageSquare className="h-3.5 w-3.5" />}
-                label="Follow-up sent"
-                dateStr={lead.followup_sent_at}
-              />
+              <MilestoneRow icon={<Clock className="h-3.5 w-3.5" />} label="Imported" dateStr={lead.created_at} />
+              <MilestoneRow icon={<UserCheck className="h-3.5 w-3.5" />} label="Connection requested" dateStr={lead.connection_requested_at} />
+              <MilestoneRow icon={<UserCheck className="h-3.5 w-3.5" />} label="Connection accepted" dateStr={lead.connection_accepted_at} />
+              <MilestoneRow icon={<MessageSquare className="h-3.5 w-3.5" />} label="Follow-up sent" dateStr={lead.followup_sent_at} />
               {lead.scheduled_at && lead.status === "scheduled" && (
-                <MilestoneRow
-                  icon={<Clock className="h-3.5 w-3.5" />}
-                  label="Scheduled for"
-                  dateStr={lead.scheduled_at}
-                />
+                <MilestoneRow icon={<Clock className="h-3.5 w-3.5" />} label="Scheduled for" dateStr={lead.scheduled_at} />
               )}
               {lead.updated_at && (
                 <div className="pt-2 mt-1 border-t">

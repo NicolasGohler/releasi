@@ -21,6 +21,7 @@ dependencies = [
     "python-dateutil>=2.8",
     "playwright-stealth>=2.0.2",
     "httpx>=0.25",
+    "telethon>=1.36",
 ]
 
 [project.optional-dependencies]

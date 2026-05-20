@@ -479,6 +479,36 @@ export function useLeadActivity(id: string) {
   });
 }
 
+export function useFindTelegram(leadId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.startFindTelegram(leadId),
+    onSuccess: () => {
+      // Invalidate lead so telegram_alternatives persisted by the background
+      // task are reflected when the poll detects completion.
+      qc.invalidateQueries({ queryKey: ["lead", leadId] });
+    },
+  });
+}
+
+export function useFindTelegramStatus(leadId: string, taskId: string | null) {
+  const qc = useQueryClient();
+  return useQuery({
+    queryKey: ["find-tg-status", leadId, taskId],
+    queryFn: () => api.getFindTelegramStatus(leadId, taskId as string),
+    enabled: !!taskId,
+    refetchInterval: (q) => {
+      const status = (q.state.data as { status?: string } | undefined)?.status;
+      if (status === "done" || status === "error") {
+        // Refresh the lead to pick up the persisted telegram_alternatives
+        qc.invalidateQueries({ queryKey: ["lead", leadId] });
+        return false;
+      }
+      return 2000;
+    },
+  });
+}
+
 // ── Activity ──────────────────────────────────────────────────────────────
 
 export function useGlobalActivity() {

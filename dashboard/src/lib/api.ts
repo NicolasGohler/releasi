@@ -14,6 +14,7 @@ import type {
   AccountHealth,
   LeadUpdateRequest,
   LeadActivity,
+  FindTelegramTask,
 } from "./types";
 
 // API calls go to same-origin /api/v1/* — the Next.js route handler at
@@ -408,6 +409,12 @@ export const updateLead = (id: string, data: LeadUpdateRequest) =>
 
 export const fetchLeadActivity = (id: string, limit = 50) =>
   apiFetch<LeadActivity[]>(`/leads/${id}/activity?limit=${limit}`);
+
+export const startFindTelegram = (leadId: string) =>
+  apiFetch<FindTelegramTask>(`/leads/${leadId}/find-telegram`, { method: "POST" });
+
+export const getFindTelegramStatus = (leadId: string, taskId: string) =>
+  apiFetch<FindTelegramTask>(`/leads/${leadId}/find-telegram/${taskId}`);
 
 // ── TG Enrichment ─────────────────────────────────────────────────────────
 
