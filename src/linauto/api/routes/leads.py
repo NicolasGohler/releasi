@@ -450,6 +450,10 @@ async def list_leads_global(
     skip_reason: Optional[str] = Query(None),
     unassigned_campaign: bool = Query(False),
     unassigned_list: bool = Query(False),
+    has_telegram: Optional[bool] = Query(None),
+    has_twitter: Optional[bool] = Query(None),
+    has_email: Optional[bool] = Query(None),
+    tg_contacted: Optional[bool] = Query(None),
     repo: Repository = Depends(get_repo),
 ):
     leads, total = await repo.list_leads_global(
@@ -466,6 +470,10 @@ async def list_leads_global(
         skip_reason=skip_reason,
         unassigned_campaign=unassigned_campaign,
         unassigned_list=unassigned_list,
+        has_telegram=has_telegram,
+        has_twitter=has_twitter,
+        has_email=has_email,
+        tg_contacted=tg_contacted,
     )
 
     items = await _enrich_leads(repo, leads)
@@ -538,10 +546,25 @@ async def update_lead_profile(
 
     if "telegram_username" in body.model_fields_set:
         raw = body.telegram_username
-        updates["telegram_username"] = normalize_telegram_username(raw) if raw else None
-        # Clear alternatives whenever the user explicitly saves a username
-        # (they've made their choice).
+        normalized = normalize_telegram_username(raw) if raw else None
+        updates["telegram_username"] = normalized
+        # Clear alternatives when user explicitly saves a username (choice made).
         updates["telegram_alternatives"] = None
+        if normalized:
+            await repo.log_lead_event(lead_id, "telegram_saved", {"username": normalized})
+            await repo.session.commit()
+
+    if "tg_contacted" in body.model_fields_set:
+        from datetime import datetime as _dt
+        if body.tg_contacted:
+            now = _dt.utcnow()
+            updates["tg_contacted_at"] = now
+            await repo.log_lead_event(lead_id, "tg_contacted", {"at": now.isoformat()})
+            await repo.session.commit()
+        else:
+            updates["tg_contacted_at"] = None
+            await repo.log_lead_event(lead_id, "tg_contacted_cleared", {})
+            await repo.session.commit()
 
     if updates:
         lead = await repo.update_lead(lead, **updates)
@@ -556,41 +579,65 @@ async def get_lead_activity(
     limit: int = 50,
     repo: Repository = Depends(get_repo),
 ):
-    """Return action log entries for a specific lead, newest first."""
+    """Return activity for a lead: ActionLog entries + LeadEvent entries, newest first."""
     from sqlalchemy import select, desc
-    from linauto.db.models import ActionLog, Account
+    from linauto.db.models import ActionLog, Account, LeadEvent
 
     lead = await repo.get_lead_by_id(lead_id)
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
 
-    result = await repo.session.execute(
+    # Fetch ActionLog entries
+    al_result = await repo.session.execute(
         select(ActionLog)
         .where(ActionLog.lead_id == lead_id)
         .order_by(desc(ActionLog.created_at))
         .limit(limit)
     )
-    logs = result.scalars().all()
+    action_logs = al_result.scalars().all()
 
     # Batch-fetch account names
-    account_ids = {l.account_id for l in logs}
+    account_ids = {l.account_id for l in action_logs}
     account_names: dict[str, str] = {}
     for aid in account_ids:
         acc = await repo.session.get(Account, aid)
         if acc:
             account_names[aid] = acc.name
 
-    return [
-        LeadActivityOut(
+    # Fetch LeadEvent entries
+    le_result = await repo.session.execute(
+        select(LeadEvent)
+        .where(LeadEvent.lead_id == lead_id)
+        .order_by(desc(LeadEvent.created_at))
+        .limit(limit)
+    )
+    lead_events = le_result.scalars().all()
+
+    # Merge and sort newest-first, cap at limit
+    items: list[LeadActivityOut] = []
+    for l in action_logs:
+        items.append(LeadActivityOut(
             id=l.id,
             action_type=l.action_type.value if hasattr(l.action_type, "value") else l.action_type,
             status=l.status.value if hasattr(l.status, "value") else l.status,
             details=l.details,
             created_at=l.created_at,
             account_name=account_names.get(l.account_id),
-        )
-        for l in logs
-    ]
+            source="action_log",
+        ))
+    for e in lead_events:
+        items.append(LeadActivityOut(
+            id=e.id,
+            action_type=e.event_type,
+            status="success",
+            details=e.details,
+            created_at=e.created_at,
+            account_name=None,
+            source="lead_event",
+        ))
+
+    items.sort(key=lambda x: x.created_at, reverse=True)
+    return items[:limit]
 
 
 # ── Find Telegram ────────────────────────────────────────────────────
@@ -659,6 +706,12 @@ async def start_find_telegram(lead_id: str, repo: Repository = Depends(get_repo)
                         all_found.append(find_result.best_match)
                     all_found.extend(find_result.alternatives)
                     await r.update_lead(lead_obj, telegram_alternatives=all_found or None)
+                    # Log to activity feed
+                    await r.log_lead_event(lid, "telegram_found", {
+                        "best_match": find_result.best_match,
+                        "alternatives": find_result.alternatives,
+                        "candidates_checked": len(find_result.logs),
+                    })
                     await session.commit()
         except Exception as exc:
             _find_tg_tasks[task_id]["status"] = "error"

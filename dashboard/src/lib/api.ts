@@ -351,6 +351,10 @@ export const fetchGlobalLeads = (params?: {
   sort_by?: string; sort_dir?: "asc" | "desc";
   requested_after?: string; requested_before?: string;
   skip_reason?: string;
+  has_telegram?: boolean;
+  has_twitter?: boolean;
+  has_email?: boolean;
+  tg_contacted?: boolean;
 }) => {
   const sp = new URLSearchParams();
   if (params?.page) sp.set("page", String(params.page));
@@ -373,6 +377,10 @@ export const fetchGlobalLeads = (params?: {
   if (params?.requested_after) sp.set("requested_after", params.requested_after);
   if (params?.requested_before) sp.set("requested_before", params.requested_before);
   if (params?.skip_reason) sp.set("skip_reason", params.skip_reason);
+  if (params?.has_telegram !== undefined) sp.set("has_telegram", String(params.has_telegram));
+  if (params?.has_twitter !== undefined) sp.set("has_twitter", String(params.has_twitter));
+  if (params?.has_email !== undefined) sp.set("has_email", String(params.has_email));
+  if (params?.tg_contacted !== undefined) sp.set("tg_contacted", String(params.tg_contacted));
   const qs = sp.toString();
   return apiFetch<LeadPage>(`/leads${qs ? `?${qs}` : ""}`);
 };

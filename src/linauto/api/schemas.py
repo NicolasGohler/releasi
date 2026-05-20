@@ -186,6 +186,7 @@ class LeadOut(BaseModel):
     twitter_url: Optional[str] = None
     telegram_username: Optional[str] = None
     telegram_alternatives: Optional[List[str]] = None
+    tg_contacted_at: Optional[datetime] = None
     extra_data: Optional[Dict[str, Any]] = None
     status: str
     connection_requested_at: Optional[datetime] = None
@@ -213,6 +214,8 @@ class LeadUpdateRequest(BaseModel):
     phone: Optional[str] = None
     twitter_url: Optional[str] = None
     telegram_username: Optional[str] = None
+    # True = mark contacted now, False = clear the contacted timestamp
+    tg_contacted: Optional[bool] = None
 
 
 class FindTelegramTaskOut(BaseModel):
@@ -231,6 +234,7 @@ class LeadActivityOut(BaseModel):
     details: Optional[Dict[str, Any]] = None
     created_at: datetime
     account_name: Optional[str] = None
+    source: str = "action_log"  # "action_log" | "lead_event"
 
     class Config:
         from_attributes = True

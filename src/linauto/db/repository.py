@@ -15,6 +15,7 @@ from linauto.db.models import (
     DailyStat,
     LeadList, CampaignLeadList,
     LeadListMembership, CampaignLeadAssignment,
+    LeadEvent,
 )
 
 
@@ -1865,6 +1866,11 @@ class Repository:
         skip_reason: str | None = None,
         unassigned_campaign: bool = False,
         unassigned_list: bool = False,
+        # Social / enrichment filters
+        has_telegram: Optional[bool] = None,
+        has_twitter: Optional[bool] = None,
+        has_email: Optional[bool] = None,
+        tg_contacted: Optional[bool] = None,
     ) -> tuple:
         """Return (leads, total_count) across all lists/campaigns."""
         stmt = select(Lead)
@@ -1932,6 +1938,35 @@ class Repository:
             stmt = stmt.where(no_mem)
             count_stmt = count_stmt.where(no_mem)
 
+        # ── Social / enrichment filters ───────────────────────────────────
+        if has_telegram is True:
+            stmt = stmt.where(Lead.telegram_username.isnot(None), Lead.telegram_username != "")
+            count_stmt = count_stmt.where(Lead.telegram_username.isnot(None), Lead.telegram_username != "")
+        elif has_telegram is False:
+            stmt = stmt.where(or_(Lead.telegram_username.is_(None), Lead.telegram_username == ""))
+            count_stmt = count_stmt.where(or_(Lead.telegram_username.is_(None), Lead.telegram_username == ""))
+
+        if has_twitter is True:
+            stmt = stmt.where(Lead.twitter_url.isnot(None), Lead.twitter_url != "")
+            count_stmt = count_stmt.where(Lead.twitter_url.isnot(None), Lead.twitter_url != "")
+        elif has_twitter is False:
+            stmt = stmt.where(or_(Lead.twitter_url.is_(None), Lead.twitter_url == ""))
+            count_stmt = count_stmt.where(or_(Lead.twitter_url.is_(None), Lead.twitter_url == ""))
+
+        if has_email is True:
+            stmt = stmt.where(Lead.email.isnot(None), Lead.email != "")
+            count_stmt = count_stmt.where(Lead.email.isnot(None), Lead.email != "")
+        elif has_email is False:
+            stmt = stmt.where(or_(Lead.email.is_(None), Lead.email == ""))
+            count_stmt = count_stmt.where(or_(Lead.email.is_(None), Lead.email == ""))
+
+        if tg_contacted is True:
+            stmt = stmt.where(Lead.tg_contacted_at.isnot(None))
+            count_stmt = count_stmt.where(Lead.tg_contacted_at.isnot(None))
+        elif tg_contacted is False:
+            stmt = stmt.where(Lead.tg_contacted_at.is_(None))
+            count_stmt = count_stmt.where(Lead.tg_contacted_at.is_(None))
+
         total = (await self.session.execute(count_stmt)).scalar_one()
 
         _SORT_COLS = {
@@ -1946,3 +1981,15 @@ class Repository:
         stmt = stmt.order_by(order_col).offset((page - 1) * per_page).limit(per_page)
         result = await self.session.execute(stmt)
         return result.scalars().all(), total
+
+    async def log_lead_event(
+        self,
+        lead_id: str,
+        event_type: str,
+        details: Optional[dict] = None,
+    ) -> LeadEvent:
+        """Write a lightweight event to lead_events (no account_id required)."""
+        event = LeadEvent(lead_id=lead_id, event_type=event_type, details=details)
+        self.session.add(event)
+        await self.session.flush()
+        return event

@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/tooltip";
 import {
   FastForward, RotateCcw, Trash2, Undo2, Mail, Check,
-  ChevronUp, ChevronDown, ChevronsUpDown, X, Send,
+  ChevronUp, ChevronDown, ChevronsUpDown, X, Send, CheckCircle2,
 } from "lucide-react";
 
 type SortKey = "name" | "company" | "status" | "requested_at" | "created_at";
@@ -183,6 +183,12 @@ export default function GlobalLeadsPage() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
+  // Social / outreach filter chips
+  const [hasTelegram, setHasTelegram] = useState<boolean | undefined>();
+  const [hasTwitter, setHasTwitter] = useState<boolean | undefined>();
+  const [hasEmail, setHasEmail] = useState<boolean | undefined>();
+  const [tgContacted, setTgContacted] = useState<boolean | undefined>();
+
   useEffect(() => { setPage(1); }, [debouncedSearch]);
 
   const { data: leadsData, isLoading } = useGlobalLeads({
@@ -196,6 +202,10 @@ export default function GlobalLeadsPage() {
     requested_after: requestedAfter || undefined,
     requested_before: requestedBefore || undefined,
     skip_reason: skipReasonFilter || undefined,
+    has_telegram: hasTelegram,
+    has_twitter: hasTwitter,
+    has_email: hasEmail,
+    tg_contacted: tgContacted,
   });
   const { data: lists } = useLeadLists();
   const { data: campaigns } = useCampaigns();
@@ -220,12 +230,18 @@ export default function GlobalLeadsPage() {
     setPage(1);
   }
 
-  const hasActiveFilters = debouncedSearch || statusFilter || listFilter || campaignFilter || skipReasonFilter || requestedAfter || requestedBefore || sortBy;
+  const hasActiveFilters = debouncedSearch || statusFilter || listFilter || campaignFilter || skipReasonFilter || requestedAfter || requestedBefore || sortBy || hasTelegram !== undefined || hasTwitter !== undefined || hasEmail !== undefined || tgContacted !== undefined;
 
   function resetFilters() {
     setSearch(""); setStatusFilter(undefined); setListFilter(undefined); setCampaignFilter(undefined);
     setSkipReasonFilter(""); setRequestedAfter(""); setRequestedBefore(""); setSortBy(null); setSortDir("desc"); setPage(1);
     setSelected(new Set());
+    setHasTelegram(undefined); setHasTwitter(undefined); setHasEmail(undefined); setTgContacted(undefined);
+  }
+
+  function toggleChip<T>(current: T | undefined, value: T, setter: (v: T | undefined) => void) {
+    setter(current === value ? undefined : value);
+    setPage(1);
   }
 
   function toggleSelect(id: string) {
@@ -315,6 +331,34 @@ export default function GlobalLeadsPage() {
             <X className="h-3.5 w-3.5" /> Clear
           </Button>
         )}
+      </div>
+
+      {/* Social filter chips */}
+      <div className="flex flex-wrap gap-2">
+        {(
+          [
+            { label: "Has Telegram", icon: <Send className="h-3 w-3" />, active: hasTelegram === true, onClick: () => toggleChip(hasTelegram, true, setHasTelegram) },
+            { label: "No Telegram", icon: null, active: hasTelegram === false, onClick: () => toggleChip(hasTelegram, false, setHasTelegram) },
+            { label: "Has X / Twitter", icon: <XIcon className="h-3 w-3" />, active: hasTwitter === true, onClick: () => toggleChip(hasTwitter, true, setHasTwitter) },
+            { label: "Has Email", icon: <Mail className="h-3 w-3" />, active: hasEmail === true, onClick: () => toggleChip(hasEmail, true, setHasEmail) },
+            { label: "TG Contacted", icon: <CheckCircle2 className="h-3 w-3" />, active: tgContacted === true, onClick: () => toggleChip(tgContacted, true, setTgContacted) },
+            { label: "TG Not Contacted", icon: null, active: tgContacted === false, onClick: () => toggleChip(tgContacted, false, setTgContacted) },
+          ] as { label: string; icon: React.ReactNode; active: boolean; onClick: () => void }[]
+        ).map((chip) => (
+          <button
+            key={chip.label}
+            onClick={chip.onClick}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium border transition-colors ${
+              chip.active
+                ? "bg-primary text-primary-foreground border-primary"
+                : "bg-background text-muted-foreground border-border hover:border-foreground/40 hover:text-foreground"
+            }`}
+          >
+            {chip.icon}
+            {chip.label}
+            {chip.active && <X className="h-2.5 w-2.5 ml-0.5 opacity-70" />}
+          </button>
+        ))}
       </div>
 
       {/* Bulk action bar */}
@@ -411,9 +455,16 @@ export default function GlobalLeadsPage() {
                               {lead.telegram_username && (
                                 <SocialIconLink
                                   href={`https://t.me/${lead.telegram_username}`}
-                                  label={`Telegram: @${lead.telegram_username}`}
+                                  label={lead.tg_contacted_at ? `Telegram: @${lead.telegram_username} · Contacted` : `Telegram: @${lead.telegram_username}`}
                                 >
-                                  <Send className="h-3 w-3" />
+                                  <span className="relative inline-flex">
+                                    <Send className={`h-3 w-3 ${lead.tg_contacted_at ? "text-emerald-500" : ""}`} />
+                                    {lead.tg_contacted_at && (
+                                      <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-emerald-500 flex items-center justify-center">
+                                        <Check className="h-1.5 w-1.5 text-white" />
+                                      </span>
+                                    )}
+                                  </span>
                                 </SocialIconLink>
                               )}
                             </div>

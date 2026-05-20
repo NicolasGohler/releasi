@@ -59,12 +59,27 @@ const ACTION_ICON: Record<string, React.ReactNode> = {
   error: <AlertCircle className="h-3.5 w-3.5" />,
   feed_view: <Zap className="h-3.5 w-3.5" />,
   profile_view: <Zap className="h-3.5 w-3.5" />,
+  // lead_event types
+  telegram_found: <Search className="h-3.5 w-3.5" />,
+  telegram_saved: <Send className="h-3.5 w-3.5" />,
+  tg_contacted: <Check className="h-3.5 w-3.5" />,
+  tg_contacted_cleared: <X className="h-3.5 w-3.5" />,
+  twitter_found: <Search className="h-3.5 w-3.5" />,
 };
 
 const ACTION_COLOUR: Record<string, string> = {
   success: "text-emerald-500 bg-emerald-500/10 border-emerald-500/20",
   failed: "text-rose-500 bg-rose-500/10 border-rose-500/20",
   skipped: "text-amber-500 bg-amber-500/10 border-amber-500/20",
+};
+
+// Pretty labels for lead_event types shown in the activity timeline
+const EVENT_LABELS: Record<string, string> = {
+  telegram_found: "Telegram search",
+  telegram_saved: "Telegram handle saved",
+  tg_contacted: "TG outreach done",
+  tg_contacted_cleared: "TG outreach cleared",
+  twitter_found: "Twitter backfilled",
 };
 
 // ── Inline editable field ────────────────────────────────────────────────────
@@ -164,9 +179,10 @@ function InlineField({
 interface TelegramSectionProps {
   lead: Lead;
   onSave: (v: string | null) => Promise<void>;
+  onToggleContacted: (v: boolean) => Promise<void>;
 }
 
-function TelegramSection({ lead, onSave }: TelegramSectionProps) {
+function TelegramSection({ lead, onSave, onToggleContacted }: TelegramSectionProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
@@ -317,6 +333,32 @@ function TelegramSection({ lead, onSave }: TelegramSectionProps) {
         </div>
       )}
 
+      {/* Outreach done toggle — only show when there's a handle */}
+      {lead.telegram_username && (
+        <div className="flex items-center justify-between pt-1 border-t border-sky-500/20">
+          {lead.tg_contacted_at ? (
+            <div className="flex items-center gap-1.5">
+              <Check className="h-3.5 w-3.5 text-emerald-500" />
+              <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                Contacted {relativeDate(lead.tg_contacted_at).label}
+              </span>
+            </div>
+          ) : (
+            <span className="text-xs text-muted-foreground/60">Not yet contacted</span>
+          )}
+          <button
+            onClick={() => onToggleContacted(!lead.tg_contacted_at)}
+            className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+              lead.tg_contacted_at
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20"
+                : "border-sky-500/30 bg-transparent text-sky-600 dark:text-sky-400 hover:bg-sky-500/10"
+            }`}
+          >
+            {lead.tg_contacted_at ? "↩ Undo" : "✓ Mark contacted"}
+          </button>
+        </div>
+      )}
+
       {/* Candidates picker */}
       {candidates.length > 0 && (
         <div className="pt-1 border-t border-sky-500/20 space-y-1.5">
@@ -382,10 +424,13 @@ function CopyButton({ text, label }: { text: string; label?: string }) {
 
 function ActivityItem({ entry }: { entry: LeadActivity }) {
   const { label, full } = relativeDate(entry.created_at);
-  const colour = ACTION_COLOUR[entry.status] ?? ACTION_COLOUR.skipped;
+  const isLeadEvent = entry.source === "lead_event";
+  const colour = isLeadEvent
+    ? "text-sky-500 bg-sky-500/10 border-sky-500/20"
+    : (ACTION_COLOUR[entry.status] ?? ACTION_COLOUR.skipped);
   const icon = ACTION_ICON[entry.action_type] ?? <Zap className="h-3.5 w-3.5" />;
-  const label_ = entry.action_type.replace(/_/g, " ");
-  const details = entry.details as { reason?: string; url?: string } | null;
+  const label_ = EVENT_LABELS[entry.action_type] ?? entry.action_type.replace(/_/g, " ");
+  const details = entry.details as { reason?: string; best_match?: string; alternatives?: string[] } | null;
 
   return (
     <div className="flex gap-3 items-start py-2 border-b last:border-0">
@@ -401,7 +446,14 @@ function ActivityItem({ entry }: { entry: LeadActivity }) {
         </div>
         {details?.reason && (
           <p className="text-xs text-muted-foreground mt-0.5">
-            {details.reason.replace(/_/g, " ")}
+            {(details.reason as string).replace(/_/g, " ")}
+          </p>
+        )}
+        {details?.best_match && (
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Found: @{details.best_match}
+            {details.alternatives && details.alternatives.length > 0 &&
+              ` (+${details.alternatives.length} alt)`}
           </p>
         )}
         {entry.account_name && (
@@ -631,10 +683,14 @@ export default function LeadDetailPage() {
               }}
             />
 
-            {/* Telegram — prominent with Find button */}
+            {/* Telegram — prominent with Find button + outreach toggle */}
             <TelegramSection
               lead={lead}
               onSave={(v) => save("telegram_username", v)}
+              onToggleContacted={async (contacted) => {
+                await update.mutateAsync({ tg_contacted: contacted });
+                toast.success(contacted ? "Marked as contacted" : "Cleared");
+              }}
             />
           </div>
 

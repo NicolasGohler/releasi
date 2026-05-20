@@ -323,6 +323,10 @@ export function useGlobalLeads(params?: {
   sort_by?: string; sort_dir?: "asc" | "desc";
   requested_after?: string; requested_before?: string;
   skip_reason?: string;
+  has_telegram?: boolean;
+  has_twitter?: boolean;
+  has_email?: boolean;
+  tg_contacted?: boolean;
 }) {
   return useQuery({
     queryKey: ["global-leads", params],

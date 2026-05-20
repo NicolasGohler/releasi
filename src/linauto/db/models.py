@@ -186,6 +186,7 @@ class Lead(Base):
     twitter_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     telegram_username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     telegram_alternatives: Mapped[Optional[List]] = mapped_column(JSON, nullable=True)
+    tg_contacted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     extra_data: Mapped[Optional[Dict]] = mapped_column(JSON, nullable=True)
     status: Mapped[LeadStatus] = mapped_column(
         Enum(LeadStatus), default=LeadStatus.PENDING
@@ -381,3 +382,23 @@ class CampaignLeadList(Base):
 
     campaign: Mapped[Campaign] = relationship()
     lead_list: Mapped[LeadList] = relationship(back_populates="campaign_links")
+
+
+class LeadEvent(Base):
+    """Lightweight per-lead event log (no account_id required).
+
+    Used for system events such as telegram_found, telegram_contacted,
+    twitter_found. Shown in the lead activity timeline alongside ActionLog.
+    """
+    __tablename__ = "lead_events"
+    __table_args__ = (
+        Index("ix_lead_events_lead_created", "lead_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    lead_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("leads.id"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    details: Mapped[Optional[Dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
