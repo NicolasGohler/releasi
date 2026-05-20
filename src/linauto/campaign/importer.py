@@ -19,6 +19,16 @@ _LINKEDIN_URL_RE = re.compile(
     r'(?:https?://)?(?:www\.)?linkedin\.com/in/([\w-]+)/?(?:\?[^\s]*)?'
 )
 
+# Regex to extract Twitter/X username from a URL or bare handle
+_TWITTER_URL_RE = re.compile(
+    r'(?:https?://)?(?:www\.)?(?:twitter\.com|x\.com)/([A-Za-z0-9_]+)/?'
+)
+
+# Regex to extract Telegram username from a t.me URL
+_TELEGRAM_URL_RE = re.compile(
+    r'(?:https?://)?t\.me/([A-Za-z0-9_]+)/?'
+)
+
 # Column names that contain a full name to be split into first/last
 _FULL_NAME_COLUMNS = {
     "name", "full_name", "fullname", "full name", "contact name",
@@ -87,10 +97,32 @@ _COLUMN_MAP = {
     "tel": "phone",
     "telephone": "phone",
     "telefon": "phone",
+    # twitter_url — accepts full URLs (twitter.com or x.com) or bare @handles
+    "twitter_url": "twitter_url",
+    "twitter": "twitter_url",
+    "x_url": "twitter_url",
+    "x": "twitter_url",
+    "twitter_profile_url": "twitter_url",
+    "twitter handle": "twitter_url",
+    "twitter_handle": "twitter_url",
+    "x handle": "twitter_url",
+    "x_handle": "twitter_url",
+    # telegram_username — accepts t.me URLs, @handles, or bare usernames
+    "telegram_username": "telegram_username",
+    "telegram": "telegram_username",
+    "tg": "telegram_username",
+    "tg_username": "telegram_username",
+    "telegram handle": "telegram_username",
+    "telegram_handle": "telegram_username",
+    "tg handle": "telegram_username",
+    "tg_handle": "telegram_username",
 }
 
 # Standard fields that map directly to Lead model columns
-_STANDARD_FIELDS = {"first_name", "last_name", "company", "title", "email", "phone"}
+_STANDARD_FIELDS = {
+    "first_name", "last_name", "company", "title",
+    "email", "phone", "twitter_url", "telegram_username",
+}
 
 
 @dataclass
@@ -103,6 +135,52 @@ class ImportResult:
     column_mapping: dict = field(default_factory=dict)
     extra_columns: list = field(default_factory=list)
     errors: list = field(default_factory=list)
+
+
+def normalize_twitter_url(val: str) -> Optional[str]:
+    """
+    Normalise a Twitter/X value to canonical https://x.com/<handle> form.
+    Accepts: full twitter.com/x.com URLs, @handle, or bare handle.
+    Returns None if the value looks empty or unparseable.
+    """
+    val = val.strip()
+    if not val:
+        return None
+    # Strip leading @
+    if val.startswith("@"):
+        handle = val[1:]
+        return f"https://x.com/{handle}" if handle else None
+    # Full URL (twitter.com or x.com)
+    m = _TWITTER_URL_RE.search(val)
+    if m:
+        return f"https://x.com/{m.group(1)}"
+    # Bare alphanumeric handle (no slashes or dots)
+    if re.match(r'^[A-Za-z0-9_]{1,50}$', val):
+        return f"https://x.com/{val}"
+    return None
+
+
+def normalize_telegram_username(val: str) -> Optional[str]:
+    """
+    Normalise a Telegram value to a bare username (no @ prefix, no t.me/).
+    Accepts: t.me/username, @username, or bare username.
+    Returns None if the value is empty or unparseable.
+    """
+    val = val.strip()
+    if not val:
+        return None
+    # t.me URL
+    m = _TELEGRAM_URL_RE.search(val)
+    if m:
+        return m.group(1)
+    # Strip leading @
+    if val.startswith("@"):
+        username = val[1:]
+        return username if username else None
+    # Bare username
+    if re.match(r'^[A-Za-z0-9_]{3,32}$', val):
+        return val
+    return None
 
 
 def normalize_linkedin_url(url: str) -> Optional[str]:
@@ -273,6 +351,8 @@ def parse_csv(
             title = None
             email = None
             phone = None
+            twitter_url = None
+            telegram_username = None
             extra_data = {}
 
             for header in headers:
@@ -295,6 +375,10 @@ def parse_csv(
                     email = value
                 elif mapped_field == "phone":
                     phone = value
+                elif mapped_field == "twitter_url":
+                    twitter_url = normalize_twitter_url(value)
+                elif mapped_field == "telegram_username":
+                    telegram_username = normalize_telegram_username(value)
                 elif header != url_column:
                     extra_data[header] = value
 
@@ -306,6 +390,8 @@ def parse_csv(
                 title=title,
                 email=email,
                 phone=phone,
+                twitter_url=twitter_url,
+                telegram_username=telegram_username,
                 extra_data=extra_data if extra_data else None,
             )
             if campaign_id:

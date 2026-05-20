@@ -183,6 +183,8 @@ class Lead(Base):
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     phone: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    twitter_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    telegram_username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     extra_data: Mapped[Optional[Dict]] = mapped_column(JSON, nullable=True)
     status: Mapped[LeadStatus] = mapped_column(
         Enum(LeadStatus), default=LeadStatus.PENDING

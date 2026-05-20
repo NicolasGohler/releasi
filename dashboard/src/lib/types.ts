@@ -107,6 +107,8 @@ export interface Lead {
   title: string | null;
   email: string | null;
   phone: string | null;
+  twitter_url: string | null;
+  telegram_username: string | null;
   extra_data: Record<string, unknown> | null;
   status: string;
   connection_requested_at: string | null;

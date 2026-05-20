@@ -183,6 +183,8 @@ class LeadOut(BaseModel):
     title: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    twitter_url: Optional[str] = None
+    telegram_username: Optional[str] = None
     extra_data: Optional[Dict[str, Any]] = None
     status: str
     connection_requested_at: Optional[datetime] = None

@@ -159,7 +159,7 @@ async def export_campaign_leads_csv(
     writer = csv.writer(buf)
     writer.writerow([
         "linkedin_url", "first_name", "last_name", "company", "title",
-        "email", "phone",
+        "email", "phone", "twitter_url", "telegram_username",
         "status", "connection_requested_at", "connection_accepted_at",
         "followup_sent_at", "error_message", "created_at",
     ])
@@ -178,6 +178,8 @@ async def export_campaign_leads_csv(
             lead.title or "",
             lead.email or "",
             lead.phone or "",
+            getattr(lead, "twitter_url", None) or "",
+            getattr(lead, "telegram_username", None) or "",
             status_val,
             lead.connection_requested_at.isoformat() if lead.connection_requested_at else "",
             lead.connection_accepted_at.isoformat() if lead.connection_accepted_at else "",
@@ -365,6 +367,58 @@ async def import_csv(
         duplicates_skipped=result.duplicates_skipped,
         no_url_skipped=result.no_url_skipped,
         errors=result.errors,
+    )
+
+
+# ── TG Enrichment ────────────────────────────────────────────────────
+
+@router.get("/campaigns/{campaign_id}/leads/enrich/telegram/status")
+async def telegram_enrichment_status(
+    campaign_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """Return TG enrichment coverage stats for a campaign.
+
+    Counts how many leads have a telegram_username vs. how many don't,
+    so the dashboard can show a coverage indicator.
+    """
+    campaign = await repo.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    leads, _ = await repo.list_leads_via_assignments_paginated(
+        campaign_id=campaign_id, page=1, per_page=100000
+    )
+    total = len(leads)
+    enriched = sum(1 for l in leads if getattr(l, "telegram_username", None))
+    return {
+        "total": total,
+        "enriched": enriched,
+        "missing": total - enriched,
+        "coverage_pct": round(enriched / total * 100, 1) if total else 0.0,
+    }
+
+
+@router.post("/campaigns/{campaign_id}/leads/enrich/telegram")
+async def trigger_telegram_enrichment(
+    campaign_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """Trigger TG enrichment for leads missing a telegram_username.
+
+    TODO: Connect your prebuilt enrichment agent here. The endpoint
+    should kick off a background task that iterates over leads where
+    telegram_username IS NULL and populates them via your agent.
+
+    Until the agent is wired in, returns 501.
+    """
+    campaign = await repo.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    raise HTTPException(
+        status_code=501,
+        detail="Enrichment agent not yet connected. Wire your prebuilt agent to this endpoint.",
     )
 
 
