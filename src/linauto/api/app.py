@@ -55,7 +55,7 @@ def create_app() -> FastAPI:
     app.add_middleware(SlowAPIMiddleware)
 
     # Mount routes
-    from linauto.api.routes import health, accounts, campaigns, leads, lead_lists, stats
+    from linauto.api.routes import health, accounts, campaigns, leads, lead_lists, stats, telegram
 
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(accounts.router, prefix="/api/v1")
@@ -64,5 +64,6 @@ def create_app() -> FastAPI:
     app.include_router(leads.router, prefix="/api/v1")
     app.include_router(lead_lists.router, prefix="/api/v1")
     app.include_router(stats.router, prefix="/api/v1")
+    app.include_router(telegram.router, prefix="/api/v1")
 
     return app

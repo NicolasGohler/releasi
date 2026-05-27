@@ -397,6 +397,20 @@ class EnrichPhoneResponse(BaseModel):
     found: bool
 
 
+# ── Telegram Resolver ────────────────────────────────────────────────────
+
+class TelegramResolveRequest(BaseModel):
+    name: str
+    company: Optional[str] = None
+    twitter_url: Optional[str] = None
+
+
+class TelegramResolveResponse(BaseModel):
+    best_match: Optional[str] = None
+    alternatives: List[str] = []
+    logs: List[str] = []
+
+
 # ── Campaign Clone ────────────────────────────────────────────────────────
 
 class CloneCampaignRequest(BaseModel):
