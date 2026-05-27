@@ -389,14 +389,12 @@ export default function CampaignDetailPage({
               const sc = campaign.status_counts ?? {};
               const removed = sc["removed"] ?? 0;
               const imported = totalLeads - removed;
-              const scheduled = (sc["pending"] ?? 0) + (sc["scheduled"] ?? 0);
               const requested = (sc["connection_requested"] ?? 0) + (sc["connected"] ?? 0) + (sc["followup_scheduled"] ?? 0) + (sc["followup_sent"] ?? 0) + (sc["completed"] ?? 0);
               const connectedCount = (sc["connected"] ?? 0) + (sc["followup_scheduled"] ?? 0) + (sc["followup_sent"] ?? 0) + (sc["completed"] ?? 0);
               const followedUp = (sc["followup_sent"] ?? 0) + (sc["completed"] ?? 0);
 
               const funnelStages = [
                 { label: "Imported", count: imported, base: imported },
-                { label: "Scheduled", count: scheduled, base: imported },
                 { label: "Requested", count: requested, base: imported },
                 { label: "Connected", count: connectedCount, base: requested },
                 { label: "Followed Up", count: followedUp, base: connectedCount },
@@ -417,7 +415,7 @@ export default function CampaignDetailPage({
                             <span className="text-xs text-muted-foreground text-right truncate">{stage.label}</span>
                             <div className="h-5 w-full rounded bg-muted overflow-hidden">
                               <div
-                                className={`h-full rounded transition-all ${i === 0 ? "bg-zinc-500" : i === 1 ? "bg-blue-500/70" : i === 2 ? "bg-blue-500" : i === 3 ? "bg-emerald-500" : "bg-emerald-600"}`}
+                                className={`h-full rounded transition-all ${i === 0 ? "bg-zinc-500" : i === 1 ? "bg-blue-500" : i === 2 ? "bg-emerald-500" : "bg-emerald-600"}`}
                                 style={{ width: `${barWidth}%` }}
                               />
                             </div>

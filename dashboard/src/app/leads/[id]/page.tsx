@@ -494,6 +494,14 @@ export default function LeadDetailPage() {
   const requeue = useRequeueLead();
   const remove = useDeleteLead();
   const restore = useRestoreLead();
+  const enrichPhone = useEnrichLeadPhone(id);
+
+  const [notesDraft, setNotesDraft] = useState("");
+  const [notesSaved, setNotesSaved] = useState(false);
+  const notesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Sync draft when lead loads or reloads
+  useEffect(() => { setNotesDraft(lead?.notes ?? ""); }, [lead?.notes]);
 
   const save = useCallback(async (field: string, value: string | null) => {
     await update.mutateAsync({ [field]: value });
@@ -526,14 +534,6 @@ export default function LeadDetailPage() {
   const twitterHandle = lead.twitter_url
     ? lead.twitter_url.replace(/.*x\.com\//, "").replace(/.*twitter\.com\//, "")
     : null;
-
-  const enrichPhone = useEnrichLeadPhone(id);
-  const [notesDraft, setNotesDraft] = useState(lead.notes ?? "");
-  const [notesSaved, setNotesSaved] = useState(false);
-  const notesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Sync draft when lead reloads (e.g. after save)
-  useEffect(() => { setNotesDraft(lead.notes ?? ""); }, [lead.notes]);
 
   function handleNotesChange(val: string) {
     setNotesDraft(val);
