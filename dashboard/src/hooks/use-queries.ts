@@ -521,3 +521,22 @@ export function useGlobalActivity() {
     queryFn: () => api.fetchGlobalActivity(),
   });
 }
+
+export function useEnrichLeadPhone(leadId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.enrichLeadPhone(leadId),
+    onSuccess: (data) => {
+      if (data.found) qc.invalidateQueries({ queryKey: ["lead", leadId] });
+    },
+  });
+}
+
+export function useCloneCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: string; name: string; account_id: string }) =>
+      api.cloneCampaign(id, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["campaigns"] }),
+  });
+}

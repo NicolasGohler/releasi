@@ -455,7 +455,7 @@ export default function GlobalLeadsPage() {
                               {lead.telegram_username && (
                                 <SocialIconLink
                                   href={`https://t.me/${lead.telegram_username}`}
-                                  label={lead.tg_contacted_at ? `Telegram: @${lead.telegram_username} · Contacted` : `Telegram: @${lead.telegram_username}`}
+                                  label={lead.tg_contacted_at ? `Telegram: @${lead.telegram_username} · Contacted ${relativeDate(lead.tg_contacted_at).label}` : `Telegram: @${lead.telegram_username}`}
                                 >
                                   <span className="relative inline-flex">
                                     <Send className={`h-3 w-3 ${lead.tg_contacted_at ? "text-emerald-500" : ""}`} />

@@ -9,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from linauto.api.auth import require_api_key
 from linauto.api.deps import get_repo
-from linauto.api.schemas import CampaignOut, CampaignCreate, CampaignUpdate, CampaignStatsResponse
+from linauto.api.schemas import CampaignOut, CampaignCreate, CampaignUpdate, CampaignStatsResponse, CloneCampaignRequest
 from linauto.db.models import CampaignStatus
 from linauto.db.repository import Repository
 
@@ -327,3 +327,48 @@ async def campaign_stats(
     daily = await repo.get_campaign_daily_stats(campaign_id, start, date.today(), granularity)
     summary = await repo.get_campaign_acceptance_stats(campaign_id)
     return {"daily": daily, "summary": summary}
+
+
+@router.post("/campaigns/{campaign_id}/clone", response_model=CampaignOut, status_code=201)
+async def clone_campaign(
+    campaign_id: str,
+    body: CloneCampaignRequest,
+    repo: Repository = Depends(get_repo),
+):
+    """Clone a campaign's settings to a new campaign under a (potentially different) account."""
+    src = await repo.get_campaign(campaign_id)
+    if not src:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    account = await repo.get_account(body.account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Target account not found")
+
+    new_campaign = await repo.create_campaign(
+        account_id=body.account_id,
+        name=body.name,
+        connection_message_template=src.connection_message_template,
+        followup_message_template=src.followup_message_template,
+        followup_delay_hours=src.followup_delay_hours,
+        followup_enabled=src.followup_enabled,
+        followup_message_1=src.followup_message_1,
+        followup_message_2=src.followup_message_2,
+        followup_message_3=src.followup_message_3,
+        weekend_enabled=src.weekend_enabled,
+        filter_no_photo=src.filter_no_photo,
+        filter_min_connections=src.filter_min_connections,
+        filter_exclude_open_to_work=src.filter_exclude_open_to_work,
+    )
+
+    # Copy lead list assignments (same lists, no lead state)
+    links = await repo.get_campaign_lists(campaign_id)
+    for link in links:
+        from linauto.db.models import CampaignLeadList
+        new_link = CampaignLeadList(
+            campaign_id=new_campaign.id,
+            lead_list_id=link.lead_list_id,
+        )
+        repo.session.add(new_link)
+    await repo.session.commit()
+
+    return await _enrich_campaign(repo, new_campaign)

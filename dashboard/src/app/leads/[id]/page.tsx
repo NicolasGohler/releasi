@@ -13,6 +13,7 @@ import {
   useRestoreLead,
   useFindTelegram,
   useFindTelegramStatus,
+  useEnrichLeadPhone,
 } from "@/hooks/use-queries";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -23,7 +24,7 @@ import {
   ArrowLeft, ExternalLink, Pencil, Check, X,
   Copy, Send, RotateCcw, FastForward, Trash2, Undo2,
   Clock, Zap, MessageSquare, UserCheck, AlertCircle,
-  Link2, Loader2, Search,
+  Link2, Loader2, Search, Sparkles, NotebookPen,
 } from "lucide-react";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -526,6 +527,28 @@ export default function LeadDetailPage() {
     ? lead.twitter_url.replace(/.*x\.com\//, "").replace(/.*twitter\.com\//, "")
     : null;
 
+  const enrichPhone = useEnrichLeadPhone(id);
+  const [notesDraft, setNotesDraft] = useState(lead.notes ?? "");
+  const [notesSaved, setNotesSaved] = useState(false);
+  const notesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Sync draft when lead reloads (e.g. after save)
+  useEffect(() => { setNotesDraft(lead.notes ?? ""); }, [lead.notes]);
+
+  function handleNotesChange(val: string) {
+    setNotesDraft(val);
+    if (notesTimerRef.current) clearTimeout(notesTimerRef.current);
+    notesTimerRef.current = setTimeout(async () => {
+      try {
+        await update.mutateAsync({ notes: val || null });
+        setNotesSaved(true);
+        setTimeout(() => setNotesSaved(false), 1500);
+      } catch {
+        toast.error("Failed to save notes");
+      }
+    }, 800);
+  }
+
   return (
     <div className="max-w-5xl mx-auto px-6 py-6 space-y-6">
       {/* Header */}
@@ -645,8 +668,31 @@ export default function LeadDetailPage() {
                 </div>
               )}
             </div>
-            <InlineField label="Phone" value={lead.phone} placeholder="Add phone"
-              onSave={(v) => save("phone", v)} />
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <InlineField label="Phone" value={lead.phone} placeholder="Add phone"
+                  onSave={(v) => save("phone", v)} />
+              </div>
+              <button
+                onClick={async () => {
+                  try {
+                    const r = await enrichPhone.mutateAsync();
+                    if (r.found) toast.success(`Phone found: ${r.phone}`);
+                    else toast.info("No phone found on Apollo");
+                  } catch (e: unknown) {
+                    toast.error(e instanceof Error ? e.message : "Enrich failed");
+                  }
+                }}
+                disabled={enrichPhone.isPending}
+                className="mb-1.5 flex items-center gap-1 rounded px-2 py-1 text-xs text-violet-600 dark:text-violet-400 border border-violet-500/30 hover:bg-violet-500/10 disabled:opacity-40 transition-colors whitespace-nowrap"
+                title="Look up phone via Apollo"
+              >
+                {enrichPhone.isPending
+                  ? <Loader2 className="h-3 w-3 animate-spin" />
+                  : <Sparkles className="h-3 w-3" />}
+                {enrichPhone.isPending ? "…" : "Enrich"}
+              </button>
+            </div>
           </div>
 
           {/* Social card */}
@@ -708,6 +754,21 @@ export default function LeadDetailPage() {
               </div>
             </div>
           )}
+          {/* Notes */}
+          <div className="rounded-xl border bg-card p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <NotebookPen className="h-3.5 w-3.5 text-muted-foreground" />
+              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notes</h2>
+              {notesSaved && <span className="text-xs text-emerald-500 ml-auto">Saved</span>}
+            </div>
+            <textarea
+              value={notesDraft}
+              onChange={(e) => handleNotesChange(e.target.value)}
+              placeholder="Add notes about this lead…"
+              rows={3}
+              className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+            />
+          </div>
         </div>
 
         {/* Right: status + activity */}

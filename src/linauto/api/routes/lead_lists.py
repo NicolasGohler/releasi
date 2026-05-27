@@ -15,6 +15,7 @@ from linauto.api.schemas import (
     LeadListOut,
     LeadListCreate,
     LeadListDetail,
+    LeadListStats,
     AssignListRequest,
     ImportResponse,
     LeadOut,
@@ -175,9 +176,13 @@ async def get_lead_list(lead_list_id: str, repo: Repository = Depends(get_repo))
         if campaign:
             campaigns.append({"id": campaign.id, "name": campaign.name})
 
+    stats_data = await repo.get_lead_list_stats(lead_list_id)
+    stats = LeadListStats(**stats_data)
+
     out = LeadListDetail.model_validate(ll)
     out.campaign_count = len(campaigns)
     out.campaigns = campaigns
+    out.stats = stats
     return out
 
 

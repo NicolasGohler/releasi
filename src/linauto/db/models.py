@@ -187,6 +187,7 @@ class Lead(Base):
     telegram_username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     telegram_alternatives: Mapped[Optional[List]] = mapped_column(JSON, nullable=True)
     tg_contacted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     extra_data: Mapped[Optional[Dict]] = mapped_column(JSON, nullable=True)
     status: Mapped[LeadStatus] = mapped_column(
         Enum(LeadStatus), default=LeadStatus.PENDING

@@ -187,6 +187,7 @@ class LeadOut(BaseModel):
     telegram_username: Optional[str] = None
     telegram_alternatives: Optional[List[str]] = None
     tg_contacted_at: Optional[datetime] = None
+    notes: Optional[str] = None
     extra_data: Optional[Dict[str, Any]] = None
     status: str
     connection_requested_at: Optional[datetime] = None
@@ -216,6 +217,7 @@ class LeadUpdateRequest(BaseModel):
     telegram_username: Optional[str] = None
     # True = mark contacted now, False = clear the contacted timestamp
     tg_contacted: Optional[bool] = None
+    notes: Optional[str] = None
 
 
 class FindTelegramTaskOut(BaseModel):
@@ -283,8 +285,18 @@ class LeadListCreate(BaseModel):
     name: str
 
 
+class LeadListStats(BaseModel):
+    total: int
+    acceptance_rate: float   # 0-100 %
+    tg_coverage: float       # 0-100 %
+    email_coverage: float    # 0-100 %
+    twitter_coverage: float  # 0-100 %
+    tg_contacted_rate: float # 0-100 % of leads with TG that have been contacted
+
+
 class LeadListDetail(LeadListOut):
     campaigns: List[Dict[str, str]] = []  # [{id, name}]
+    stats: Optional[LeadListStats] = None
 
 
 class CampaignLeadListOut(BaseModel):
@@ -376,6 +388,20 @@ class AccountHealthOut(BaseModel):
     total_actions_7d: int = 0
     errors_7d: int = 0
     last_error_message: Optional[str] = None
+
+
+# ── Apollo Enrichment ────────────────────────────────────────────────────
+
+class EnrichPhoneResponse(BaseModel):
+    phone: Optional[str] = None
+    found: bool
+
+
+# ── Campaign Clone ────────────────────────────────────────────────────────
+
+class CloneCampaignRequest(BaseModel):
+    name: str
+    account_id: str
 
 
 # ── Health ────────────────────────────────────────────────────────────────

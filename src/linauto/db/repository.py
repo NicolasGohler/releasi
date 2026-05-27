@@ -1982,6 +1982,60 @@ class Repository:
         result = await self.session.execute(stmt)
         return result.scalars().all(), total
 
+    async def get_lead_list_stats(self, list_id: str) -> dict:
+        """Return quality/coverage stats for all leads in a list."""
+        from sqlalchemy import func, case
+        from linauto.db.models import LeadListMembership, LeadStatus
+
+        # Join memberships → leads
+        stmt = (
+            select(
+                func.count(Lead.id).label("total"),
+                func.sum(
+                    case((Lead.telegram_username.isnot(None), 1), else_=0)
+                ).label("tg_count"),
+                func.sum(
+                    case((Lead.tg_contacted_at.isnot(None), 1), else_=0)
+                ).label("tg_contacted_count"),
+                func.sum(
+                    case((Lead.email.isnot(None), 1), else_=0)
+                ).label("email_count"),
+                func.sum(
+                    case((Lead.twitter_url.isnot(None), 1), else_=0)
+                ).label("twitter_count"),
+                func.sum(
+                    case((Lead.status == LeadStatus.CONNECTED.value, 1), else_=0)
+                ).label("connected_count"),
+                func.sum(
+                    case((Lead.status.in_([
+                        LeadStatus.CONNECTION_REQUESTED.value,
+                        LeadStatus.CONNECTED.value,
+                        LeadStatus.FOLLOWUP_SENT.value,
+                        LeadStatus.COMPLETED.value,
+                    ]), 1), else_=0)
+                ).label("requested_count"),
+            )
+            .join(LeadListMembership, LeadListMembership.lead_id == Lead.id)
+            .where(LeadListMembership.lead_list_id == list_id)
+        )
+        row = (await self.session.execute(stmt)).one()
+        total = row.total or 0
+        tg_count = row.tg_count or 0
+        connected = row.connected_count or 0
+        requested = row.requested_count or 0
+
+        def pct(n: int, d: int) -> float:
+            return round(n / d * 100, 1) if d else 0.0
+
+        return {
+            "total": total,
+            "acceptance_rate": pct(connected, requested),
+            "tg_coverage": pct(tg_count, total),
+            "email_coverage": pct(row.email_count or 0, total),
+            "twitter_coverage": pct(row.twitter_count or 0, total),
+            "tg_contacted_rate": pct(row.tg_contacted_count or 0, tg_count),
+        }
+
     async def log_lead_event(
         self,
         lead_id: str,

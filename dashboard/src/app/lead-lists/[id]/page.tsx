@@ -104,11 +104,15 @@ export default function LeadListDetailPage({
 
   const totalPages = leadsData ? Math.ceil(leadsData.total / leadsData.per_page) : 1;
 
+  const stats = list.stats;
+  const lastImported = new Date(list.updated_at);
+  const lastImportedLabel = lastImported.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+
   return (
     <div className="space-y-6">
       <PageHeader title={list.name}>
         <span className="text-sm text-muted-foreground">
-          {list.total_leads} leads
+          {list.total_leads} leads · Last imported {lastImportedLabel}
         </span>
         <Button
           variant="outline"
@@ -127,6 +131,44 @@ export default function LeadListDetailPage({
           {isExporting ? "Exporting..." : "Export CSV"}
         </Button>
       </PageHeader>
+
+      {/* Quality stat cards */}
+      {stats && stats.total > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            {
+              label: "Acceptance Rate",
+              value: stats.acceptance_rate,
+              sub: `${Math.round((stats.acceptance_rate / 100) * stats.total)} connected`,
+              color: stats.acceptance_rate >= 30 ? "text-emerald-500" : stats.acceptance_rate >= 15 ? "text-amber-500" : "text-red-400",
+            },
+            {
+              label: "Email Coverage",
+              value: stats.email_coverage,
+              sub: `${Math.round((stats.email_coverage / 100) * stats.total)} leads`,
+              color: stats.email_coverage >= 50 ? "text-emerald-500" : stats.email_coverage >= 20 ? "text-amber-500" : "text-muted-foreground",
+            },
+            {
+              label: "Telegram Coverage",
+              value: stats.tg_coverage,
+              sub: stats.tg_contacted_rate > 0 ? `${stats.tg_contacted_rate}% contacted` : `${Math.round((stats.tg_coverage / 100) * stats.total)} leads`,
+              color: stats.tg_coverage >= 30 ? "text-emerald-500" : stats.tg_coverage >= 10 ? "text-amber-500" : "text-muted-foreground",
+            },
+            {
+              label: "Twitter/X Coverage",
+              value: stats.twitter_coverage,
+              sub: `${Math.round((stats.twitter_coverage / 100) * stats.total)} leads`,
+              color: stats.twitter_coverage >= 30 ? "text-emerald-500" : stats.twitter_coverage >= 10 ? "text-amber-500" : "text-muted-foreground",
+            },
+          ].map((card) => (
+            <div key={card.label} className="rounded-xl border bg-card px-4 py-3">
+              <p className="text-xs text-muted-foreground">{card.label}</p>
+              <p className={`text-2xl font-semibold tabular-nums mt-1 ${card.color}`}>{card.value}%</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{card.sub}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* CSV Upload */}
       <div

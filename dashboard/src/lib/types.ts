@@ -92,8 +92,18 @@ export interface LeadList {
   updated_at: string;
 }
 
+export interface LeadListStats {
+  total: number;
+  acceptance_rate: number;
+  tg_coverage: number;
+  email_coverage: number;
+  twitter_coverage: number;
+  tg_contacted_rate: number;
+}
+
 export interface LeadListDetail extends LeadList {
   campaigns: { id: string; name: string }[];
+  stats: LeadListStats | null;
 }
 
 export interface Lead {
@@ -111,6 +121,7 @@ export interface Lead {
   telegram_username: string | null;
   telegram_alternatives: string[] | null;
   tg_contacted_at: string | null;
+  notes: string | null;
   extra_data: Record<string, unknown> | null;
   status: string;
   connection_requested_at: string | null;
@@ -135,6 +146,7 @@ export interface LeadUpdateRequest {
   twitter_url?: string | null;
   telegram_username?: string | null;
   tg_contacted?: boolean | null;
+  notes?: string | null;
 }
 
 export interface FindTelegramTask {

@@ -424,6 +424,9 @@ export const startFindTelegram = (leadId: string) =>
 export const getFindTelegramStatus = (leadId: string, taskId: string) =>
   apiFetch<FindTelegramTask>(`/leads/${leadId}/find-telegram/${taskId}`);
 
+export const enrichLeadPhone = (leadId: string) =>
+  apiFetch<{ phone: string | null; found: boolean }>(`/leads/${leadId}/enrich-phone`, { method: "POST" });
+
 // ── TG Enrichment ─────────────────────────────────────────────────────────
 
 export interface TgEnrichmentStatus {
@@ -511,3 +514,6 @@ export const archiveCampaign = (id: string) =>
 
 export const unarchiveCampaign = (id: string) =>
   apiFetch<Campaign>(`/campaigns/${id}/unarchive`, { method: "POST" });
+
+export const cloneCampaign = (id: string, data: { name: string; account_id: string }) =>
+  apiFetch<Campaign>(`/campaigns/${id}/clone`, { method: "POST", body: JSON.stringify(data) });

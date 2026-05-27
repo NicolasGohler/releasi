@@ -133,6 +133,9 @@ class Settings(BaseSettings):
     telegram_api_hash: str = ""
     telegram_session: str = ""   # StringSession string, generated once
 
+    # Apollo.io enrichment (phone lookup)
+    apollo_api_key: str = ""
+
     model_config = {"env_prefix": "LINAUTO_"}
 
 

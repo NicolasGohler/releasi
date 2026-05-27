@@ -535,10 +535,10 @@ async def update_lead_profile(
         raise HTTPException(status_code=404, detail="Lead not found")
 
     updates: dict = {}
-    for field in ("first_name", "last_name", "company", "title", "email", "phone"):
+    for field in ("first_name", "last_name", "company", "title", "email", "phone", "notes"):
         if field in body.model_fields_set:
             val = getattr(body, field)
-            updates[field] = val.strip() if isinstance(val, str) else val
+            updates[field] = val.strip() if isinstance(val, str) and field != "notes" else val
 
     if "twitter_url" in body.model_fields_set:
         raw = body.twitter_url
@@ -638,6 +638,72 @@ async def get_lead_activity(
 
     items.sort(key=lambda x: x.created_at, reverse=True)
     return items[:limit]
+
+
+# ── Apollo Phone Enrichment ───────────────────────────────────────────
+
+@router.post("/leads/{lead_id}/enrich-phone")
+async def enrich_lead_phone(lead_id: str, repo: Repository = Depends(get_repo)):
+    """Look up phone number via Apollo.io and persist it on the lead.
+
+    Uses the configured LINAUTO_APOLLO_API_KEY. Returns {phone, found}.
+    """
+    import httpx
+    from linauto.config import get_settings
+
+    settings = get_settings()
+    if not settings.apollo_api_key:
+        raise HTTPException(status_code=503, detail="Apollo API key not configured")
+
+    lead = await repo.get_lead_by_id(lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    payload = {
+        "linkedin_url": lead.linkedin_url,
+        "reveal_personal_emails": False,
+        "reveal_phone_number": True,
+    }
+    # Apollo also accepts name+org fallback if linkedin_url is missing
+    if lead.first_name:
+        payload["first_name"] = lead.first_name
+    if lead.last_name:
+        payload["last_name"] = lead.last_name
+    if lead.company:
+        payload["organization_name"] = lead.company
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.apollo.io/v1/people/match",
+                json=payload,
+                headers={"x-api-key": settings.apollo_api_key, "Content-Type": "application/json"},
+            )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Apollo API error: {exc.response.status_code}")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Apollo request failed: {exc}")
+
+    person = data.get("person") or {}
+    phone_numbers = person.get("phone_numbers") or []
+    phone = None
+    # Prefer mobile/direct over work numbers
+    for pn in phone_numbers:
+        ptype = (pn.get("type") or "").lower()
+        if ptype in ("mobile", "direct", "personal"):
+            phone = pn.get("sanitized_number") or pn.get("raw_number")
+            break
+    if not phone and phone_numbers:
+        phone = phone_numbers[0].get("sanitized_number") or phone_numbers[0].get("raw_number")
+
+    if phone:
+        await repo.update_lead(lead, phone=phone)
+        await repo.log_lead_event(lead_id, "phone_enriched", {"source": "apollo", "phone": phone})
+        await repo.session.commit()
+
+    return {"phone": phone, "found": bool(phone)}
 
 
 # ── Find Telegram ────────────────────────────────────────────────────

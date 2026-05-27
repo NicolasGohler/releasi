@@ -8,6 +8,7 @@ import {
   useCampaign,
   useCampaignStats,
   useAccount,
+  useAccounts,
   useUpdateCampaign,
   useActivateCampaign,
   usePauseCampaign,
@@ -17,6 +18,7 @@ import {
   useUnassignListFromCampaign,
   useArchiveCampaign,
   useLeads,
+  useCloneCampaign,
 } from "@/hooks/use-queries";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -52,10 +54,17 @@ export default function CampaignDetailPage({
   const [resumeDialogOpen, setResumeDialogOpen] = useState(false);
   const updateCampaign = useUpdateCampaign(id);
   const archiveCampaign = useArchiveCampaign();
+  const cloneCampaign = useCloneCampaign();
   const { data: allLists } = useLeadLists();
+  const { data: allAccounts } = useAccounts();
   const assign = useAssignListToCampaign();
   const unassign = useUnassignListFromCampaign();
   const { data: leadSample } = useLeads(id, { per_page: 200 });
+
+  // Clone dialog state
+  const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
+  const [cloneName, setCloneName] = useState("");
+  const [cloneAccountId, setCloneAccountId] = useState("");
 
   // Compute per-variable fill rates from the lead sample (0–1).
   const fillRates = useMemo(() => {
@@ -291,6 +300,17 @@ export default function CampaignDetailPage({
             </Button>
             <Button
               size="sm"
+              variant="outline"
+              onClick={() => {
+                setCloneName(`${campaign.name} (copy)`);
+                setCloneAccountId(campaign.account_id);
+                setCloneDialogOpen(true);
+              }}
+            >
+              Clone
+            </Button>
+            <Button
+              size="sm"
               variant="ghost"
               className="text-muted-foreground hover:text-destructive"
               onClick={() => {
@@ -363,6 +383,57 @@ export default function CampaignDetailPage({
                 <CampaignActivityChart campaignId={id} totalLeads={totalLeads} />
               </CardContent>
             </Card>
+
+            {/* Conversion Funnel */}
+            {totalLeads > 0 && (() => {
+              const sc = campaign.status_counts ?? {};
+              const removed = sc["removed"] ?? 0;
+              const imported = totalLeads - removed;
+              const scheduled = (sc["pending"] ?? 0) + (sc["scheduled"] ?? 0);
+              const requested = (sc["connection_requested"] ?? 0) + (sc["connected"] ?? 0) + (sc["followup_scheduled"] ?? 0) + (sc["followup_sent"] ?? 0) + (sc["completed"] ?? 0);
+              const connectedCount = (sc["connected"] ?? 0) + (sc["followup_scheduled"] ?? 0) + (sc["followup_sent"] ?? 0) + (sc["completed"] ?? 0);
+              const followedUp = (sc["followup_sent"] ?? 0) + (sc["completed"] ?? 0);
+
+              const funnelStages = [
+                { label: "Imported", count: imported, base: imported },
+                { label: "Scheduled", count: scheduled, base: imported },
+                { label: "Requested", count: requested, base: imported },
+                { label: "Connected", count: connectedCount, base: requested },
+                { label: "Followed Up", count: followedUp, base: connectedCount },
+              ];
+
+              return (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Conversion Funnel</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2">
+                      {funnelStages.map((stage, i) => {
+                        const pct = stage.base > 0 ? Math.round((stage.count / stage.base) * 100) : 0;
+                        const barWidth = stage.base > 0 ? (stage.count / stage.base) * 100 : 0;
+                        return (
+                          <div key={stage.label} className="grid grid-cols-[100px_1fr_60px_48px] items-center gap-3">
+                            <span className="text-xs text-muted-foreground text-right truncate">{stage.label}</span>
+                            <div className="h-5 w-full rounded bg-muted overflow-hidden">
+                              <div
+                                className={`h-full rounded transition-all ${i === 0 ? "bg-zinc-500" : i === 1 ? "bg-blue-500/70" : i === 2 ? "bg-blue-500" : i === 3 ? "bg-emerald-500" : "bg-emerald-600"}`}
+                                style={{ width: `${barWidth}%` }}
+                              />
+                            </div>
+                            <span className="text-xs text-right tabular-nums">{stage.count.toLocaleString()}</span>
+                            <span className={`text-xs text-right tabular-nums font-medium ${i === 0 ? "text-muted-foreground" : pct >= 40 ? "text-emerald-500" : pct >= 20 ? "text-amber-500" : "text-red-400"}`}>
+                              {i === 0 ? "100%" : `${pct}%`}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-3">Requested, Connected, and Followed Up percentages are relative to the previous stage.</p>
+                  </CardContent>
+                </Card>
+              );
+            })()}
 
             {(campaign.assigned_lists ?? []).length > 0 && (
               <Card>
@@ -706,6 +777,62 @@ export default function CampaignDetailPage({
         open={resumeDialogOpen}
         onOpenChange={setResumeDialogOpen}
       />
+
+      {/* Clone Campaign Dialog */}
+      {cloneDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setCloneDialogOpen(false)}>
+          <div className="bg-background border border-border rounded-xl shadow-xl w-full max-w-md mx-4 p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-base font-semibold">Clone Campaign</h2>
+            <p className="text-sm text-muted-foreground">Copy all message templates, filters, and list assignments to a new campaign.</p>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-muted-foreground">New Campaign Name</label>
+                <input
+                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+                  value={cloneName}
+                  onChange={(e) => setCloneName(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground">Assign to Account</label>
+                <select
+                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  value={cloneAccountId}
+                  onChange={(e) => setCloneAccountId(e.target.value)}
+                >
+                  <option value="">Select an account...</option>
+                  {(allAccounts ?? []).filter(a => !a.archived).map((a) => (
+                    <option key={a.id} value={a.id}>{a.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button size="sm" variant="outline" onClick={() => setCloneDialogOpen(false)}>Cancel</Button>
+              <Button
+                size="sm"
+                disabled={!cloneName.trim() || !cloneAccountId || cloneCampaign.isPending}
+                onClick={() => {
+                  cloneCampaign.mutate(
+                    { id, name: cloneName.trim(), account_id: cloneAccountId },
+                    {
+                      onSuccess: (newCampaign) => {
+                        toast.success("Campaign cloned");
+                        setCloneDialogOpen(false);
+                        router.push(`/campaigns/${newCampaign.id}`);
+                      },
+                      onError: (err) => toast.error(err.message),
+                    }
+                  );
+                }}
+              >
+                {cloneCampaign.isPending ? "Cloning…" : "Clone"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
