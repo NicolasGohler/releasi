@@ -376,6 +376,34 @@ Current `event_type` values: `telegram_found`, `telegram_saved`, `tg_contacted`,
 
 Add via `repo.log_lead_event(lead_id, event_type, details_dict)`.
 
+## Telegram Resolve API (external enrichment endpoint)
+
+`POST /api/v1/telegram/resolve` — standalone resolver for external callers (scripts, GitHub Actions, etc.). No DB reads or writes; pure enrichment.
+
+**Request** (`api/routes/telegram.py`):
+```json
+{ "name": "John Doe", "company": "Aethir", "twitter_url": "https://x.com/johndoe" }
+```
+`company` and `twitter_url` are optional. `company` maps from caller fields named `project` — callers must remap.
+
+**Response**:
+```json
+{ "best_match": "johndoe", "alternatives": ["john_doe"], "logs": [...] }
+```
+`best_match` is `null` if nothing was found. `logs` contain the full resolver trace — useful for diagnosing misses.
+
+**Auth**: `Authorization: Bearer <LINAUTO_API_KEY>`
+
+**Rate limiting and safe usage — important:**
+- The server-level rate limit is **120 req/min** (shared across all endpoints per caller IP). A single Telegram resolution takes 5–90s, so sequential callers will never approach this.
+- **Never call this endpoint in parallel for the same server.** All calls share the same Telethon `StringSession`. Concurrent resolutions both issue rapid `get_entity()` calls against the same Telegram session and will trigger Telegram's flood wait, causing retries and slowdowns that affect every concurrent caller.
+- **Always call sequentially** — loop one person at a time, wait for each response before firing the next. `timeout=120` per call is sufficient.
+- The resolver internally sleeps 1.5s between each Telegram lookup (`sleep_between` default), so back-to-back sequential calls are already rate-friendly.
+- If Telegram returns a flood wait, the resolver handles it automatically (retries after the wait). The HTTP call will just take longer — do not lower the timeout.
+- **Do not fire this from multiple machines simultaneously** against the same session string — same concurrent-session risk as above.
+
+**Relationship to the per-lead Find Telegram button**: both this endpoint and the dashboard button call `find_telegram()` in `telegram/resolver.py` directly. They share the same resolver logic; improvements to `resolver.py` benefit both. The per-lead endpoint additionally writes `telegram_alternatives` to the DB and logs a `telegram_found` lead event — this endpoint does neither.
+
 ## Find Telegram (per-lead background task)
 
 **Endpoints** (in `api/routes/leads.py`):
