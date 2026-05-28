@@ -180,7 +180,8 @@ async def find_telegram(
     api_id: int,
     api_hash: str,
     session_str: str,
-    sleep_between: float = 1.5,
+    sleep_between: float = 0.8,
+    max_candidates: int = 12,
 ) -> FindResult:
     """Resolve the Telegram username for a single person.
 
@@ -244,7 +245,7 @@ async def find_telegram(
             result.logs.append("[Pass 1] No Twitter handle to check")
 
         # ── Pass 2: Name + company pattern matching ──────────────────────────
-        candidates = generate_name_candidates(name, company)
+        candidates = generate_name_candidates(name, company)[:max_candidates]
         if not candidates:
             result.logs.append("[Pass 2] Skipped — name not ASCII or only one word")
             return result

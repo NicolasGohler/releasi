@@ -403,6 +403,8 @@ class TelegramResolveRequest(BaseModel):
     name: str
     company: Optional[str] = None
     twitter_url: Optional[str] = None
+    max_seconds: Optional[int] = None   # server-side timeout cap; default 50s
+    max_candidates: Optional[int] = None  # Pass 2 candidate cap; default 12
 
 
 class TelegramResolveResponse(BaseModel):
