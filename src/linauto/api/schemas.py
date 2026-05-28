@@ -188,6 +188,7 @@ class LeadOut(BaseModel):
     telegram_alternatives: Optional[List[str]] = None
     tg_contacted_at: Optional[datetime] = None
     notes: Optional[str] = None
+    location: Optional[str] = None
     extra_data: Optional[Dict[str, Any]] = None
     status: str
     connection_requested_at: Optional[datetime] = None
@@ -218,6 +219,7 @@ class LeadUpdateRequest(BaseModel):
     # True = mark contacted now, False = clear the contacted timestamp
     tg_contacted: Optional[bool] = None
     notes: Optional[str] = None
+    location: Optional[str] = None
 
 
 class FindTelegramTaskOut(BaseModel):
@@ -403,14 +405,39 @@ class TelegramResolveRequest(BaseModel):
     name: str
     company: Optional[str] = None
     twitter_url: Optional[str] = None
-    max_seconds: Optional[int] = None   # server-side timeout cap; default 50s
-    max_candidates: Optional[int] = None  # Pass 2 candidate cap; default 12
+    exclude_usernames: Optional[List[str]] = None  # handles already verified as wrong
+    max_seconds: Optional[int] = None              # server-side timeout cap; default 50s
+    max_candidates: Optional[int] = None           # Pass 2 candidate cap; None = no cap
 
 
 class TelegramResolveResponse(BaseModel):
     best_match: Optional[str] = None
     alternatives: List[str] = []
     logs: List[str] = []
+    timed_out: bool = False
+
+
+# ── Telegram Batch Resolver ───────────────────────────────────────────────
+
+class TelegramResolveBatchRequest(BaseModel):
+    people: List[TelegramResolveRequest]
+
+
+class TelegramResolveBatchResult(BaseModel):
+    name: str
+    best_match: Optional[str] = None
+    alternatives: List[str] = []
+    logs: List[str] = []
+    timed_out: bool = False
+
+
+class TelegramResolveBatchStatus(BaseModel):
+    task_id: str
+    status: str          # "running" | "done" | "error"
+    total: int
+    completed: int
+    results: List[TelegramResolveBatchResult] = []
+    error: Optional[str] = None
 
 
 # ── Campaign Clone ────────────────────────────────────────────────────────

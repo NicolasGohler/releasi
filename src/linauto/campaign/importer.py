@@ -116,12 +116,20 @@ _COLUMN_MAP = {
     "telegram_handle": "telegram_username",
     "tg handle": "telegram_username",
     "tg_handle": "telegram_username",
+    # location — free-form string; also auto-composed from city/state/country
+    "location": "location",
+    "geo": "location",
+    "geography": "location",
+    "city": "_city",
+    "state": "_state",
+    "country": "_country",
+    "region": "_state",
 }
 
 # Standard fields that map directly to Lead model columns
 _STANDARD_FIELDS = {
     "first_name", "last_name", "company", "title",
-    "email", "phone", "twitter_url", "telegram_username",
+    "email", "phone", "twitter_url", "telegram_username", "location",
 }
 
 
@@ -353,6 +361,10 @@ def parse_csv(
             phone = None
             twitter_url = None
             telegram_username = None
+            location = None
+            _city = None
+            _state = None
+            _country = None
             extra_data = {}
 
             for header in headers:
@@ -379,8 +391,21 @@ def parse_csv(
                     twitter_url = normalize_twitter_url(value)
                 elif mapped_field == "telegram_username":
                     telegram_username = normalize_telegram_username(value)
+                elif mapped_field == "location":
+                    location = value
+                elif mapped_field == "_city":
+                    _city = value
+                elif mapped_field == "_state":
+                    _state = value
+                elif mapped_field == "_country":
+                    _country = value
                 elif header != url_column:
                     extra_data[header] = value
+
+            # Compose location from city/state/country if not directly provided
+            if location is None and any([_city, _state, _country]):
+                parts = [p for p in [_city, _state, _country] if p]
+                location = ", ".join(parts)
 
             lead_kwargs = dict(
                 linkedin_url=linkedin_url,
@@ -392,6 +417,7 @@ def parse_csv(
                 phone=phone,
                 twitter_url=twitter_url,
                 telegram_username=telegram_username,
+                location=location,
                 extra_data=extra_data if extra_data else None,
             )
             if campaign_id:

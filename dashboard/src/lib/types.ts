@@ -122,6 +122,7 @@ export interface Lead {
   telegram_alternatives: string[] | null;
   tg_contacted_at: string | null;
   notes: string | null;
+  location: string | null;
   extra_data: Record<string, unknown> | null;
   status: string;
   connection_requested_at: string | null;
@@ -147,6 +148,7 @@ export interface LeadUpdateRequest {
   telegram_username?: string | null;
   tg_contacted?: boolean | null;
   notes?: string | null;
+  location?: string | null;
 }
 
 export interface FindTelegramTask {

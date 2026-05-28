@@ -63,9 +63,11 @@ const ACTION_ICON: Record<string, React.ReactNode> = {
   // lead_event types
   telegram_found: <Search className="h-3.5 w-3.5" />,
   telegram_saved: <Send className="h-3.5 w-3.5" />,
+  telegram_removed: <X className="h-3.5 w-3.5" />,
   tg_contacted: <Check className="h-3.5 w-3.5" />,
   tg_contacted_cleared: <X className="h-3.5 w-3.5" />,
   twitter_found: <Search className="h-3.5 w-3.5" />,
+  phone_enriched: <Sparkles className="h-3.5 w-3.5" />,
 };
 
 const ACTION_COLOUR: Record<string, string> = {
@@ -78,9 +80,11 @@ const ACTION_COLOUR: Record<string, string> = {
 const EVENT_LABELS: Record<string, string> = {
   telegram_found: "Telegram search",
   telegram_saved: "Telegram handle saved",
+  telegram_removed: "Telegram handle removed",
   tg_contacted: "TG outreach done",
   tg_contacted_cleared: "TG outreach cleared",
   twitter_found: "Twitter backfilled",
+  phone_enriched: "Phone enriched",
 };
 
 // ── Inline editable field ────────────────────────────────────────────────────
@@ -431,7 +435,7 @@ function ActivityItem({ entry }: { entry: LeadActivity }) {
     : (ACTION_COLOUR[entry.status] ?? ACTION_COLOUR.skipped);
   const icon = ACTION_ICON[entry.action_type] ?? <Zap className="h-3.5 w-3.5" />;
   const label_ = EVENT_LABELS[entry.action_type] ?? entry.action_type.replace(/_/g, " ");
-  const details = entry.details as { reason?: string; best_match?: string; alternatives?: string[] } | null;
+  const details = entry.details as { reason?: string; best_match?: string; alternatives?: string[]; username?: string; phone?: string; source?: string; at?: string } | null;
 
   return (
     <div className="flex gap-3 items-start py-2 border-b last:border-0">
@@ -450,12 +454,18 @@ function ActivityItem({ entry }: { entry: LeadActivity }) {
             {(details.reason as string).replace(/_/g, " ")}
           </p>
         )}
+        {details?.username && (
+          <p className="text-xs text-muted-foreground mt-0.5">@{details.username}</p>
+        )}
         {details?.best_match && (
           <p className="text-xs text-muted-foreground mt-0.5">
             Found: @{details.best_match}
             {details.alternatives && details.alternatives.length > 0 &&
               ` (+${details.alternatives.length} alt)`}
           </p>
+        )}
+        {details?.phone && (
+          <p className="text-xs text-muted-foreground mt-0.5">{details.phone}{details.source ? ` · via ${details.source}` : ""}</p>
         )}
         {entry.account_name && (
           <p className="text-xs text-muted-foreground/60 mt-0.5">via {entry.account_name}</p>
@@ -657,6 +667,8 @@ export default function LeadDetailPage() {
               onSave={(v) => save("title", v)} />
             <InlineField label="Company" value={lead.company} placeholder="Add company"
               onSave={(v) => save("company", v)} />
+            <InlineField label="Location" value={lead.location} placeholder="Add location"
+              onSave={(v) => save("location", v)} />
             <div className="flex items-start gap-2">
               <div className="flex-1">
                 <InlineField label="Email" value={lead.email} placeholder="Add email"

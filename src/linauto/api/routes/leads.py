@@ -535,10 +535,10 @@ async def update_lead_profile(
         raise HTTPException(status_code=404, detail="Lead not found")
 
     updates: dict = {}
-    for field in ("first_name", "last_name", "company", "title", "email", "phone", "notes"):
+    for field in ("first_name", "last_name", "company", "title", "email", "phone", "notes", "location"):
         if field in body.model_fields_set:
             val = getattr(body, field)
-            updates[field] = val.strip() if isinstance(val, str) and field != "notes" else val
+            updates[field] = val.strip() if isinstance(val, str) and field not in ("notes",) else val
 
     if "twitter_url" in body.model_fields_set:
         raw = body.twitter_url
@@ -547,11 +547,16 @@ async def update_lead_profile(
     if "telegram_username" in body.model_fields_set:
         raw = body.telegram_username
         normalized = normalize_telegram_username(raw) if raw else None
+        old_username = lead.telegram_username  # capture before update
         updates["telegram_username"] = normalized
         # Clear alternatives when user explicitly saves a username (choice made).
         updates["telegram_alternatives"] = None
         if normalized:
             await repo.log_lead_event(lead_id, "telegram_saved", {"username": normalized})
+            await repo.session.commit()
+        elif old_username:
+            # User explicitly cleared a previously-set username
+            await repo.log_lead_event(lead_id, "telegram_removed", {"username": old_username})
             await repo.session.commit()
 
     if "tg_contacted" in body.model_fields_set:
