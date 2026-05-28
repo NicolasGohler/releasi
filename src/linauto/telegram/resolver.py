@@ -186,7 +186,7 @@ async def find_telegram(
     api_id: int,
     api_hash: str,
     session_str: str,
-    sleep_between: float = 0.8,
+    sleep_between: float = 1.5,
     max_candidates: Optional[int] = None,
     exclude_usernames: Optional[list] = None,
 ) -> FindResult:
@@ -240,17 +240,20 @@ async def find_telegram(
                 else:
                     result.logs.append(f"  – @{twitter_username} is a channel/group, not a user")
             except FloodWaitError as e:
-                result.logs.append(f"  Rate limited — waiting {e.seconds}s…")
-                await asyncio.sleep(e.seconds + 2)
-                try:
-                    entity = await client.get_entity(twitter_username)
-                    if isinstance(entity, User):
-                        handle = entity.username or twitter_username
-                        result.best_match = handle
-                        result.logs.append(f"  ✓ @{twitter_username} → @{handle} (Twitter match)")
-                        return result
-                except Exception:
-                    pass
+                if e.seconds > 60:
+                    result.logs.append(f"  Rate limited — {e.seconds}s wait exceeds limit, skipping Pass 1")
+                else:
+                    result.logs.append(f"  Rate limited — waiting {e.seconds}s…")
+                    await asyncio.sleep(e.seconds + 2)
+                    try:
+                        entity = await client.get_entity(twitter_username)
+                        if isinstance(entity, User):
+                            handle = entity.username or twitter_username
+                            result.best_match = handle
+                            result.logs.append(f"  ✓ @{twitter_username} → @{handle} (Twitter match)")
+                            return result
+                    except Exception:
+                        pass
             except Exception:
                 result.logs.append(f"  – @{twitter_username} not found on Telegram")
             await asyncio.sleep(sleep_between)
@@ -292,6 +295,9 @@ async def find_telegram(
                             f"(TG: {entity.first_name} {entity.last_name or ''})"
                         )
             except FloodWaitError as e:
+                if e.seconds > 60:
+                    result.logs.append(f"  Rate limited — {e.seconds}s wait exceeds limit, aborting Pass 2")
+                    break
                 result.logs.append(f"  Rate limited — waiting {e.seconds}s…")
                 await asyncio.sleep(e.seconds + 2)
                 try:

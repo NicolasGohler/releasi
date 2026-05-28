@@ -40,7 +40,11 @@ def _get_settings_and_check():
     return settings
 
 
-async def _resolve_one(body: TelegramResolveRequest, settings) -> TelegramResolveResponse:
+async def _resolve_one(
+    body: TelegramResolveRequest,
+    settings,
+    sleep_between: float = 1.5,
+) -> TelegramResolveResponse:
     """Run the resolver for a single person and return a response object."""
     from linauto.telegram.resolver import find_telegram
 
@@ -54,6 +58,7 @@ async def _resolve_one(body: TelegramResolveRequest, settings) -> TelegramResolv
                 company=body.company,
                 exclude_usernames=body.exclude_usernames,
                 max_candidates=body.max_candidates,
+                sleep_between=sleep_between,
                 api_id=settings.telegram_api_id,
                 api_hash=settings.telegram_api_hash,
                 session_str=settings.telegram_session,
@@ -139,7 +144,7 @@ async def resolve_telegram_batch(body: TelegramResolveBatchRequest) -> TelegramR
         task = _batch_tasks[task_id]
         try:
             for person in body.people:
-                resp = await _resolve_one(person, settings)
+                resp = await _resolve_one(person, settings, sleep_between=2.0)
                 task["results"].append({
                     "name": person.name,
                     "best_match": resp.best_match,
