@@ -747,7 +747,21 @@ async def start_find_telegram(lead_id: str, repo: Repository = Depends(get_repo)
     task_id = str(uuid.uuid4())
     _find_tg_tasks[task_id] = {"status": "running", "logs": []}
 
-    async def _run(lid: str, name: str, twitter: Optional[str], company: Optional[str]) -> None:
+    # Collect previously-removed usernames to exclude from this search.
+    from sqlalchemy import select as _select
+    from linauto.db.models import LeadEvent as _LeadEvent
+    removed_q = await repo.session.execute(
+        _select(_LeadEvent).where(
+            _LeadEvent.lead_id == lead_id,
+            _LeadEvent.event_type == "telegram_removed",
+        )
+    )
+    exclude_usernames: list[str] = []
+    for ev in removed_q.scalars().all():
+        if ev.details and ev.details.get("username"):
+            exclude_usernames.append(ev.details["username"].lstrip("@"))
+
+    async def _run(lid: str, name: str, twitter: Optional[str], company: Optional[str], exclude: list[str]) -> None:
         task = _find_tg_tasks[task_id]
         try:
             find_result = await find_telegram(
@@ -757,6 +771,7 @@ async def start_find_telegram(lead_id: str, repo: Repository = Depends(get_repo)
                 api_id=settings.telegram_api_id,
                 api_hash=settings.telegram_api_hash,
                 session_str=settings.telegram_session,
+                exclude_usernames=exclude or None,
             )
             task["status"] = "done"
             task["telegram_username"] = find_result.best_match
@@ -794,6 +809,7 @@ async def start_find_telegram(lead_id: str, repo: Repository = Depends(get_repo)
         person_name,
         getattr(lead, "twitter_url", None),
         getattr(lead, "company", None),
+        exclude_usernames,
     ))
 
     return FindTelegramTaskOut(task_id=task_id, status="running")
