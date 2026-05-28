@@ -505,6 +505,37 @@ async def bulk_requeue_leads(body: BulkLeadRequest, repo: Repository = Depends(g
     return BulkLeadResponse(updated=updated)
 
 
+# ── Lookup by LinkedIn URL ───────────────────────────────────────────
+
+@router.get("/leads/lookup", response_model=LeadOut)
+async def lookup_lead_by_url(
+    linkedin_url: str = Query(..., description="Full LinkedIn profile URL"),
+    repo: Repository = Depends(get_repo),
+):
+    """Return the lead matching a given LinkedIn URL, or 404 if not found.
+
+    Normalises the URL before matching (strips trailing slashes, lowercases
+    the slug) so minor formatting differences don't cause false misses.
+    """
+    from linauto.campaign.importer import normalize_linkedin_url
+    from sqlalchemy import select as _select
+    from linauto.db.models import Lead as _Lead
+
+    normalized = normalize_linkedin_url(linkedin_url)
+    if not normalized:
+        raise HTTPException(status_code=422, detail="Invalid LinkedIn URL")
+
+    result = await repo.session.execute(
+        _select(_Lead).where(_Lead.linkedin_url == normalized).limit(1)
+    )
+    lead = result.scalars().first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    items = await _enrich_leads(repo, [lead])
+    return items[0]
+
+
 # ── Single Lead GET / PATCH ─────────────────────────────────────────
 
 @router.get("/leads/{lead_id}", response_model=LeadOut)

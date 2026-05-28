@@ -517,3 +517,6 @@ export const unarchiveCampaign = (id: string) =>
 
 export const cloneCampaign = (id: string, data: { name: string; account_id: string }) =>
   apiFetch<Campaign>(`/campaigns/${id}/clone`, { method: "POST", body: JSON.stringify(data) });
+
+export const lookupLeadByUrl = (linkedinUrl: string) =>
+  apiFetch<Lead>(`/leads/lookup?linkedin_url=${encodeURIComponent(linkedinUrl)}`);
