@@ -149,6 +149,7 @@ def generate_name_candidates(name: str, company_name: Optional[str] = None) -> l
     Fc = first[0].upper() + first[1:].lower()
     Lc = last[0].upper()  + last[1:].lower()
 
+    # 1. Company-specific patterns first — most discriminating
     if company_name:
         for co in get_company_shorthands(company_name):
             Co = co[0].upper() + co[1:]
@@ -157,10 +158,15 @@ def generate_name_candidates(name: str, company_name: Optional[str] = None) -> l
                 f"{l}_{co}", f"{l}{Co}", f"{Co}_{Lc}", f"{co}_{l}", f"{l}{co}", f"{co}{l}",
             ])
 
+    # 2. Full-name patterns — common and recognisable
     add([
         f"{first}{last}",   # JohnDoe
         f"{f}{l}",          # johndoe
         f"{f}_{l}",         # john_doe
+    ])
+
+    # 3. Generic short patterns — lowest priority, high false-positive risk
+    add([
         f"{f}{l[0]}",       # johnd
         f"{f[0]}{l}",       # jdoe
     ])
@@ -181,18 +187,21 @@ async def find_telegram(
     api_hash: str,
     session_str: str,
     sleep_between: float = 0.8,
-    max_candidates: int = 12,
+    max_candidates: Optional[int] = None,
+    exclude_usernames: Optional[list] = None,
 ) -> FindResult:
     """Resolve the Telegram username for a single person.
 
     Args:
-        name:         Full name, e.g. "John Doe"
-        twitter_url:  Optional Twitter/X URL for Pass 1 shortcut
-        company:      Optional company name for pattern generation
-        api_id:       Telegram API ID (from my.telegram.org)
-        api_hash:     Telegram API hash
-        session_str:  Telethon StringSession string
-        sleep_between: seconds between API calls (avoid rate limits)
+        name:              Full name, e.g. "John Doe"
+        twitter_url:       Optional Twitter/X URL for Pass 1 shortcut
+        company:           Optional company name for pattern generation
+        api_id:            Telegram API ID (from my.telegram.org)
+        api_hash:          Telegram API hash
+        session_str:       Telethon StringSession string
+        sleep_between:     Seconds between API calls (avoid rate limits)
+        max_candidates:    Cap on Pass 2 candidates checked (None = no cap)
+        exclude_usernames: Handles to skip in both passes (already verified wrong)
 
     Returns:
         FindResult with best_match, alternatives, and logs.
@@ -203,6 +212,7 @@ async def find_telegram(
     from telethon.errors import FloodWaitError
 
     result = FindResult()
+    exclude_set = {u.lower().lstrip("@") for u in (exclude_usernames or [])}
 
     if not api_id or not api_hash or not session_str:
         result.logs.append("ERROR: Telegram credentials not configured")
@@ -215,6 +225,9 @@ async def find_telegram(
 
         # ── Pass 1: Twitter handle ───────────────────────────────────────────
         twitter_username = extract_twitter_username(twitter_url)
+        if twitter_username and twitter_username.lower() in exclude_set:
+            result.logs.append(f"[Pass 1] @{twitter_username} skipped (in exclude list)")
+            twitter_username = None
         if twitter_username:
             result.logs.append(f"[Pass 1] Checking @{twitter_username} on Telegram…")
             try:
@@ -245,13 +258,18 @@ async def find_telegram(
             result.logs.append("[Pass 1] No Twitter handle to check")
 
         # ── Pass 2: Name + company pattern matching ──────────────────────────
-        candidates = generate_name_candidates(name, company)[:max_candidates]
+        all_candidates = generate_name_candidates(name, company)
+        candidates = [c for c in all_candidates if c.lower() not in exclude_set]
+        excluded_count = len(all_candidates) - len(candidates)
+        if max_candidates is not None:
+            candidates = candidates[:max_candidates]
         if not candidates:
             result.logs.append("[Pass 2] Skipped — name not ASCII or only one word")
             return result
 
         co_shorthands = get_company_shorthands(company)
-        result.logs.append(f"[Pass 2] Trying {len(candidates)} name/company patterns…")
+        suffix = f", {excluded_count} excluded" if excluded_count else ""
+        result.logs.append(f"[Pass 2] Trying {len(candidates)} name/company patterns{suffix}…")
         found_matches: list[tuple[float, str, object, str]] = []
 
         for idx, candidate in enumerate(candidates):
