@@ -486,7 +486,7 @@ export function useLeadActivity(id: string) {
 export function useFindTelegram(leadId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.startFindTelegram(leadId),
+    mutationFn: (force = false) => api.startFindTelegram(leadId, force),
     onSuccess: () => {
       // Invalidate lead so telegram_alternatives persisted by the background
       // task are reflected when the poll detects completion.

@@ -745,11 +745,13 @@ async def enrich_lead_phone(lead_id: str, repo: Repository = Depends(get_repo)):
 # ── Find Telegram ────────────────────────────────────────────────────
 
 @router.post("/leads/{lead_id}/find-telegram", response_model=FindTelegramTaskOut)
-async def start_find_telegram(lead_id: str, repo: Repository = Depends(get_repo)):
+async def start_find_telegram(lead_id: str, force: bool = False, repo: Repository = Depends(get_repo)):
     """Start a background task to find the Telegram username for a lead.
 
     Returns immediately with a task_id. Poll GET /leads/{lead_id}/find-telegram/{task_id}
     to check progress. On completion, telegram_alternatives is also persisted to the DB.
+
+    Pass ?force=true to re-run even if a previous search found nothing.
     """
     from linauto.config import get_settings
     from linauto.telegram.resolver import find_telegram
@@ -774,6 +776,23 @@ async def start_find_telegram(lead_id: str, repo: Repository = Depends(get_repo)
     ).strip() or None
     if not person_name:
         raise HTTPException(status_code=422, detail="Lead has no name — cannot search Telegram")
+
+    # Block re-search if a prior run already found nothing (unless force=true).
+    if not force and not lead.telegram_username:
+        from sqlalchemy import select as _select2
+        from linauto.db.models import LeadEvent as _LeadEvent2
+        prev_q = await repo.session.execute(
+            _select2(_LeadEvent2)
+            .where(_LeadEvent2.lead_id == lead_id, _LeadEvent2.event_type == "telegram_found")
+            .order_by(_LeadEvent2.created_at.desc())
+            .limit(1)
+        )
+        prev_event = prev_q.scalars().first()
+        if prev_event and not (prev_event.details or {}).get("best_match"):
+            raise HTTPException(
+                status_code=409,
+                detail="Already searched — no match found. Use force=true to retry.",
+            )
 
     task_id = str(uuid.uuid4())
     _find_tg_tasks[task_id] = {"status": "running", "logs": []}

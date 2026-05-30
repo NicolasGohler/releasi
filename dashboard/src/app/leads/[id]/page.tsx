@@ -185,14 +185,24 @@ interface TelegramSectionProps {
   lead: Lead;
   onSave: (v: string | null) => Promise<void>;
   onToggleContacted: (v: boolean) => Promise<void>;
+  activity?: LeadActivity[];
 }
 
-function TelegramSection({ lead, onSave, onToggleContacted }: TelegramSectionProps) {
+function TelegramSection({ lead, onSave, onToggleContacted, activity }: TelegramSectionProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // True if a prior search ran and found nothing, and no username is saved yet.
+  const previousSearchFoundNothing = !lead.telegram_username && (() => {
+    if (!activity) return false;
+    const last = [...activity]
+      .filter(e => e.source === "lead_event" && e.action_type === "telegram_found")
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+    return !!last && !last.details?.best_match;
+  })();
 
   const findMutation = useFindTelegram(lead.id);
   const taskQuery = useFindTelegramStatus(lead.id, taskId);
@@ -255,10 +265,10 @@ function TelegramSection({ lead, onSave, onToggleContacted }: TelegramSectionPro
     if (e.key === "Escape") setEditing(false);
   }
 
-  async function handleFind() {
+  async function handleFind(force = false) {
     setTaskId(null);
     try {
-      const result = await findMutation.mutateAsync();
+      const result = await findMutation.mutateAsync(force);
       setTaskId(result.task_id);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to start search";
@@ -273,18 +283,32 @@ function TelegramSection({ lead, onSave, onToggleContacted }: TelegramSectionPro
       {/* Label row */}
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium text-sky-600 dark:text-sky-400">Telegram</span>
-        <button
-          onClick={handleFind}
-          disabled={findMutation.isPending || isSearching}
-          className="flex items-center gap-1 text-xs text-sky-600 dark:text-sky-400 hover:text-sky-500 disabled:opacity-40 transition-colors"
-          title="Search Telegram for this lead"
-        >
-          {isSearching ? (
-            <><Loader2 className="h-3 w-3 animate-spin" /> Searching…</>
-          ) : (
-            <><Search className="h-3 w-3" /> Find</>
-          )}
-        </button>
+        {previousSearchFoundNothing && !taskId ? (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Search className="h-3 w-3" /> No match
+            <button
+              onClick={() => handleFind(true)}
+              disabled={findMutation.isPending}
+              className="text-sky-600 dark:text-sky-400 hover:text-sky-500 disabled:opacity-40 transition-colors underline underline-offset-2"
+              title="Re-run Telegram search"
+            >
+              retry
+            </button>
+          </span>
+        ) : (
+          <button
+            onClick={() => handleFind()}
+            disabled={findMutation.isPending || isSearching}
+            className="flex items-center gap-1 text-xs text-sky-600 dark:text-sky-400 hover:text-sky-500 disabled:opacity-40 transition-colors"
+            title="Search Telegram for this lead"
+          >
+            {isSearching ? (
+              <><Loader2 className="h-3 w-3 animate-spin" /> Searching…</>
+            ) : (
+              <><Search className="h-3 w-3" /> Find</>
+            )}
+          </button>
+        )}
       </div>
 
       {/* Editable field */}
@@ -744,6 +768,7 @@ export default function LeadDetailPage() {
             {/* Telegram — prominent with Find button + outreach toggle */}
             <TelegramSection
               lead={lead}
+              activity={activity}
               onSave={(v) => save("telegram_username", v)}
               onToggleContacted={async (contacted) => {
                 await update.mutateAsync({ tg_contacted: contacted });

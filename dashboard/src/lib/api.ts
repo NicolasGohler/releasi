@@ -418,8 +418,8 @@ export const updateLead = (id: string, data: LeadUpdateRequest) =>
 export const fetchLeadActivity = (id: string, limit = 50) =>
   apiFetch<LeadActivity[]>(`/leads/${id}/activity?limit=${limit}`);
 
-export const startFindTelegram = (leadId: string) =>
-  apiFetch<FindTelegramTask>(`/leads/${leadId}/find-telegram`, { method: "POST" });
+export const startFindTelegram = (leadId: string, force = false) =>
+  apiFetch<FindTelegramTask>(`/leads/${leadId}/find-telegram${force ? "?force=true" : ""}`, { method: "POST" });
 
 export const getFindTelegramStatus = (leadId: string, taskId: string) =>
   apiFetch<FindTelegramTask>(`/leads/${leadId}/find-telegram/${taskId}`);
