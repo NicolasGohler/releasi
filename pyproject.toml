@@ -38,6 +38,12 @@ api = [
     "python-multipart>=0.0.6",
     "slowapi>=0.1.9",
 ]
+fundraising = [
+    "beautifulsoup4>=4.14",
+    "pandas>=2.0",
+    "slack-sdk>=3.0",
+    "requests>=2.32",
+]
 
 [project.scripts]
 releasi = "releasi.cli:app"

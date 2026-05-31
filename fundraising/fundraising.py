@@ -1,6 +1,5 @@
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
-from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import random
@@ -9,14 +8,30 @@ import re
 from urllib.parse import urlparse
 import json
 import os
+import sqlite3
+import yaml
 
-load_dotenv()
+
+def _load_fundraising_settings() -> dict:
+    """Load the fundraising: section from Linauto's settings.yaml."""
+    settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config', 'settings.yaml')
+    try:
+        with open(settings_path) as f:
+            return yaml.safe_load(f).get('fundraising', {})
+    except Exception as e:
+        print(f"⚠ Could not load settings.yaml: {e} — falling back to env vars", flush=True)
+        return {}
+
+_SETTINGS = _load_fundraising_settings()
+
+# Path to the shared Linauto SQLite DB (host path, outside Docker)
+LINAUTO_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'linauto.db')
 
 # Configuration
 MAX_PROJECTS = 30 # Maximum projects to collect from each source
 
 # Apollo.io API Configuration
-APOLLO_API_KEY = os.getenv("APOLLO_API_KEY")
+APOLLO_API_KEY = _SETTINGS.get('apollo_api_key') or os.getenv("APOLLO_API_KEY")
 APOLLO_API_URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
 APOLLO_BULK_ENRICHMENT_URL = "https://api.apollo.io/api/v1/people/bulk_match"
 
@@ -77,21 +92,13 @@ def _new_stealth_page(context):
 
 
 def _build_proxy_config() -> dict | None:
-    """Return a Playwright proxy dict if PROXY_SERVER is configured, else None.
-
-    Expected env vars:
-        PROXY_SERVER   — e.g. "http://geo.iproyal.com:12321"  (required to enable)
-        PROXY_USERNAME — proxy username
-        PROXY_PASSWORD — full proxy password, including any sticky-session
-                         parameters appended by the provider, e.g.
-                         "pass_country-us_session-abc123_lifetime-168h"
-    """
-    server = os.getenv("PROXY_SERVER")
+    """Return a Playwright proxy dict from settings.yaml, or None if not configured."""
+    server   = _SETTINGS.get('proxy_server')   or os.getenv("PROXY_SERVER")
+    username = _SETTINGS.get('proxy_username') or os.getenv("PROXY_USERNAME")
+    password = _SETTINGS.get('proxy_password') or os.getenv("PROXY_PASSWORD")
     if not server:
         return None
     cfg: dict = {"server": server}
-    username = os.getenv("PROXY_USERNAME")
-    password = os.getenv("PROXY_PASSWORD")
     if username:
         cfg["username"] = username
     if password:
@@ -1215,37 +1222,60 @@ def enrich_people_with_emails(people_with_linkedin):
     return enrichment_results
 
 def _load_cryptorank_cookies():
-    """Load CryptoRank storage state from the CRYPTORANK_COOKIES env var.
+    """Load CryptoRank cookies from the scraper_cookies DB table.
 
-    Returns a dict ready to pass to browser.new_context(storage_state=...)
-    or None if the env var is not set.
+    Returns a dict ready to pass to browser.new_context(storage_state=...).
+    Falls back to CRYPTORANK_COOKIES env var (base64) for GitHub Actions.
     """
+    try:
+        conn = sqlite3.connect(f"file:{LINAUTO_DB}?mode=ro", uri=True)
+        row = conn.execute(
+            "SELECT cookies_json FROM scraper_cookies WHERE site = 'cryptorank' LIMIT 1"
+        ).fetchone()
+        conn.close()
+        if row:
+            cookies = json.loads(row[0])
+            return {"cookies": cookies, "origins": []}
+    except Exception as e:
+        print(f"  ⚠ Could not load CryptoRank cookies from DB: {e}", flush=True)
+    # Fallback: base64-encoded env var (GitHub Actions / local)
     raw = os.getenv("CRYPTORANK_COOKIES")
     if not raw:
         return None
     try:
-        import base64, json as _json
-        return _json.loads(base64.b64decode(raw).decode())
+        import base64
+        return json.loads(base64.b64decode(raw).decode())
     except Exception as e:
-        print(f" Could not decode CRYPTORANK_COOKIES: {e}")
+        print(f"  Could not decode CRYPTORANK_COOKIES: {e}")
         return None
 
 
 def _load_rootdata_cookies():
-    """Load RootData cookies from the ROOTDATA_COOKIES env var.
+    """Load RootData cookies from the scraper_cookies DB table.
 
-    Returns a list of cookie dicts ready to pass to context.add_cookies(),
-    or None if the env var is not set / invalid.
+    Returns a list of cookie dicts ready to pass to context.add_cookies().
+    Falls back to ROOTDATA_COOKIES env var (base64) for GitHub Actions.
     """
+    try:
+        conn = sqlite3.connect(f"file:{LINAUTO_DB}?mode=ro", uri=True)
+        row = conn.execute(
+            "SELECT cookies_json FROM scraper_cookies WHERE site = 'rootdata' LIMIT 1"
+        ).fetchone()
+        conn.close()
+        if row:
+            return json.loads(row[0])
+    except Exception as e:
+        print(f"  ⚠ Could not load RootData cookies from DB: {e}", flush=True)
+    # Fallback: base64-encoded env var (GitHub Actions / local)
     raw = os.getenv("ROOTDATA_COOKIES")
     if not raw:
         return None
     try:
-        import base64, json as _json
-        state = _json.loads(base64.b64decode(raw).decode())
+        import base64
+        state = json.loads(base64.b64decode(raw).decode())
         return state.get("cookies", [])
     except Exception as e:
-        print(f" Could not decode ROOTDATA_COOKIES: {e}")
+        print(f"  Could not decode ROOTDATA_COOKIES: {e}")
         return None
 
 def fetch_team_members(project_url):
@@ -1324,30 +1354,34 @@ def fetch_team_members(project_url):
         print(f"\n Total team members found: {len(members)}")
         return members
 
-def _lead_exists_in_releasi(linkedin_url: str, headers: dict) -> bool:
+def _lead_exists_in_releasi(linkedin_url: str, headers: dict = None) -> bool:
     """Return True if a lead with this LinkedIn URL already exists in Releasi.
 
-    Uses GET /api/v1/leads/lookup?linkedin_url=<url>.
-    404 → not found (green light to proceed).
-    200 → already in platform (skip).
-    Any other error is treated as unknown → proceed anyway.
+    Uses a direct SQLite read (WAL mode — safe for concurrent access).
+    Falls back to HTTP API if the DB is unavailable.
     """
+    try:
+        conn = sqlite3.connect(f"file:{LINAUTO_DB}?mode=ro", uri=True)
+        exists = conn.execute(
+            "SELECT 1 FROM leads WHERE linkedin_url = ? LIMIT 1", (linkedin_url,)
+        ).fetchone() is not None
+        conn.close()
+        return exists
+    except Exception as e:
+        print(f"  ⚠ DB lookup error ({e}) — falling back to API", flush=True)
+    # Fallback: HTTP API
+    if not RELEASI_API_KEY:
+        return False
     try:
         resp = requests.get(
             f"{RELEASI_BASE_URL}/leads/lookup",
-            headers=headers,
+            headers=headers or {"Authorization": f"Bearer {RELEASI_API_KEY}"},
             params={"linkedin_url": linkedin_url},
             timeout=10,
         )
-        if resp.status_code == 200:
-            return True
-        if resp.status_code == 404:
-            return False
-        # unexpected status — log and proceed
-        print(f"  ⚠ Releasi lookup returned {resp.status_code} for {linkedin_url} — proceeding", flush=True)
-        return False
+        return resp.status_code == 200
     except Exception as e:
-        print(f"  ⚠ Releasi lookup error ({e}) — proceeding", flush=True)
+        print(f"  ⚠ API lookup error ({e}) — proceeding", flush=True)
         return False
 
 
@@ -1723,8 +1757,8 @@ import os
 from datetime import datetime
 
 # Slack Configuration
-SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
-SLACK_CHANNEL = os.getenv("SLACK_CHANNEL")
+SLACK_BOT_TOKEN = _SETTINGS.get('slack_bot_token') or os.getenv("SLACK_BOT_TOKEN")
+SLACK_CHANNEL   = _SETTINGS.get('slack_channel')   or os.getenv("SLACK_CHANNEL")
 
 def send_error_to_slack(error_message):
     """Send error notification to Slack"""
@@ -1749,9 +1783,9 @@ def send_error_to_slack(error_message):
         print(f" Failed to send error notification: {str(e)}")
         return False
 
-RELEASI_BASE_URL = "http://REDACTED:8000/api/v1"
-RELEASI_API_KEY = os.getenv("RELEASI_API_KEY")
-RELEASI_CAMPAIGN_ID = "24acf14e-82ce-4ccd-826b-95739145d762"
+RELEASI_BASE_URL    = _SETTINGS.get('releasi_base_url')    or os.getenv("RELEASI_BASE_URL")    or "http://REDACTED:8000/api/v1"
+RELEASI_API_KEY     = _SETTINGS.get('releasi_api_key')     or os.getenv("RELEASI_API_KEY")     or os.getenv("LINAUTO_API_KEY")
+RELEASI_CAMPAIGN_ID = _SETTINGS.get('releasi_campaign_id') or os.getenv("RELEASI_CAMPAIGN_ID") or "24acf14e-82ce-4ccd-826b-95739145d762"
 
 def push_to_releasi(csv_file_path):
     """Create a new lead list, upload CSV, and assign to the campaign."""
