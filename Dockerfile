@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir playwright playwright-stealth \
 
 # 2. Install Python dependencies only (re-runs only when pyproject.toml changes)
 COPY pyproject.toml .
-COPY src/linauto/__init__.py src/linauto/__init__.py
+COPY src/releasi/__init__.py src/releasi/__init__.py
 RUN pip install --no-cache-dir ".[api]"
 
 # 3. Copy full application source (changes frequently)
@@ -37,4 +37,4 @@ EXPOSE 8000
 # requiring an image rebuild.
 ENV PYTHONPATH=/app/src
 
-CMD ["linauto", "run"]
+CMD ["releasi", "run"]

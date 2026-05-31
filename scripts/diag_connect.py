@@ -1,6 +1,6 @@
 """
 End-to-end test: send a real connection request using the new preload URL flow.
-  docker exec linauto python3 /app/scripts/diag_connect.py
+  docker exec releasi python3 /app/scripts/diag_connect.py
 """
 import asyncio
 import os
@@ -13,11 +13,11 @@ DRY_RUN = "--dry-run" in sys.argv  # Pass --dry-run to skip the actual send
 
 
 async def main():
-    from linauto.db.engine import get_session_factory
-    from linauto.db.repository import Repository
-    from linauto.linkedin.browser import LinkedInBrowser
-    from linauto.linkedin.actions import LinkedInActions
-    from linauto.linkedin import selectors
+    from releasi.db.engine import get_session_factory
+    from releasi.db.repository import Repository
+    from releasi.linkedin.browser import LinkedInBrowser
+    from releasi.linkedin.actions import LinkedInActions
+    from releasi.linkedin import selectors
     # HumanDelay imported implicitly by LinkedInActions
 
     session_factory = get_session_factory()

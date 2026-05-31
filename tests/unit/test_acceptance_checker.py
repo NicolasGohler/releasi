@@ -1,7 +1,7 @@
 """Tests for acceptance checker logic — URL normalization and lead diffing."""
 import pytest
-from linauto.scheduler.runner import _normalize_li_url
-from linauto.linkedin.actions import InvitationSnapshot
+from releasi.scheduler.runner import _normalize_li_url
+from releasi.linkedin.actions import InvitationSnapshot
 
 
 # ── _normalize_li_url tests ────────────────────────────────────────────────

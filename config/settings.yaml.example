@@ -1,5 +1,5 @@
 # Copy this file to config/settings.yaml and adjust values
-db_url: "sqlite+aiosqlite:///data/linauto.db"
+db_url: "sqlite+aiosqlite:///data/releasi.db"
 
 # Working hours (actions only execute during these hours)
 work_days: [0, 1, 2, 3, 4]  # Mon-Fri
@@ -77,4 +77,4 @@ followup_daily_cap: 15   # Max automated follow-up messages per account per day
 
 # Logging
 log_level: "INFO"
-log_file: "data/logs/linauto.log"
+log_file: "data/logs/releasi.log"

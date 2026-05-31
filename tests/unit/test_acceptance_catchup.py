@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from linauto.campaign.acceptance_catchup import (
+from releasi.campaign.acceptance_catchup import (
     BUFFER_HOURS,
     MAX_CUTOFF_HOURS,
     MIN_CUTOFF_HOURS,

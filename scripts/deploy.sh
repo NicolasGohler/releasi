@@ -1,16 +1,16 @@
 #!/bin/bash
-# Deploy code changes to the linauto server.
+# Deploy code changes to the releasi server.
 # Usage: ssh root@REDACTED 'bash -s' < scripts/deploy.sh
-#    or: ssh root@REDACTED 'cd /root/linauto && bash scripts/deploy.sh'
+#    or: ssh root@REDACTED 'cd /root/releasi && bash scripts/deploy.sh'
 
 set -e
 
-DB=/app/data/linauto.db
-RESUME_FILE=/tmp/linauto_deploy_resume_ids
+DB=/app/data/releasi.db
+RESUME_FILE=/tmp/releasi_deploy_resume_ids
 
-_db() { docker exec linauto python3 -c "import sqlite3; c=sqlite3.connect('$DB'); $1; c.commit(); c.close()"; }
+_db() { docker exec releasi python3 -c "import sqlite3; c=sqlite3.connect('$DB'); $1; c.commit(); c.close()"; }
 
-cd /root/linauto
+cd /root/releasi
 echo "==> Pulling latest code ..."
 git pull
 
@@ -29,11 +29,11 @@ else
 fi
 
 echo "==> Restarting container to reload Python modules ..."
-docker restart linauto
+docker restart releasi
 
 echo "==> Waiting for container to be healthy ..."
 sleep 5
-docker logs linauto --since 5s 2>&1 | tail -5
+docker logs releasi --since 5s 2>&1 | tail -5
 
 echo "==> Resuming accounts that were active before deploy ..."
 if [ -n "$ACTIVE_IDS" ]; then

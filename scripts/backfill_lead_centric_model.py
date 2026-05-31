@@ -34,8 +34,8 @@ Safety:
     against the pre_option_c_migration.db snapshot.
 
 Usage (inside the container):
-  docker exec linauto python3 /app/scripts/backfill_lead_centric_model.py
-  docker exec linauto python3 /app/scripts/backfill_lead_centric_model.py --report-only
+  docker exec releasi python3 /app/scripts/backfill_lead_centric_model.py
+  docker exec releasi python3 /app/scripts/backfill_lead_centric_model.py --report-only
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-DB_PATH = "/app/data/linauto.db"
+DB_PATH = "/app/data/releasi.db"
 
 
 def _normalize_li_url(url: str | None) -> str:

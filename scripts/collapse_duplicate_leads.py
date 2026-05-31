@@ -44,7 +44,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 
-DB_PATH = "/app/data/linauto.db"
+DB_PATH = "/app/data/releasi.db"
 PROFILE_FIELDS = ["first_name", "last_name", "company", "title", "email", "phone", "extra_data"]
 
 

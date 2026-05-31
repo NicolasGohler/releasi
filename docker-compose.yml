@@ -1,9 +1,9 @@
 version: "3.8"
 
 services:
-  linauto:
+  releasi:
     build: .
-    container_name: linauto
+    container_name: releasi
     restart: unless-stopped
     volumes:
       - ./data:/app/data
@@ -12,7 +12,7 @@ services:
       - "8000:8000"
       - "6080:6080"
     environment:
-      - LINAUTO_LOG_LEVEL=INFO
+      - RELEASI_LOG_LEVEL=INFO
       - TZ=Europe/Berlin
     deploy:
       resources:

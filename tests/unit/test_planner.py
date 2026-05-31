@@ -2,7 +2,7 @@
 import pytest
 from datetime import date, timedelta
 
-from linauto.scheduler.planner import generate_daily_plan, SlotType
+from releasi.scheduler.planner import generate_daily_plan, SlotType
 
 
 class TestGenerateDailyPlan:

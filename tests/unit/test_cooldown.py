@@ -2,7 +2,7 @@
 import pytest
 from datetime import datetime, date, time, timedelta
 
-from linauto.safety.cooldown import (
+from releasi.safety.cooldown import (
     calculate_cooldown_resume,
     push_cooldown_one_day,
     is_cooldown_expired,

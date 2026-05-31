@@ -21,7 +21,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy import select, func
 
-from linauto.db.models import (
+from releasi.db.models import (
     Base,
     Account, AccountStatus,
     Campaign, CampaignStatus,
@@ -29,8 +29,8 @@ from linauto.db.models import (
     LeadList,
     LeadListMembership, CampaignLeadAssignment,
 )
-from linauto.db.repository import Repository
-from linauto.db import repository as repo_module
+from releasi.db.repository import Repository
+from releasi.db import repository as repo_module
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────

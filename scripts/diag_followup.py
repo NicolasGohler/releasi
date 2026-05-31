@@ -2,9 +2,9 @@
 Iterative diagnostic for the follow-up message flow.
 
 Usage:
-    docker exec linauto python3 /app/scripts/diag_followup.py                 # dry run: inspect only
-    docker exec linauto python3 /app/scripts/diag_followup.py --send          # actually send the message
-    docker exec linauto python3 /app/scripts/diag_followup.py --send --keep   # keep browser open 60s after
+    docker exec releasi python3 /app/scripts/diag_followup.py                 # dry run: inspect only
+    docker exec releasi python3 /app/scripts/diag_followup.py --send          # actually send the message
+    docker exec releasi python3 /app/scripts/diag_followup.py --send --keep   # keep browser open 60s after
 """
 import asyncio
 import os
@@ -20,9 +20,9 @@ KEEP = "--keep" in sys.argv
 
 
 async def main():
-    from linauto.db.engine import get_session_factory
-    from linauto.db.repository import Repository
-    from linauto.linkedin.browser import LinkedInBrowser
+    from releasi.db.engine import get_session_factory
+    from releasi.db.repository import Repository
+    from releasi.linkedin.browser import LinkedInBrowser
 
     os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 

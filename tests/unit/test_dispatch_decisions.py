@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from linauto.safety.dispatch_decisions import (
+from releasi.safety.dispatch_decisions import (
     AccountAction,
     LeadAction,
     classify_connection_result,

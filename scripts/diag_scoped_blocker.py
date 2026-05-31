@@ -13,7 +13,7 @@ No connection request is actually sent. We just verify the selector still resolv
 and the button is clickable-looking (visible, inMain, not the overlay).
 
 Usage:
-  docker exec linauto python3 /app/scripts/diag_scoped_blocker.py
+  docker exec releasi python3 /app/scripts/diag_scoped_blocker.py
 """
 import asyncio
 import os
@@ -24,10 +24,10 @@ SCREENSHOT_DIR = "/app/data/debug_screenshots/scoped_blocker"
 
 
 async def main():
-    from linauto.db.engine import get_session_factory
-    from linauto.db.repository import Repository
-    from linauto.linkedin.browser import LinkedInBrowser
-    from linauto.linkedin.actions import LinkedInActions
+    from releasi.db.engine import get_session_factory
+    from releasi.db.repository import Repository
+    from releasi.linkedin.browser import LinkedInBrowser
+    from releasi.linkedin.actions import LinkedInActions
     from sqlalchemy import text
 
     os.makedirs(SCREENSHOT_DIR, exist_ok=True)

@@ -3,10 +3,10 @@
 ## Server
 - **IP**: REDACTED
 - **SSH**: `ssh root@REDACTED`
-- **Docker container**: `linauto`
-- **Live DB**: `/app/data/linauto.db` inside container
-- **Query DB**: `docker exec linauto python3 -c "import sqlite3; ..."` (no sqlite3 binary in container)
-- **Claude can always SSH and restart the server autonomously** — no need to ask for permission. If diagnosing an issue requires a restart (stuck pool, hung process, post-deploy), just do it: `ssh root@REDACTED 'docker restart linauto'`
+- **Docker container**: `releasi`
+- **Live DB**: `/app/data/releasi.db` inside container
+- **Query DB**: `docker exec releasi python3 -c "import sqlite3; ..."` (no sqlite3 binary in container)
+- **Claude can always SSH and restart the server autonomously** — no need to ask for permission. If diagnosing an issue requires a restart (stuck pool, hung process, post-deploy), just do it: `ssh root@REDACTED 'docker restart releasi'`
 
 ## Critical Rules (AI assistant must follow)
 - **Never activate or resume a campaign** unless the user explicitly asks. Campaigns may be paused intentionally. Activating them uninvited can fire connection requests the user hasn't approved.
@@ -14,47 +14,47 @@
 - **Never send bare HTTP requests with `li_at`** — always use a full browser context (see Testing & Diagnostics below).
 
 ## Deploying code changes
-`src/` is volume-mounted from `/root/linauto/src` — but **Python caches imported modules in `sys.modules`**. A `git pull` updates files on disk but the running process keeps old code. **Always restart the container after pulling**:
+`src/` is volume-mounted from `/root/releasi/src` — but **Python caches imported modules in `sys.modules`**. A `git pull` updates files on disk but the running process keeps old code. **Always restart the container after pulling**:
 
 ```bash
 ssh root@REDACTED
-cd /root/linauto && git pull && docker restart linauto
+cd /root/releasi && git pull && docker restart releasi
 ```
 
-Or use the deploy script: `ssh root@REDACTED 'cd /root/linauto && bash scripts/deploy.sh'`
+Or use the deploy script: `ssh root@REDACTED 'cd /root/releasi && bash scripts/deploy.sh'`
 
 The deploy script automatically pauses active accounts before the restart and resumes exactly those accounts after the container is healthy. This prevents missed dispatches mid-deploy.
 
 Only rebuild the image when changing **dependencies** (`pyproject.toml`) or **`config.py`/`models.py`** (pydantic/SQLAlchemy schema changes). `docker-compose build` is broken (v1.29 incompatibility) — use `docker run` directly:
 
-**Secrets are stored in `/root/linauto/.env`** (not inline in the command — keeps them out of `ps aux`). Create/update it once:
+**Secrets are stored in `/root/releasi/.env`** (not inline in the command — keeps them out of `ps aux`). Create/update it once:
 ```bash
-cat > /root/linauto/.env << 'EOF'
-LINAUTO_API_KEY=REDACTED
-LINAUTO_TELEGRAM_API_ID=<api_id>
-LINAUTO_TELEGRAM_API_HASH=<api_hash>
-LINAUTO_TELEGRAM_SESSION=<telethon_string_session>
+cat > /root/releasi/.env << 'EOF'
+RELEASI_API_KEY=REDACTED
+RELEASI_TELEGRAM_API_ID=<api_id>
+RELEASI_TELEGRAM_API_HASH=<api_hash>
+RELEASI_TELEGRAM_SESSION=<telethon_string_session>
 EOF
-chmod 600 /root/linauto/.env
+chmod 600 /root/releasi/.env
 ```
 
-Telegram credentials are used by `telegram/resolver.py` for per-lead username lookup. They map to `config.telegram_api_id`, `config.telegram_api_hash`, `config.telegram_session` via Pydantic settings (prefix `LINAUTO_`). If unset, the Find Telegram button on the lead detail page will error.
+Telegram credentials are used by `telegram/resolver.py` for per-lead username lookup. They map to `config.telegram_api_id`, `config.telegram_api_hash`, `config.telegram_session` via Pydantic settings (prefix `RELEASI_`). If unset, the Find Telegram button on the lead detail page will error.
 
 ```bash
-cd /root/linauto && git pull
+cd /root/releasi && git pull
 docker-compose build
-docker stop linauto && docker rm linauto
-docker run -d --name linauto --restart unless-stopped \
-  -v /root/linauto/data:/app/data \
-  -v /root/linauto/config/settings.yaml:/app/config/settings.yaml:ro \
-  -v /root/linauto/src:/app/src \
+docker stop releasi && docker rm releasi
+docker run -d --name releasi --restart unless-stopped \
+  -v /root/releasi/data:/app/data \
+  -v /root/releasi/config/settings.yaml:/app/config/settings.yaml:ro \
+  -v /root/releasi/src:/app/src \
   -p 8000:8000 -p 6080:6080 \
-  --env-file /root/linauto/.env \
-  -e LINAUTO_API_ENABLED=true \
-  -e "LINAUTO_CORS_ORIGINS=[]" \
-  -e LINAUTO_LOG_LEVEL=INFO -e TZ=Europe/Berlin \
+  --env-file /root/releasi/.env \
+  -e RELEASI_API_ENABLED=true \
+  -e "RELEASI_CORS_ORIGINS=[]" \
+  -e RELEASI_LOG_LEVEL=INFO -e TZ=Europe/Berlin \
   --memory=3g --cpus=1.5 \
-  linauto_linauto:latest
+  releasi_releasi:latest
 ```
 
 ## Dashboard → API security model
@@ -62,13 +62,13 @@ docker run -d --name linauto --restart unless-stopped \
 The dashboard (Vercel, Next.js) and backend API (FastAPI on `REDACTED:8000`) are gated as follows. **Do not regress any of this.**
 
 1. **Server-side key injection.** The dashboard never ships the API key to the browser. Browser calls go to same-origin `/api/v1/*`, which is handled by the Next.js route at `dashboard/src/app/api/v1/[...path]/route.ts`. That route forwards to `BACKEND_URL`, injects `Authorization: Bearer ${BACKEND_API_KEY}` server-side, and streams request/response bodies (CSV upload + export both depend on this).
-   - **Vercel env vars**: `BACKEND_URL` (e.g. `http://REDACTED:8000`) and `BACKEND_API_KEY` (matches `LINAUTO_API_KEY` on the server). Both are **server-only** — do NOT prefix with `NEXT_PUBLIC_`.
+   - **Vercel env vars**: `BACKEND_URL` (e.g. `http://REDACTED:8000`) and `BACKEND_API_KEY` (matches `RELEASI_API_KEY` on the server). Both are **server-only** — do NOT prefix with `NEXT_PUBLIC_`.
    - **Never add `NEXT_PUBLIC_API_KEY`** back to `dashboard/.env*` or `lib/api.ts`. That was the old model and leaked the key to every visitor.
    - **Never add a `/api/v1/:path*` rewrite back to `next.config.ts`**. Rewrites bypass the route handler, so the key injection would be skipped.
 
-2. **CORS fails closed.** `LINAUTO_CORS_ORIGINS=[]` in the container env (see deploy block above). The Next proxy is same-origin, so the browser never needs cross-origin access. If you add another dashboard domain, add it explicitly — do not restore `["*"]`.
+2. **CORS fails closed.** `RELEASI_CORS_ORIGINS=[]` in the container env (see deploy block above). The Next proxy is same-origin, so the browser never needs cross-origin access. If you add another dashboard domain, add it explicitly — do not restore `["*"]`.
 
-3. **Rate limiting.** `slowapi` is wired in `src/linauto/api/app.py` at 120 req/min per client IP (X-Forwarded-For aware — the Next proxy forwards the real client IP). Scheduler jobs run in-process and do NOT hit HTTP, so they bypass the limit. If you see 429s in dashboard usage, raise `default_limits` in `app.py` rather than disabling the middleware.
+3. **Rate limiting.** `slowapi` is wired in `src/releasi/api/app.py` at 120 req/min per client IP (X-Forwarded-For aware — the Next proxy forwards the real client IP). Scheduler jobs run in-process and do NOT hit HTTP, so they bypass the limit. If you see 429s in dashboard usage, raise `default_limits` in `app.py` rather than disabling the middleware.
 
 4. **Vercel Deployment Protection** (manual toggle on Vercel project → Settings → Deployment Protection) is the outer gate. Without it, anyone with the URL reaches the Next.js app — which can't leak the key directly, but can still drive the proxy. Keep it enabled.
 
@@ -97,7 +97,7 @@ When running any diagnostic script, test, or one-off action against LinkedIn:
 
 7. **Never send bare HTTP requests with `li_at`** — always use a full browser context. LinkedIn treats bare cookie requests from non-browser user agents as stolen-cookie tests and invalidates the session.
 
-8. **Run diagnostics inside the container** — `docker exec linauto python3 /app/scripts/diag_connect.py`. This ensures the correct Python environment, access to browser profiles, and proper proxy routing.
+8. **Run diagnostics inside the container** — `docker exec releasi python3 /app/scripts/diag_connect.py`. This ensures the correct Python environment, access to browser profiles, and proper proxy routing.
 
 ## Overview
 Dripify alternative. Automates LinkedIn connection requests and follow-up messages with safety-first design (warmup ramps, cooldowns, rate limits, stealth browsing).
@@ -114,7 +114,7 @@ Dripify alternative. Automates LinkedIn connection requests and follow-up messag
 
 ## Project Structure
 ```
-src/linauto/
+src/releasi/
 ├── cli.py                  # Typer CLI (all commands)
 ├── config.py               # Pydantic settings from YAML
 ├── db/
@@ -160,12 +160,12 @@ src/linauto/
 ```
 
 ## Key Files
-- `src/linauto/linkedin/selectors.py` — ALL LinkedIn DOM selectors. Update here when LinkedIn changes their UI.
-- `src/linauto/linkedin/browser.py` — Browser fingerprinting. `_CHROMIUM_MAJOR` must match the actual Playwright Chromium binary (check with `chrome --version` in container).
-- `src/linauto/db/models.py` — SQLAlchemy models. Use `Optional[X]` (not `X | None`) for Mapped[] annotations.
+- `src/releasi/linkedin/selectors.py` — ALL LinkedIn DOM selectors. Update here when LinkedIn changes their UI.
+- `src/releasi/linkedin/browser.py` — Browser fingerprinting. `_CHROMIUM_MAJOR` must match the actual Playwright Chromium binary (check with `chrome --version` in container).
+- `src/releasi/db/models.py` — SQLAlchemy models. Use `Optional[X]` (not `X | None`) for Mapped[] annotations.
 - `config/settings.yaml.example` — Reference config with all available settings.
-- `src/linauto/campaign/importer.py` — CSV import. Handles `name`/`full_name` columns (splits into first/last) and `project`/`project_name` columns (maps to company). Add new column aliases to `_COLUMN_MAP` or `_FULL_NAME_COLUMNS` here.
-- `src/linauto/telegram/resolver.py` — Async Telethon Telegram username finder. Two-pass: (1) checks Twitter handle on Telegram, (2) scores name+company pattern candidates. Returns `FindResult(best_match, alternatives, logs)`. Credentials from `config.telegram_api_id/hash/session`.
+- `src/releasi/campaign/importer.py` — CSV import. Handles `name`/`full_name` columns (splits into first/last) and `project`/`project_name` columns (maps to company). Add new column aliases to `_COLUMN_MAP` or `_FULL_NAME_COLUMNS` here.
+- `src/releasi/telegram/resolver.py` — Async Telethon Telegram username finder. Two-pass: (1) checks Twitter handle on Telegram, (2) scores name+company pattern candidates. Returns `FindResult(best_match, alternatives, logs)`. Credentials from `config.telegram_api_id/hash/session`.
 
 ## Scheduler Jobs (6 total)
 All times are **in the account's configured timezone** (e.g. `America/New_York` for Montreal). Jobs that need per-account timing fire hourly and skip accounts that are outside their window or have already run today.
@@ -183,7 +183,7 @@ All times are **in the account's configured timezone** (e.g. `America/New_York` 
 
 ### Browser Fingerprinting (`browser.py`)
 - **UA must match Chromium binary**: `_CHROMIUM_MAJOR = 145` — update when rebuilding with newer Playwright. Mismatch between `navigator.userAgent` and `navigator.userAgentData` is a strong bot signal.
-  - Check actual version: `docker exec linauto /home/appuser/.cache/ms-playwright/chromium-*/chrome-linux64/chrome --version`
+  - Check actual version: `docker exec releasi /home/appuser/.cache/ms-playwright/chromium-*/chrome-linux64/chrome --version`
 - **Country-aware UA pool**: Mac UAs only for `{us, ca, gb, au, nz, ie}`; Windows-only for all other markets.
 - **Timezone derived from proxy country**: `browser.py` maps `proxy_country` → IANA timezone via `_COUNTRY_TIMEZONE` dict (40+ countries). The browser `timezone_id` is always set to match the proxy IP's country, regardless of the account's `timezone` field. If they differ, a warning is logged (`browser.timezone_proxy_mismatch`). This prevents the fingerprint mismatch where an IP geolocates to Germany but `navigator.timezone` reports America/New_York.
 - **Sec-CH-UA headers**: Set on context to align Client Hints with UA string.
@@ -265,7 +265,7 @@ The dispatchers (`_dispatch_continuous`, `_dispatch_planned`, `dispatch_followup
 - **Connections page only** — loads `linkedin.com/mynetwork/connections/`, infinite-scrolls until the age cutoff (default 30h), collects all profile slugs via content-based JS (anchors on "Connected on" text nodes). No individual profile visits.
 - **Diffs** scraped slugs against `CONNECTION_REQUESTED` leads in DB → marks matches as `CONNECTED`.
 - Does **not** detect declines — withdrawn/declined invitations are intentionally ignored.
-- Manual run: `linauto check-acceptances --account "Name" [--cutoff-hours 96] [--dry-run]`
+- Manual run: `releasi check-acceptances --account "Name" [--cutoff-hours 96] [--dry-run]`
 - Cost: ~1 page load + scroll per run (vs. old invitation manager approach which was ~240 MB/day).
 - LinkedIn connection timestamp format: `"Connected on April 7, 2026"` (full date, not relative). Parsed in `actions.py` → `_parse_connection_age_hours()`.
 - Connections page uses infinite scroll (not a "Load more" button) — pagination handled by `window.scrollTo` + height-change guard in `get_recent_connections()`.
@@ -322,11 +322,11 @@ The dispatchers (`_dispatch_continuous`, `_dispatch_planned`, `dispatch_followup
 pip install -e ".[dev]"
 
 # CLI
-linauto account add --name nicolas --li-at <cookie>
-linauto campaign create --name test --account nicolas
-linauto campaign import --campaign test --csv leads.csv
-linauto execute-once --campaign test --limit 3
-linauto run  # Start scheduler daemon
+releasi account add --name nicolas --li-at <cookie>
+releasi campaign create --name test --account nicolas
+releasi campaign import --campaign test --csv leads.csv
+releasi execute-once --campaign test --limit 3
+releasi run  # Start scheduler daemon
 ```
 
 ## Testing
@@ -337,7 +337,7 @@ pytest -x                 # Stop on first failure
 ```
 Note: pydantic-dependent tests (cooldown, planner, warmup) fail locally on ARM Mac due to x86 pydantic_core mismatch. Run in Docker for full suite.
 
-**pytest is NOT installed in the container** — the `linauto` Docker image uses the production `pip install -e .` (not `.[dev]`). To run tests inside the container you'd need to `pip install pytest` first. Unit tests for pure functions (like `safety/dispatch_decisions.py`) can be run locally with a `pip install -e ".[dev]"` virtualenv.
+**pytest is NOT installed in the container** — the `releasi` Docker image uses the production `pip install -e .` (not `.[dev]`). To run tests inside the container you'd need to `pip install pytest` first. Unit tests for pure functions (like `safety/dispatch_decisions.py`) can be run locally with a `pip install -e ".[dev]"` virtualenv.
 
 ## Lead Social Fields & Outreach Tracking
 
@@ -417,15 +417,15 @@ Migration files are in `alembic/versions/`. Follow the existing naming pattern (
 2. **Apply the SQL directly + stamp alembic manually**:
    ```bash
    # Apply the schema change
-   docker exec linauto python3 -c "
-   import sqlite3; c = sqlite3.connect('/app/data/linauto.db')
+   docker exec releasi python3 -c "
+   import sqlite3; c = sqlite3.connect('/app/data/releasi.db')
    c.execute('ALTER TABLE ... ADD COLUMN ...')
    c.commit(); c.close()
    "
    # Tell alembic the new revision is applied
    # NOTE: alembic_version has a UNIQUE constraint — use DELETE + INSERT, not INSERT OR REPLACE
-   docker exec linauto python3 -c "
-   import sqlite3; c = sqlite3.connect('/app/data/linauto.db')
+   docker exec releasi python3 -c "
+   import sqlite3; c = sqlite3.connect('/app/data/releasi.db')
    c.execute('DELETE FROM alembic_version')
    c.execute(\"INSERT INTO alembic_version VALUES ('023_your_revision')\")
    c.commit(); c.close()
@@ -448,8 +448,8 @@ The auto-withdraw feature is **fully implemented but disabled**. It withdraws th
 To enable for an account:
 ```bash
 # Set threshold (e.g. 300 = withdraw oldest invitations when pending > 300, 10/day)
-docker exec linauto python3 -c "
-import sqlite3; c=sqlite3.connect('/app/data/linauto.db')
+docker exec releasi python3 -c "
+import sqlite3; c=sqlite3.connect('/app/data/releasi.db')
 c.execute(\"UPDATE accounts SET withdraw_threshold=300 WHERE name='Nicolas Goehler'\")
 c.commit(); c.close()
 "
@@ -457,8 +457,8 @@ c.commit(); c.close()
 
 To disable again (set back to NULL):
 ```bash
-docker exec linauto python3 -c "
-import sqlite3; c=sqlite3.connect('/app/data/linauto.db')
+docker exec releasi python3 -c "
+import sqlite3; c=sqlite3.connect('/app/data/releasi.db')
 c.execute(\"UPDATE accounts SET withdraw_threshold=NULL WHERE name='Nicolas Goehler'\")
 c.commit(); c.close()
 "
@@ -499,13 +499,13 @@ A manual withdrawal panel lives in the account Settings tab. It lets you:
 
 `scripts/backup_db.sh` — uses the SQLite online backup API (`sqlite3.backup()`) which is WAL-safe and works on a live DB.
 
-- **Daily local backup**: keeps the 7 most recent snapshots in `/root/linauto/data/backups/` on the host (= `/app/data/backups/` inside container). Run as: `bash /root/linauto/scripts/backup_db.sh`
-- **Weekly offsite backup to Google Drive**: pass `--offsite` flag → `rclone copyto` uploads to `gdrive:linauto-backups/`. Cron on server: `0 3 * * 6` (Saturday 03:00 UTC).
-- rclone config lives at `/root/linauto/.config/rclone/rclone.conf` (server only, not in repo). Remote is named `gdrive`.
+- **Daily local backup**: keeps the 7 most recent snapshots in `/root/releasi/data/backups/` on the host (= `/app/data/backups/` inside container). Run as: `bash /root/releasi/scripts/backup_db.sh`
+- **Weekly offsite backup to Google Drive**: pass `--offsite` flag → `rclone copyto` uploads to `gdrive:releasi-backups/`. Cron on server: `0 3 * * 6` (Saturday 03:00 UTC).
+- rclone config lives at `/root/releasi/.config/rclone/rclone.conf` (server only, not in repo). Remote is named `gdrive`.
 - The backup script runs `docker exec -u root` (not the default appuser) because `/app/data/backups/` is owned by root:root and appuser (uid 1000) cannot write there.
 - Total runtime: ~3 seconds for a typical DB size.
 
-To run a one-off offsite backup: `ssh root@REDACTED 'bash /root/linauto/scripts/backup_db.sh --offsite'`
+To run a one-off offsite backup: `ssh root@REDACTED 'bash /root/releasi/scripts/backup_db.sh --offsite'`
 
 ## Phase Status
 - Phase 1 (Foundation): COMPLETE — CLI, CSV import, template rendering, browser module

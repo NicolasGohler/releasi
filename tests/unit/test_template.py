@@ -1,7 +1,7 @@
 """Tests for message template rendering."""
 import pytest
 from unittest.mock import MagicMock
-from linauto.campaign.template import render_template, extract_variables, validate_template
+from releasi.campaign.template import render_template, extract_variables, validate_template
 
 
 def _make_lead(**kwargs):

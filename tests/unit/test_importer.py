@@ -2,7 +2,7 @@
 import pytest
 import tempfile
 import os
-from linauto.campaign.importer import parse_csv, normalize_linkedin_url
+from releasi.campaign.importer import parse_csv, normalize_linkedin_url
 
 
 def test_normalize_standard_url():

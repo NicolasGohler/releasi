@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from linauto.safety.error_signals import (
+from releasi.safety.error_signals import (
     is_network_error as _is_network_error,
     is_session_expired_signal as _is_session_expired_signal,
 )

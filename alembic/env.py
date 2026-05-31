@@ -5,7 +5,7 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 
 # Import all models so Alembic sees them
-from linauto.db.models import Base
+from releasi.db.models import Base
 
 config = context.config
 if config.config_file_name is not None:

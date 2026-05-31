@@ -1,7 +1,7 @@
 """Tests for lead state machine transitions."""
 import pytest
-from linauto.db.models import LeadStatus
-from linauto.campaign.state_machine import can_transition, validate_transition, InvalidTransition
+from releasi.db.models import LeadStatus
+from releasi.campaign.state_machine import can_transition, validate_transition, InvalidTransition
 
 
 def test_valid_pending_to_scheduled():

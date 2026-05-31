@@ -3,7 +3,7 @@
 # local IP (no proxy). Syncs DB from/to the server before and after.
 #
 # Usage:
-#   linauto local-login --account "Nicolas Goehler"   # First time or after cookie expires
+#   releasi local-login --account "Nicolas Goehler"   # First time or after cookie expires
 #   ./scripts/local_run.sh start                       # Sync DB from server, start scheduler
 #   ./scripts/local_run.sh stop                        # Stop scheduler, sync DB back to server
 #   ./scripts/local_run.sh sync                        # Just sync DB back to server (if you ctrl-C'd)
@@ -15,12 +15,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SERVER="root@REDACTED"
-REMOTE_DB="/root/linauto/data/linauto.db"
-LOCAL_DB="data/linauto.db"
-REMOTE_BROWSER_DATA="/root/linauto/data/browser_data"
+REMOTE_DB="/root/releasi/data/releasi.db"
+LOCAL_DB="data/releasi.db"
+REMOTE_BROWSER_DATA="/root/releasi/data/browser_data"
 LOCAL_BROWSER_DATA="data/browser_data"
 PID_FILE=".local_run.pid"
-CONTAINER="linauto"
+CONTAINER="releasi"
 ACCOUNT_ID="REDACTED"  # Nicolas Goehler
 PROXY_COUNTRY="ca"  # Restore this after local run
 
@@ -100,17 +100,17 @@ print('  proxy_country restored to $PROXY_COUNTRY')
     echo "==> Starting server container..."
     # Use docker run if container was removed, docker start if it still exists
     ssh "$SERVER" "docker start $CONTAINER 2>/dev/null || \
-        (cd /root/linauto && docker run -d --name $CONTAINER --restart unless-stopped \
-        -v /root/linauto/data:/app/data \
-        -v /root/linauto/config/settings.yaml:/app/config/settings.yaml:ro \
-        -v /root/linauto/src:/app/src \
+        (cd /root/releasi && docker run -d --name $CONTAINER --restart unless-stopped \
+        -v /root/releasi/data:/app/data \
+        -v /root/releasi/config/settings.yaml:/app/config/settings.yaml:ro \
+        -v /root/releasi/src:/app/src \
         -p 8000:8000 -p 6080:6080 \
-        -e LINAUTO_API_ENABLED=true \
-        -e LINAUTO_API_KEY=REDACTED \
-        -e 'LINAUTO_CORS_ORIGINS=[\"*\"]' \
-        -e LINAUTO_LOG_LEVEL=INFO -e TZ=Europe/Berlin \
+        -e RELEASI_API_ENABLED=true \
+        -e RELEASI_API_KEY=REDACTED \
+        -e 'RELEASI_CORS_ORIGINS=[\"*\"]' \
+        -e RELEASI_LOG_LEVEL=INFO -e TZ=Europe/Berlin \
         --memory=3g --cpus=1.5 \
-        linauto_linauto:latest)"
+        releasi_releasi:latest)"
     echo "==> Done. Server is running with updated DB."
 }
 
@@ -123,7 +123,7 @@ start_local() {
     sync_from_server
 
     echo "==> Starting local scheduler..."
-    echo "    Logs: data/logs/linauto.log"
+    echo "    Logs: data/logs/releasi.log"
     echo "    Press Ctrl-C or run '$0 stop' to stop."
     echo ""
 
@@ -133,7 +133,7 @@ start_local() {
     fi
 
     # Run in foreground so Ctrl-C works
-    linauto run
+    releasi run
 }
 
 stop_local() {
