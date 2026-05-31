@@ -1,4 +1,4 @@
-# Linauto — LinkedIn Automation Tool
+# Releasi — LinkedIn Automation Tool
 
 ## Server
 - **IP**: REDACTED
