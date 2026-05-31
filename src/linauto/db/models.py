@@ -386,6 +386,17 @@ class CampaignLeadList(Base):
     lead_list: Mapped[LeadList] = relationship(back_populates="campaign_links")
 
 
+class ScraperCookie(Base):
+    """Stores refreshed browser cookies for external scraper sites."""
+    __tablename__ = "scraper_cookies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    site: Mapped[str] = mapped_column(String(64), unique=True)
+    cookies_json: Mapped[str] = mapped_column(Text)
+    captured_at: Mapped[datetime] = mapped_column(DateTime)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class LeadEvent(Base):
     """Lightweight per-lead event log (no account_id required).
 

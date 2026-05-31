@@ -540,3 +540,13 @@ export function useCloneCampaign() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["campaigns"] }),
   });
 }
+
+// ── Scrapers ──────────────────────────────────────────────────────────────
+
+export function useScrapers() {
+  return useQuery({
+    queryKey: ["scrapers"],
+    queryFn: () => api.fetchScrapers(),
+    refetchInterval: 30_000,
+  });
+}

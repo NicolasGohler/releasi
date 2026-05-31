@@ -231,3 +231,10 @@ export interface ImportResponse {
   no_url_skipped: number;
   errors: string[];
 }
+
+export interface ScraperStatus {
+  site: string;
+  has_cookies: boolean;
+  captured_at: string | null;
+  age_hours: number | null;
+}

@@ -520,3 +520,22 @@ export const cloneCampaign = (id: string, data: { name: string; account_id: stri
 
 export const lookupLeadByUrl = (linkedinUrl: string) =>
   apiFetch<Lead>(`/leads/lookup?linkedin_url=${encodeURIComponent(linkedinUrl)}`);
+
+// ── Scrapers ──────────────────────────────────────────────────────────────
+
+export const fetchScrapers = () =>
+  apiFetch<import("./types").ScraperStatus[]>("/scrapers");
+
+export const startScraperLoginSession = (site: string) =>
+  apiFetch<{ novnc_url: string; session_id: string }>(`/scrapers/${site}/login-session`, {
+    method: "POST",
+  });
+
+export const finishScraperLoginSession = (site: string) =>
+  apiFetch<{ success: boolean; cookie_count: number; captured_at: string }>(
+    `/scrapers/${site}/login-session/finish`,
+    { method: "POST" }
+  );
+
+export const cancelScraperLoginSession = (site: string) =>
+  apiFetch<{ success: boolean }>(`/scrapers/${site}/login-session/cancel`, { method: "POST" });

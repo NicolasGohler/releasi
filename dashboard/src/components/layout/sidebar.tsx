@@ -4,13 +4,14 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { Target, List, Users, UserCircle, Archive, type LucideIcon } from "lucide-react";
+import { Target, List, Users, UserCircle, Archive, Globe, type LucideIcon } from "lucide-react";
 
 const navItems: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/campaigns", label: "Campaigns", icon: Target },
   { href: "/lead-lists", label: "Lists", icon: List },
   { href: "/leads", label: "Leads", icon: Users },
   { href: "/accounts", label: "Accounts", icon: UserCircle },
+  { href: "/scrapers", label: "Scrapers", icon: Globe },
   { href: "/archive", label: "Archive", icon: Archive },
 ];
 

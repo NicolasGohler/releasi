@@ -16,6 +16,7 @@ from linauto.db.models import (
     LeadList, CampaignLeadList,
     LeadListMembership, CampaignLeadAssignment,
     LeadEvent,
+    ScraperCookie,
 )
 
 
@@ -2047,3 +2048,29 @@ class Repository:
         self.session.add(event)
         await self.session.flush()
         return event
+
+    async def get_scraper_cookie(self, site: str) -> Optional[ScraperCookie]:
+        result = await self.session.execute(
+            select(ScraperCookie).where(ScraperCookie.site == site)
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert_scraper_cookie(
+        self, site: str, cookies_json: str, captured_at: datetime
+    ) -> ScraperCookie:
+        row = await self.get_scraper_cookie(site)
+        if row:
+            row.cookies_json = cookies_json
+            row.captured_at = captured_at
+        else:
+            row = ScraperCookie(site=site, cookies_json=cookies_json, captured_at=captured_at)
+            self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def touch_scraper_cookie(self, site: str) -> None:
+        """Update last_used_at for a scraper cookie row."""
+        row = await self.get_scraper_cookie(site)
+        if row:
+            row.last_used_at = datetime.utcnow()
+            await self.session.flush()
