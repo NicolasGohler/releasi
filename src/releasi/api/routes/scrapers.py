@@ -15,6 +15,9 @@ import tempfile
 from datetime import datetime
 from typing import Optional
 
+FUNDRAISING_LOG_PATH = "/app/data/fundraising_run.log"
+FUNDRAISING_STATUS_PATH = "/app/data/fundraising_run_status.json"
+
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -243,6 +246,32 @@ class ScraperSessionManager:
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
+
+@router.get("/scrapers/fundraising-run/status")
+async def get_fundraising_run_status():
+    """Return the current fundraising run status (running/idle)."""
+    if not os.path.exists(FUNDRAISING_STATUS_PATH):
+        return {"running": False}
+    try:
+        with open(FUNDRAISING_STATUS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {"running": False}
+
+
+@router.get("/scrapers/fundraising-run/log")
+async def get_fundraising_run_log(tail: int = 200):
+    """Return the last N lines of the fundraising run log."""
+    if not os.path.exists(FUNDRAISING_LOG_PATH):
+        return {"lines": [], "total_lines": 0}
+    try:
+        with open(FUNDRAISING_LOG_PATH, errors="replace") as f:
+            all_lines = f.readlines()
+        lines = [l.rstrip("\n") for l in all_lines[-tail:]]
+        return {"lines": lines, "total_lines": len(all_lines)}
+    except Exception as e:
+        return {"lines": [f"Error reading log: {e}"], "total_lines": 0}
+
 
 @router.get("/scrapers")
 async def list_scrapers(repo: Repository = Depends(get_repo)):

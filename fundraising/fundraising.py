@@ -2002,11 +2002,38 @@ def send_to_slack(csv_file_path, people_count, projects_count):
         return False
 
 if __name__ == "__main__":
+    # ── Tee stdout/stderr to a log file readable by the dashboard ────────────
+    _LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'fundraising_run.log')
+    _STATUS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'fundraising_run_status.json')
+
+    class _Tee:
+        def __init__(self, *streams): self._streams = streams
+        def write(self, msg):
+            for s in self._streams: s.write(msg)
+        def flush(self):
+            for s in self._streams: s.flush()
+        def fileno(self): return self._streams[0].fileno()
+
+    _log_fh = open(_LOG_FILE, 'w', buffering=1)
+    import sys as _sys
+    _sys.stdout = _Tee(_sys.__stdout__, _log_fh)
+    _sys.stderr = _Tee(_sys.__stderr__, _log_fh)
+
+    def _write_status(running: bool, **extra):
+        payload = {"running": running, **extra}
+        try:
+            with open(_STATUS_FILE, 'w') as f:
+                json.dump(payload, f)
+        except Exception:
+            pass
+
+    _write_status(True, started_at=datetime.now().isoformat())
+
     print("\n" + "#"*60)
     print("# Crypto Fundraising Agent")
     print("# Sources: CryptoRank + RootData + Apollo.io")
     print("#"*60)
-    
+
     try:
         people = gather_all()
         
@@ -2078,22 +2105,26 @@ if __name__ == "__main__":
 
             if not slack_success:
                 print("Slack upload failed, but data was saved locally")
-    
+
+        _write_status(False, finished_at=datetime.now().isoformat(), exit="ok")
+
     except Exception as e:
         error_message = f"FATAL ERROR: {str(e)}"
         print(f"\n {error_message}")
         import traceback
         traceback.print_exc()
-        
+
+        _write_status(False, finished_at=datetime.now().isoformat(), exit="error", error=str(e))
+
         # Send error notification to Slack
         try:
             send_error_to_slack(error_message)
         except:
             print(" Failed to send error notification to Slack")
-        
+
         # Re-raise the exception to fail the GitHub Action
         raise
-    
+
     print("\n" + "#"*60)
     print("# Script execution finished")
     print("#"*60 + "\n")

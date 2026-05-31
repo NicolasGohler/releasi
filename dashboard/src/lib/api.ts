@@ -539,3 +539,13 @@ export const finishScraperLoginSession = (site: string) =>
 
 export const cancelScraperLoginSession = (site: string) =>
   apiFetch<{ success: boolean }>(`/scrapers/${site}/login-session/cancel`, { method: "POST" });
+
+export const fetchFundraisingRunStatus = () =>
+  apiFetch<{ running: boolean; started_at?: string; finished_at?: string; exit?: string }>(
+    "/scrapers/fundraising-run/status"
+  );
+
+export const fetchFundraisingRunLog = (tail = 200) =>
+  apiFetch<{ lines: string[]; total_lines: number }>(
+    `/scrapers/fundraising-run/log?tail=${tail}`
+  );
