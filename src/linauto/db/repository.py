@@ -2065,7 +2065,7 @@ class Repository:
         else:
             row = ScraperCookie(site=site, cookies_json=cookies_json, captured_at=captured_at)
             self.session.add(row)
-        await self.session.flush()
+        await self.session.commit()
         return row
 
     async def touch_scraper_cookie(self, site: str) -> None:
@@ -2073,4 +2073,4 @@ class Repository:
         row = await self.get_scraper_cookie(site)
         if row:
             row.last_used_at = datetime.utcnow()
-            await self.session.flush()
+            await self.session.commit()
