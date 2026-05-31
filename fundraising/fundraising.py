@@ -543,7 +543,13 @@ def _parse_team_from_cryptorank_soup(soup, team_url):
         'sales', 'account executive', 'account manager', 'business development',
         'bdr', 'sdr', 'revenue', 'partnerships', 'partner manager',
         'product', 'product manager', 'product owner', 'product lead', 'cpo',
-        'chief product', 'product director', 'product head'
+        'chief product', 'product director', 'product head',
+        # CFO / Finance roles
+        'cfo', 'chief financial', 'chief finance', 'finance director',
+        'vp finance', 'head of finance', 'treasurer', 'controller',
+        # Legal / Compliance roles
+        'general counsel', 'chief legal', 'clo', 'legal counsel', 'legal officer',
+        'compliance', 'regulatory', 'counsel', 'attorney', 'lawyer',
     ]
     name_pattern = re.compile(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+){1,3}$')
 
@@ -822,7 +828,7 @@ def fetch_team_from_apollo(company_name, company_website=None):
 
     # Target executive/leadership titles
     target_titles = [
-        "CEO", "CFO", "COO", "Chief Executive", "Chief Financial", "Chief Operating",
+        "CEO", "COO", "Chief Executive", "Chief Operating",
         "Co-Founder", "Founder", "Co Founder", "Cofounder",
         "VP", "Vice President", "V.P.",
         "Director", "Managing Director",
@@ -890,7 +896,13 @@ def fetch_team_from_apollo(company_name, company_website=None):
                 'bdr', 'sdr', 'revenue', 'partnerships', 'partner manager',
                 # Product roles
                 'product', 'product manager', 'product owner', 'product lead', 'cpo',
-                'chief product', 'product director', 'product head'
+                'chief product', 'product director', 'product head',
+                # CFO / Finance roles
+                'cfo', 'chief financial', 'chief finance', 'finance director',
+                'vp finance', 'head of finance', 'treasurer', 'controller',
+                # Legal / Compliance roles
+                'general counsel', 'chief legal', 'clo', 'legal counsel', 'legal officer',
+                'compliance', 'regulatory', 'counsel', 'attorney', 'lawyer',
             }
             for person in people:
                 title = person.get('title', '')
@@ -1531,6 +1543,12 @@ def _merge_apollo_into_team(team: list, apollo_team: list) -> list:
         'bdr', 'sdr', 'revenue', 'partnerships', 'partner manager',
         'product', 'product manager', 'product owner', 'product lead', 'cpo',
         'chief product', 'product director', 'product head',
+        # CFO / Finance roles
+        'cfo', 'chief financial', 'chief finance', 'finance director',
+        'vp finance', 'head of finance', 'treasurer', 'controller',
+        # Legal / Compliance roles
+        'general counsel', 'chief legal', 'clo', 'legal counsel', 'legal officer',
+        'compliance', 'regulatory', 'counsel', 'attorney', 'lawyer',
     ]
     existing_names = {m['name'].lower() for m in team}
 
