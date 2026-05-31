@@ -14,42 +14,42 @@
 - **Never send bare HTTP requests with `li_at`** — always use a full browser context (see Testing & Diagnostics below).
 
 ## Deploying code changes
-`src/` is volume-mounted from `/root/releasi/src` — but **Python caches imported modules in `sys.modules`**. A `git pull` updates files on disk but the running process keeps old code. **Always restart the container after pulling**:
+`src/` is volume-mounted from `/root/linauto/src` — but **Python caches imported modules in `sys.modules`**. A `git pull` updates files on disk but the running process keeps old code. **Always restart the container after pulling**:
 
 ```bash
 ssh root@REDACTED
-cd /root/releasi && git pull && docker restart releasi
+cd /root/linauto && git pull && docker restart releasi
 ```
 
-Or use the deploy script: `ssh root@REDACTED 'cd /root/releasi && bash scripts/deploy.sh'`
+Or use the deploy script: `ssh root@REDACTED 'cd /root/linauto && bash scripts/deploy.sh'`
 
 The deploy script automatically pauses active accounts before the restart and resumes exactly those accounts after the container is healthy. This prevents missed dispatches mid-deploy.
 
 Only rebuild the image when changing **dependencies** (`pyproject.toml`) or **`config.py`/`models.py`** (pydantic/SQLAlchemy schema changes). `docker-compose build` is broken (v1.29 incompatibility) — use `docker run` directly:
 
-**Secrets are stored in `/root/releasi/.env`** (not inline in the command — keeps them out of `ps aux`). Create/update it once:
+**Secrets are stored in `/root/linauto/.env`** (not inline in the command — keeps them out of `ps aux`). Create/update it once:
 ```bash
-cat > /root/releasi/.env << 'EOF'
+cat > /root/linauto/.env << 'EOF'
 RELEASI_API_KEY=REDACTED
 RELEASI_TELEGRAM_API_ID=<api_id>
 RELEASI_TELEGRAM_API_HASH=<api_hash>
 RELEASI_TELEGRAM_SESSION=<telethon_string_session>
 EOF
-chmod 600 /root/releasi/.env
+chmod 600 /root/linauto/.env
 ```
 
 Telegram credentials are used by `telegram/resolver.py` for per-lead username lookup. They map to `config.telegram_api_id`, `config.telegram_api_hash`, `config.telegram_session` via Pydantic settings (prefix `RELEASI_`). If unset, the Find Telegram button on the lead detail page will error.
 
 ```bash
-cd /root/releasi && git pull
+cd /root/linauto && git pull
 docker-compose build
 docker stop releasi && docker rm releasi
 docker run -d --name releasi --restart unless-stopped \
-  -v /root/releasi/data:/app/data \
-  -v /root/releasi/config/settings.yaml:/app/config/settings.yaml:ro \
-  -v /root/releasi/src:/app/src \
+  -v /root/linauto/data:/app/data \
+  -v /root/linauto/config/settings.yaml:/app/config/settings.yaml:ro \
+  -v /root/linauto/src:/app/src \
   -p 8000:8000 -p 6080:6080 \
-  --env-file /root/releasi/.env \
+  --env-file /root/linauto/.env \
   -e RELEASI_API_ENABLED=true \
   -e "RELEASI_CORS_ORIGINS=[]" \
   -e RELEASI_LOG_LEVEL=INFO -e TZ=Europe/Berlin \
@@ -103,7 +103,7 @@ When running any diagnostic script, test, or one-off action against LinkedIn:
 Dripify alternative. Automates LinkedIn connection requests and follow-up messages with safety-first design (warmup ramps, cooldowns, rate limits, stealth browsing).
 
 ## Tech Stack
-- **Python 3.9+** (system has 3.9.6 — use `Optional[X]` not `X | None` in SQLAlchemy `Mapped[]`)
+- **Python 3.11** (container image is python:3.11-slim; server host is 3.12.3 — use `Optional[X]` not `X | None` in SQLAlchemy `Mapped[]`)
 - **Playwright 1.58+** (async) + playwright-stealth for browser automation
 - **SQLAlchemy 2.0** async ORM + aiosqlite (SQLite)
 - **FastAPI** + uvicorn for REST API (port 8000)
@@ -137,13 +137,14 @@ src/releasi/
 │   ├── profile_filter.py   # Live profile quality filtering
 │   └── selectors.py        # ALL LinkedIn DOM selectors (update here when LinkedIn changes)
 ├── safety/
-│   ├── cooldown.py         # Smart Monday-retry cooldown
-│   ├── delays.py           # Human-like delays + typing simulation
-│   └── limits.py           # Rate tracking
+│   ├── cooldown.py             # Smart Monday-retry cooldown
+│   ├── delays.py               # Human-like delays + typing simulation
+│   ├── dispatch_decisions.py   # Pure result classifiers → DispatchIntent (no side effects)
+│   ├── error_signals.py        # Error signal extraction helpers
+│   └── limits.py               # Rate tracking
 ├── scheduler/
 │   ├── planner.py          # Clustered daily plan generation
-│   ├── runner.py           # APScheduler daemon (6 jobs)
-│   └── warmup.py           # Warmup ramp with daily variation
+│   └── runner.py           # APScheduler daemon (7 jobs) + warmup, keep-alive logic
 ├── telegram/
 │   └── resolver.py         # Async Telethon-based Telegram username finder
 └── api/
@@ -167,7 +168,7 @@ src/releasi/
 - `src/releasi/campaign/importer.py` — CSV import. Handles `name`/`full_name` columns (splits into first/last) and `project`/`project_name` columns (maps to company). Add new column aliases to `_COLUMN_MAP` or `_FULL_NAME_COLUMNS` here.
 - `src/releasi/telegram/resolver.py` — Async Telethon Telegram username finder. Two-pass: (1) checks Twitter handle on Telegram, (2) scores name+company pattern candidates. Returns `FindResult(best_match, alternatives, logs)`. Credentials from `config.telegram_api_id/hash/session`.
 
-## Scheduler Jobs (6 total)
+## Scheduler Jobs (7 total)
 All times are **in the account's configured timezone** (e.g. `America/New_York` for Montreal). Jobs that need per-account timing fire hourly and skip accounts that are outside their window or have already run today.
 
 | Job | Schedule | Purpose |
@@ -178,6 +179,7 @@ All times are **in the account's configured timezone** (e.g. `America/New_York` 
 | `cooldown_checker` | 04:00 UTC daily | Resume paused accounts |
 | `followup_dispatcher` | Every 30 min | Send follow-up messages |
 | `keepalive` | Hourly; fires once in 7–10 AM local window | Organic morning LinkedIn session |
+| `withdraw_invitations_sweep` | Hourly | Auto-withdraw oldest invitations when pending count exceeds threshold (disabled if `withdraw_threshold` is NULL) |
 
 ## Anti-Detection Layer
 
@@ -372,7 +374,7 @@ CREATE TABLE lead_events (
 CREATE INDEX ix_lead_events_lead_id ON lead_events(lead_id);
 ```
 
-Current `event_type` values: `telegram_found`, `telegram_saved`, `tg_contacted`, `tg_contacted_cleared`.
+Current `event_type` values: `telegram_found`, `telegram_saved`, `telegram_removed`, `tg_contacted`, `tg_contacted_cleared`.
 
 Add via `repo.log_lead_event(lead_id, event_type, details_dict)`.
 
@@ -385,6 +387,8 @@ Add via `repo.log_lead_event(lead_id, event_type, details_dict)`.
 **In-memory task store**: `_find_tg_tasks: dict[str, dict]` in the leads route module. Tasks live in memory only — they are lost on container restart (client must retry).
 
 **Session factory pattern**: background task creates its own DB session via `get_session_factory()()` (not the request-scoped session). This is the correct pattern for tasks that outlive the HTTP request.
+
+**Re-search guard**: if a previous search completed with no match (`telegram_found` event exists with null `best_match`) and no `telegram_username` is saved, the endpoint returns **409**. Pass `?force=true` to bypass. The dashboard shows a greyed-out "No match / retry" state instead of the Find button.
 
 **Two-pass resolver** (`telegram/resolver.py`):
 1. Pass 1: checks if the lead's Twitter handle exists on Telegram (fast, one lookup)
@@ -499,13 +503,13 @@ A manual withdrawal panel lives in the account Settings tab. It lets you:
 
 `scripts/backup_db.sh` — uses the SQLite online backup API (`sqlite3.backup()`) which is WAL-safe and works on a live DB.
 
-- **Daily local backup**: keeps the 7 most recent snapshots in `/root/releasi/data/backups/` on the host (= `/app/data/backups/` inside container). Run as: `bash /root/releasi/scripts/backup_db.sh`
+- **Daily local backup**: keeps the 7 most recent snapshots in `/root/linauto/data/backups/` on the host (= `/app/data/backups/` inside container). Run as: `bash /root/linauto/scripts/backup_db.sh`
 - **Weekly offsite backup to Google Drive**: pass `--offsite` flag → `rclone copyto` uploads to `gdrive:releasi-backups/`. Cron on server: `0 3 * * 6` (Saturday 03:00 UTC).
-- rclone config lives at `/root/releasi/.config/rclone/rclone.conf` (server only, not in repo). Remote is named `gdrive`.
+- rclone config lives at `/root/linauto/.config/rclone/rclone.conf` (server only, not in repo). Remote is named `gdrive`.
 - The backup script runs `docker exec -u root` (not the default appuser) because `/app/data/backups/` is owned by root:root and appuser (uid 1000) cannot write there.
 - Total runtime: ~3 seconds for a typical DB size.
 
-To run a one-off offsite backup: `ssh root@REDACTED 'bash /root/releasi/scripts/backup_db.sh --offsite'`
+To run a one-off offsite backup: `ssh root@REDACTED 'bash /root/linauto/scripts/backup_db.sh --offsite'`
 
 ## Phase Status
 - Phase 1 (Foundation): COMPLETE — CLI, CSV import, template rendering, browser module
