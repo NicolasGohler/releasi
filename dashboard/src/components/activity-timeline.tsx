@@ -63,6 +63,7 @@ const TYPE_GROUPS: Record<string, string> = {
   FEED_VIEW: "Keepalive (Feed View)",
   POST_LIKE: "Keepalive (Post Like)",
   PROFILE_VIEW: "Keepalive (Profile View)",
+  FUNDRAISING_IMPORT: "Fundraising Import",
   ERROR: "Errors",
 };
 

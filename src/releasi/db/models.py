@@ -71,6 +71,7 @@ class ActionType(str, enum.Enum):
     PROFILE_VIEW = "profile_view"
     DAILY_PLAN_GENERATED = "daily_plan_generated"
     INVITATION_WITHDRAWN = "invitation_withdrawn"
+    FUNDRAISING_IMPORT = "fundraising_import"
     ERROR = "error"
 
 

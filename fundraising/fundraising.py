@@ -1805,6 +1805,46 @@ RELEASI_BASE_URL    = _SETTINGS.get('releasi_base_url')    or os.getenv("RELEASI
 RELEASI_API_KEY     = _SETTINGS.get('releasi_api_key')     or os.getenv("RELEASI_API_KEY")     or os.getenv("LINAUTO_API_KEY")
 RELEASI_CAMPAIGN_ID = _SETTINGS.get('releasi_campaign_id') or os.getenv("RELEASI_CAMPAIGN_ID") or "24acf14e-82ce-4ccd-826b-95739145d762"
 
+def _log_fundraising_run(campaign_id: str, list_name: str, list_id: str, import_result: dict, leads_added: int) -> None:
+    """Write a FUNDRAISING_IMPORT entry to the Releasi action_log table.
+
+    Looks up the campaign's account_id directly from the DB so the required
+    FK is satisfied. Uses WAL-safe read-write mode — safe to run concurrently
+    with the Docker container's async writes.
+    """
+    import uuid as _uuid
+    try:
+        conn = sqlite3.connect(LINAUTO_DB)
+        # Look up the account that owns this campaign
+        row = conn.execute(
+            "SELECT account_id FROM campaigns WHERE id = ? LIMIT 1", (campaign_id,)
+        ).fetchone()
+        if not row:
+            print(f"  ⚠ Could not find campaign {campaign_id} — skipping activity log", flush=True)
+            conn.close()
+            return
+        account_id = row[0]
+        entry_id = str(_uuid.uuid4())
+        details = json.dumps({
+            "source": "fundraising_agent",
+            "list_name": list_name,
+            "list_id": list_id,
+            "imported": import_result.get("imported", 0),
+            "duplicates_skipped": import_result.get("duplicates_skipped", 0),
+            "leads_added_to_campaign": leads_added,
+        })
+        conn.execute(
+            """INSERT INTO action_log (id, account_id, campaign_id, action_type, status, details, created_at)
+               VALUES (?, ?, ?, 'fundraising_import', 'success', ?, datetime('now'))""",
+            (entry_id, account_id, campaign_id, details),
+        )
+        conn.commit()
+        conn.close()
+        print(f"  ✓ Activity log entry written for campaign {campaign_id}", flush=True)
+    except Exception as e:
+        print(f"  ⚠ Could not write activity log entry: {e}", flush=True)
+
+
 def push_to_releasi(csv_file_path):
     """Create a new lead list, upload CSV, and assign to the campaign."""
     if not RELEASI_API_KEY:
@@ -1857,7 +1897,12 @@ def push_to_releasi(csv_file_path):
             timeout=30,
         )
         r.raise_for_status()
-        print(f" Assigned to campaign: {r.json()}")
+        assign_result = r.json()
+        leads_added = assign_result.get("leads_added", 0)
+        print(f" Assigned to campaign: {assign_result}")
+
+        # 4. Write activity log entry so the run appears in the campaign feed
+        _log_fundraising_run(RELEASI_CAMPAIGN_ID, list_name, list_id, import_result, leads_added)
         return True
     except Exception as e:
         print(f" Linauto push failed: {e}")
