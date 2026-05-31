@@ -70,6 +70,7 @@ async def _resolve_one(
             alternatives=result.alternatives,
             logs=result.logs,
             timed_out=False,
+            flood_wait_seconds=result.flood_wait_seconds,
         )
     except asyncio.TimeoutError:
         return TelegramResolveResponse(
@@ -145,12 +146,19 @@ async def resolve_telegram_batch(body: TelegramResolveBatchRequest) -> TelegramR
         try:
             for person in body.people:
                 resp = await _resolve_one(person, settings, sleep_between=2.0)
+                if resp.flood_wait_seconds:
+                    wait = resp.flood_wait_seconds + 10
+                    task["flood_wait_until"] = wait  # seconds remaining, for status polling
+                    await asyncio.sleep(wait)
+                    task.pop("flood_wait_until", None)
+                    resp = await _resolve_one(person, settings, sleep_between=2.0)
                 task["results"].append({
                     "name": person.name,
                     "best_match": resp.best_match,
                     "alternatives": resp.alternatives,
                     "logs": resp.logs,
                     "timed_out": resp.timed_out,
+                    "flood_wait_seconds": resp.flood_wait_seconds,
                 })
                 task["completed"] += 1
             task["status"] = "done"

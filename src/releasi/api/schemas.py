@@ -415,6 +415,7 @@ class TelegramResolveResponse(BaseModel):
     alternatives: List[str] = []
     logs: List[str] = []
     timed_out: bool = False
+    flood_wait_seconds: Optional[int] = None  # Telegram rate limit; caller must sleep + retry
 
 
 # ── Telegram Batch Resolver ───────────────────────────────────────────────
@@ -429,6 +430,7 @@ class TelegramResolveBatchResult(BaseModel):
     alternatives: List[str] = []
     logs: List[str] = []
     timed_out: bool = False
+    flood_wait_seconds: Optional[int] = None
 
 
 class TelegramResolveBatchStatus(BaseModel):

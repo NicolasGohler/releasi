@@ -1495,7 +1495,26 @@ def resolve_telegram_via_api(people: list, between_person_delay: float = None) -
             resp = requests.post(resolve_endpoint, headers=auth_headers, json=payload, timeout=60)
 
             if resp.status_code == 200:
-                data       = resp.json()
+                data = resp.json()
+
+                # Telegram flood wait — pause here then retry this person once
+                flood_wait = data.get('flood_wait_seconds')
+                if flood_wait:
+                    wait_total = flood_wait + 30  # small buffer
+                    print(
+                        f"  ⚠ Telegram rate limit for {name}: waiting {wait_total}s "
+                        f"({flood_wait}s requested + 30s buffer) before retry...",
+                        flush=True,
+                    )
+                    time.sleep(wait_total)
+                    print(f"  ↻ Retrying {name} after flood wait...", flush=True)
+                    try:
+                        resp = requests.post(resolve_endpoint, headers=auth_headers, json=payload, timeout=60)
+                        data = resp.json() if resp.status_code == 200 else {}
+                    except Exception as retry_err:
+                        print(f"  Retry request failed: {retry_err}", flush=True)
+                        data = {}
+
                 best_match = data.get('best_match')
                 if best_match:
                     tg = best_match if best_match.startswith('@') else f"@{best_match}"

@@ -33,6 +33,7 @@ class FindResult:
     best_match: Optional[str] = None       # bare username, no @
     alternatives: list[str] = field(default_factory=list)  # bare usernames, no @
     logs: list[str] = field(default_factory=list)
+    flood_wait_seconds: Optional[int] = None  # set when Telegram asks us to wait; caller must sleep + retry
 
 
 # ---------------------------------------------------------------------------
@@ -240,20 +241,9 @@ async def find_telegram(
                 else:
                     result.logs.append(f"  – @{twitter_username} is a channel/group, not a user")
             except FloodWaitError as e:
-                if e.seconds > 60:
-                    result.logs.append(f"  Rate limited — {e.seconds}s wait exceeds limit, skipping Pass 1")
-                else:
-                    result.logs.append(f"  Rate limited — waiting {e.seconds}s…")
-                    await asyncio.sleep(e.seconds + 2)
-                    try:
-                        entity = await client.get_entity(twitter_username)
-                        if isinstance(entity, User):
-                            handle = entity.username or twitter_username
-                            result.best_match = handle
-                            result.logs.append(f"  ✓ @{twitter_username} → @{handle} (Twitter match)")
-                            return result
-                    except Exception:
-                        pass
+                result.logs.append(f"  Rate limited — Telegram asks to wait {e.seconds}s — surfacing to caller")
+                result.flood_wait_seconds = e.seconds
+                return result  # caller must sleep then retry; Pass 2 would also be rate-limited
             except Exception:
                 result.logs.append(f"  – @{twitter_username} not found on Telegram")
             await asyncio.sleep(sleep_between)
@@ -295,22 +285,9 @@ async def find_telegram(
                             f"(TG: {entity.first_name} {entity.last_name or ''})"
                         )
             except FloodWaitError as e:
-                if e.seconds > 60:
-                    result.logs.append(f"  Rate limited — {e.seconds}s wait exceeds limit, aborting Pass 2")
-                    break
-                result.logs.append(f"  Rate limited — waiting {e.seconds}s…")
-                await asyncio.sleep(e.seconds + 2)
-                try:
-                    entity = await client.get_entity(candidate)
-                    if isinstance(entity, User):
-                        score = score_entity_match(entity, name, candidate, idx, co_shorthands)
-                        if score is not None:
-                            handle = entity.username or candidate
-                            found_matches.append((score, candidate, entity, handle))
-                            if score >= 3.0:
-                                break
-                except Exception:
-                    pass
+                result.logs.append(f"  Rate limited — Telegram asks to wait {e.seconds}s — surfacing to caller")
+                result.flood_wait_seconds = e.seconds
+                break  # caller must sleep then retry; remaining candidates would also fail
             except Exception:
                 pass  # username not found — skip silently
 
