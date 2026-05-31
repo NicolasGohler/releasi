@@ -136,7 +136,7 @@ class Settings(BaseSettings):
     # Apollo.io enrichment (phone lookup)
     apollo_api_key: str = ""
 
-    model_config = {"env_prefix": "RELEASI_"}
+    model_config = {"env_prefix": "RELEASI_", "extra": "ignore"}
 
 
 def _load_yaml_overrides(settings_dict: dict) -> dict:
