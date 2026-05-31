@@ -114,12 +114,16 @@ Dripify alternative. Automates LinkedIn connection requests and follow-up messag
 
 ## Project Structure
 ```
+fundraising/
+├── fundraising.py          # Weekly lead-gen pipeline (runs on HOST via systemd, not in Docker)
+└── requirements.txt        # Host venv deps (pyyaml, playwright, bs4, pandas, slack-sdk)
+
 src/releasi/
 ├── cli.py                  # Typer CLI (all commands)
 ├── config.py               # Pydantic settings from YAML
 ├── db/
 │   ├── engine.py           # Async SQLAlchemy engine (NullPool)
-│   ├── models.py           # ORM models (7 tables incl. lead_events)
+│   ├── models.py           # ORM models (incl. scraper_cookies, lead_events)
 │   └── repository.py       # Data access layer
 ├── campaign/
 │   ├── executor.py         # Orchestrates browser actions + DB updates
@@ -156,6 +160,7 @@ src/releasi/
         ├── campaigns.py    # Campaign management
         ├── leads.py        # Lead management + find-telegram background tasks
         ├── lead_lists.py   # Lead list endpoints
+        ├── scrapers.py     # Scraper cookie refresh (noVNC) + cookie fetch endpoints
         ├── stats.py        # Stats endpoints
         └── health.py       # Health check
 ```
@@ -510,6 +515,34 @@ A manual withdrawal panel lives in the account Settings tab. It lets you:
 - Total runtime: ~3 seconds for a typical DB size.
 
 To run a one-off offsite backup: `ssh root@REDACTED 'bash /root/linauto/scripts/backup_db.sh --offsite'`
+
+
+## Fundraising Agent
+
+Weekly pipeline that scrapes CryptoRank and RootData for recently-funded crypto projects, enriches the team with Apollo + Telegram resolution, and uploads leads to a Releasi campaign.
+
+- **Location**: `fundraising/fundraising.py` — runs **on the host** (not inside Docker)
+- **Venv**: `/root/linauto/fundraising/venv/` — `pip install -r requirements.txt`
+- **Systemd timer**: `fundraising-agent.timer` — fires every **Monday 09:00 UTC**
+  - Check: `systemctl status fundraising-agent.timer`
+  - Manual run: `cd /root/linauto/fundraising && venv/bin/python -u fundraising.py`
+- **Config**: reads `config/settings.yaml` → `fundraising:` section (proxy, Apollo, Slack, Releasi keys). Falls back to env vars so GitHub Actions still works.
+- **DB access**: reads `scraper_cookies` table directly (WAL-safe read-only) for CryptoRank/RootData session cookies; reads `leads` table for dedup; writes `action_log` (type `fundraising_import`) after each successful run so the import appears in the campaign's Activity feed.
+- **Role filters**: excludes CTO/engineering, HR, trading, sales, product, CFO/finance, legal/compliance from all three filter lists (CryptoRank scraper, Apollo search, Apollo merge).
+- **Campaign**: hardcoded to `24acf14e-82ce-4ccd-826b-95739145d762` (configurable via `releasi_campaign_id` in settings.yaml).
+
+## Scrapers (Cookie Refresh)
+
+CryptoRank and RootData require valid session cookies to avoid CAPTCHAs. Cookies are stored in the `scraper_cookies` table (migration 026) and refreshed manually via the dashboard.
+
+- **Dashboard**: `/scrapers` page — Globe icon in sidebar. Shows cookie age (green < 3d, yellow 3–5d, red > 5d). "Refresh Login" opens a noVNC browser (same Xvfb/websockify stack as LinkedIn login) for manual login, then "Save Cookies" extracts and stores all domain cookies.
+- **API endpoints** (`/api/v1/scrapers`):
+  - `GET /scrapers` — freshness status for both sites
+  - `POST /scrapers/{site}/login-session` — start noVNC session
+  - `POST /scrapers/{site}/login-session/finish` — extract + save cookies
+  - `GET /scrapers/{site}/cookies` — fetch cookies (used by fundraising agent; also callable from localhost for other scripts)
+- **Sites**: `cryptorank` (domain: `cryptorank.io`) and `rootdata` (domain: `rootdata.com`)
+- **Conflict guard**: `ScraperSessionManager` refuses to start if a LinkedIn `LoginSessionManager` session is active (shared Xvfb/VNC port).
 
 ## Phase Status
 - Phase 1 (Foundation): COMPLETE — CLI, CSV import, template rendering, browser module
