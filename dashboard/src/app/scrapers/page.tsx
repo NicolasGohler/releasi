@@ -1,13 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Globe, RefreshCw, CheckCircle2, AlertCircle, Clock, Terminal } from "lucide-react";
+import { Globe, RefreshCw, CheckCircle2, AlertCircle, Clock, Terminal, Search, Minus } from "lucide-react";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { useScrapers } from "@/hooks/use-queries";
 import * as api from "@/lib/api";
-import type { ScraperStatus } from "@/lib/types";
+import type { ScraperStatus, TgSweepStatus, TgSweepResult } from "@/lib/types";
 
 const SITE_LABELS: Record<string, string> = {
   cryptorank: "CryptoRank",
@@ -352,6 +352,191 @@ function FundraisingRunPanel() {
   );
 }
 
+// ── Relative time helper ─────────────────────────────────────────────────
+
+function relTime(iso: string): string {
+  const diff = Date.now() - new Date(iso.endsWith("Z") ? iso : iso + "Z").getTime();
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+function formatFloodWait(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+// ── Single result row ────────────────────────────────────────────────────
+
+function SweepResultRow({ item }: { item: TgSweepResult }) {
+  return (
+    <div className="flex items-center gap-3 py-2 border-b border-border/40 last:border-0">
+      <div className={`shrink-0 ${item.found ? "text-green-400" : "text-muted-foreground/40"}`}>
+        {item.found
+          ? <Search className="h-3.5 w-3.5" />
+          : <Minus className="h-3.5 w-3.5" />
+        }
+      </div>
+      <div className="flex-1 min-w-0">
+        <span className="text-xs font-medium truncate block">
+          {item.lead_name || "—"}
+          {item.company && (
+            <span className="text-muted-foreground font-normal"> · {item.company}</span>
+          )}
+        </span>
+      </div>
+      <div className="shrink-0 text-right">
+        {item.found && item.telegram_username ? (
+          <span className="text-xs text-green-400 font-mono">@{item.telegram_username}</span>
+        ) : (
+          <span className="text-xs text-muted-foreground/50">Not found</span>
+        )}
+      </div>
+      <span className="text-xs text-muted-foreground shrink-0 w-14 text-right">
+        {relTime(item.searched_at)}
+      </span>
+    </div>
+  );
+}
+
+// ── Telegram Enrichment Panel ─────────────────────────────────────────────
+
+function TelegramSweepPanel() {
+  const [status, setStatus] = useState<TgSweepStatus | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetchData = async () => {
+    try {
+      const data = await api.fetchTgSweepStatus();
+      setStatus(data);
+      // Keep newest results at top
+      if (containerRef.current) containerRef.current.scrollTop = 0;
+    } catch {
+      // silently ignore
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+    const schedule = () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      const isActive = status?.locked || !!status?.flood_wait_until;
+      intervalRef.current = setInterval(async () => {
+        await fetchData();
+        schedule();
+      }, isActive ? 10_000 : 30_000);
+    };
+    schedule();
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.locked, status?.flood_wait_until]);
+
+  // Derive status badge
+  const isFlooding = !!status?.flood_wait_remaining_seconds && status.flood_wait_remaining_seconds > 0;
+  const isProcessing = !!status?.locked && !isFlooding;
+
+  const badgeContent = isProcessing
+    ? (
+      <span className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium bg-blue-500/15 text-blue-400 border-blue-500/30">
+        <span className="relative flex h-2 w-2">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+        </span>
+        Processing
+      </span>
+    )
+    : isFlooding
+    ? (
+      <span className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium bg-yellow-500/15 text-yellow-400 border-yellow-500/30">
+        <Clock className="h-3 w-3" />
+        Flood Wait · {formatFloodWait(status!.flood_wait_remaining_seconds!)}
+      </span>
+    )
+    : (
+      <span className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium bg-muted text-muted-foreground border-border">
+        <span className="inline-flex rounded-full h-2 w-2 bg-muted-foreground/40" />
+        Idle
+      </span>
+    );
+
+  return (
+    <div className="rounded-lg border border-border bg-card p-6 space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-muted">
+            <Search className="h-5 w-5 text-muted-foreground" />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold leading-tight">Telegram Enrichment</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Background sweeper — one lead every 10 minutes
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={fetchData}
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+          title="Refresh"
+        >
+          <RefreshCw className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {/* Status + last processed */}
+      <div className="flex items-center gap-3 flex-wrap">
+        {badgeContent}
+        {status?.last_processed_at && (
+          <span className="text-xs text-muted-foreground">
+            Last processed {relTime(status.last_processed_at)}
+          </span>
+        )}
+      </div>
+
+      {/* Stats chips */}
+      {status && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="rounded-full border border-border bg-muted/50 px-3 py-1 text-xs text-muted-foreground">
+            {status.pending_count.toLocaleString()} pending
+          </span>
+          <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-3 py-1 text-xs text-blue-400">
+            {status.searched_count.toLocaleString()} searched
+          </span>
+          <span className="rounded-full border border-green-500/30 bg-green-500/10 px-3 py-1 text-xs text-green-400 flex items-center gap-1">
+            <CheckCircle2 className="h-3 w-3" />
+            {status.found_count.toLocaleString()} found
+          </span>
+        </div>
+      )}
+
+      {/* Recent results feed */}
+      {status && status.recent_results.length > 0 ? (
+        <div className="space-y-1.5">
+          <p className="text-xs text-muted-foreground font-medium">Recent results</p>
+          <div
+            ref={containerRef}
+            className="rounded-md border border-border bg-background/50 px-3 max-h-64 overflow-y-auto"
+          >
+            {status.recent_results.map((item) => (
+              <SweepResultRow key={`${item.lead_id}-${item.searched_at}`} item={item} />
+            ))}
+          </div>
+        </div>
+      ) : status ? (
+        <p className="text-xs text-muted-foreground">
+          No leads processed yet. The sweeper runs every 10 minutes when Telegram credentials are configured.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export default function ScrapersPage() {
   const { data: scrapers, isLoading } = useScrapers();
 
@@ -360,7 +545,7 @@ export default function ScrapersPage() {
       <div>
         <h1 className="text-xl font-semibold">Scrapers</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Refresh browser cookies for the fundraising data scrapers.
+          Scraper cookies, fundraising runs, and background enrichment.
         </p>
       </div>
 
@@ -375,6 +560,7 @@ export default function ScrapersPage() {
       )}
 
       <FundraisingRunPanel />
+      <TelegramSweepPanel />
     </div>
   );
 }

@@ -262,3 +262,24 @@ export interface ScraperStatus {
   captured_at: string | null;
   age_hours: number | null;
 }
+
+export interface TgSweepResult {
+  lead_id: string;
+  lead_name: string;
+  company: string | null;
+  found: boolean;
+  telegram_username: string | null;
+  searched_at: string;
+  match: string | null;
+}
+
+export interface TgSweepStatus {
+  locked: boolean;
+  flood_wait_until: string | null;
+  flood_wait_remaining_seconds: number | null;
+  last_processed_at: string | null;
+  pending_count: number;
+  searched_count: number;
+  found_count: number;
+  recent_results: TgSweepResult[];
+}

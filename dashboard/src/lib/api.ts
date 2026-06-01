@@ -574,3 +574,6 @@ export const fetchFundraisingRunLog = (tail = 200) =>
   apiFetch<{ lines: string[]; total_lines: number }>(
     `/scrapers/fundraising-run/log?tail=${tail}`
   );
+
+export const fetchTgSweepStatus = () =>
+  apiFetch<import("./types").TgSweepStatus>("/scrapers/tg-sweep/status");
