@@ -231,6 +231,7 @@ class Repository:
         }
 
         assignments_added = 0
+        memberships_added = 0
         for url, incoming in url_to_incoming.items():
             canonical = existing_by_url.get(url)
 
@@ -282,11 +283,13 @@ class Repository:
                         lead_id=canonical.id,
                         lead_list_id=incoming.lead_list_id,
                     ))
+                    memberships_added += 1
 
         await self.session.commit()
-        # Return assignments_added — consistent with "how many leads were added to
-        # the campaign" (used to update campaign.total_leads + lead_list.total_leads).
-        return assignments_added
+        # For campaign imports, return assignments_added (how many were added to the campaign).
+        # For list-only imports (no campaign_id), return memberships_added so that
+        # update_lead_list gets the correct count — assignments_added is always 0 in that case.
+        return assignments_added if assignments_added else memberships_added
 
     async def get_leads_by_status(
         self, campaign_id: str, status: LeadStatus

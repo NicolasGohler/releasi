@@ -1061,17 +1061,17 @@ def export_event(
 
         try:
             writer = csv.writer(fh)
-            writer.writerow(["linkedin_url"])
-            for profile_url in urls:
-                writer.writerow([profile_url])
+            writer.writerow(["linkedin_url", "name"])
+            for item in urls:
+                writer.writerow([item["url"], item.get("name", "")])
         finally:
             if output:
                 fh.close()
 
         if output:
-            console.print(f"\n[green]Exported {len(urls)} profile URLs → {output}[/green]")
+            console.print(f"\n[green]Exported {len(urls)} profiles → {output}[/green]")
         else:
-            console.print(f"\n[dim]# {len(urls)} URLs written to stdout[/dim]", file=_sys.stderr)
+            console.print(f"\n[dim]# {len(urls)} profiles written to stdout[/dim]", file=_sys.stderr)
 
     _run(_export())
 

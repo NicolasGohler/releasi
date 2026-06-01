@@ -44,15 +44,65 @@ class ScrapeStatusOut(BaseModel):
     error: Optional[str] = None
 
 
+async def _apollo_enrich_batch(items: list, apollo_api_key: str) -> dict:
+    """
+    Enrich up to 10 leads via Apollo bulk_match (linkedin_url → name, email, company, title).
+    Returns a dict keyed by normalized linkedin_url with the enriched fields.
+    """
+    import httpx
+
+    details = []
+    for item in items:
+        d = {"linkedin_url": item["url"]}
+        name = item.get("name", "")
+        if name:
+            parts = name.strip().split(None, 1)
+            if parts:
+                d["first_name"] = parts[0]
+            if len(parts) > 1:
+                d["last_name"] = parts[1]
+        details.append(d)
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://api.apollo.io/api/v1/people/bulk_match",
+                json={"details": details, "reveal_personal_emails": True},
+                headers={"x-api-key": apollo_api_key, "Content-Type": "application/json"},
+            )
+        if resp.status_code != 200:
+            logger.warning("apollo_enrich.batch_failed", status=resp.status_code)
+            return {}
+        matches = resp.json().get("matches") or []
+        result = {}
+        for m in matches:
+            li_url = (m.get("linkedin_url") or "").lower().rstrip("/")
+            if not li_url:
+                continue
+            email = m.get("email") or None
+            result[li_url] = {
+                "first_name": m.get("first_name") or None,
+                "last_name": m.get("last_name") or None,
+                "email": email if email and "@" in email else None,
+                "company": (m.get("organization") or {}).get("name") or None,
+                "title": m.get("title") or None,
+            }
+        return result
+    except Exception as e:
+        logger.warning("apollo_enrich.error", error=str(e))
+        return {}
+
+
 async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Optional[int]):
-    """Background task: scrape LinkedIn event attendees and persist as leads."""
+    """Background task: scrape LinkedIn event attendees, Apollo-enrich, and persist as leads."""
     from releasi.db.engine import get_session_factory
     from releasi.db.repository import Repository as _Repo
     from releasi.db.models import Lead, LeadStatus
     from releasi.linkedin.browser import LinkedInBrowser
     from releasi.linkedin.scraper import scrape_event_attendees
+    from releasi.config import Config
 
-    _scrape_jobs[list_id] = {"status": "running", "collected": 0}
+    _scrape_jobs[list_id] = {"status": "running", "collected": 0, "enriched": 0}
 
     session = get_session_factory()()
     repo = _Repo(session)
@@ -83,24 +133,55 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
             def _on_progress(count: int, _page_num: int):
                 _scrape_jobs[list_id]["collected"] = count
 
-            urls = await scrape_event_attendees(page, url, limit=limit, on_progress=_on_progress)
+            items = await scrape_event_attendees(page, url, limit=limit, on_progress=_on_progress)
         finally:
             await page.close()
 
+        # Apollo enrichment — batches of 10, only if API key is configured
+        cfg = Config()
+        apollo_key = cfg.apollo_api_key
+        enrichment: dict = {}
+        if apollo_key and items:
+            _scrape_jobs[list_id]["status"] = "enriching"
+            batch_size = 10
+            for i in range(0, len(items), batch_size):
+                batch = items[i:i + batch_size]
+                batch_result = await _apollo_enrich_batch(batch, apollo_key)
+                enrichment.update(batch_result)
+                _scrape_jobs[list_id]["enriched"] = len(enrichment)
+                logger.info("apollo_enrich.progress", enriched=len(enrichment), total=len(items))
+
         # Persist leads
         ll = await repo.get_lead_list(list_id)
-        if ll and urls:
+        if ll and items:
             existing_urls = await repo.get_list_lead_urls(list_id)
-            new_leads = [
-                Lead(lead_list_id=list_id, linkedin_url=u, status=LeadStatus.PENDING)
-                for u in urls if u not in existing_urls
-            ]
+            new_leads = []
+            for item in items:
+                li_url = item["url"]
+                if li_url in existing_urls:
+                    continue
+                # Merge scraper name with Apollo enrichment (Apollo wins on fields it provides)
+                apollo = enrichment.get(li_url.lower().rstrip("/"), {})
+                scraper_name = item.get("name", "")
+                scraper_parts = scraper_name.strip().split(None, 1) if scraper_name else []
+                first_name = apollo.get("first_name") or (scraper_parts[0] if scraper_parts else None)
+                last_name = apollo.get("last_name") or (scraper_parts[1] if len(scraper_parts) > 1 else None)
+                new_leads.append(Lead(
+                    lead_list_id=list_id,
+                    linkedin_url=li_url,
+                    first_name=first_name,
+                    last_name=last_name,
+                    email=apollo.get("email"),
+                    company=apollo.get("company"),
+                    title=apollo.get("title"),
+                    status=LeadStatus.PENDING,
+                ))
             if new_leads:
                 count = await repo.bulk_create_leads(new_leads)
                 await repo.update_lead_list(ll, total_leads=ll.total_leads + count, csv_filename="event_attendees.csv")
 
-        _scrape_jobs[list_id] = {"status": "done", "collected": len(urls)}
-        logger.info("event_scrape.done", list_id=list_id, total=len(urls))
+        _scrape_jobs[list_id] = {"status": "done", "collected": len(items), "enriched": len(enrichment)}
+        logger.info("event_scrape.done", list_id=list_id, total=len(items), enriched=len(enrichment))
 
     except Exception as e:
         logger.error("event_scrape.failed", list_id=list_id, error=str(e))

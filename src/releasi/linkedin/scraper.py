@@ -39,19 +39,13 @@ async def _wait_for_results(page: Page, timeout_ms: int = 12000) -> bool:
     return False
 
 
-async def _extract_profile_urls(page: Page) -> List[str]:
+async def _extract_profile_data(page: Page) -> List[dict]:
     """
-    Extract canonical profile URLs from the current search results page via JS.
+    Extract profile URLs and names from the current search results page via JS.
 
-    Strategy: find the <ul> with the most direct-child <li> elements that each
-    contain a /in/ link — that is the main results list. Take only the FIRST
-    /in/ anchor from each <li> (the name link). This naturally excludes:
-      - Photo links (ACoA internal IDs, or public-slug duplicates on the same card)
-      - "People you might know" suggestions in the sidebar (different <ul>)
-      - Nav / header profile links (not inside any <li>)
-
-    Falls back to the old all-anchors approach if no qualifying <ul> is found,
-    keeping the ACoA filter as a safety net.
+    Returns a list of {url, name} dicts. Name is extracted from the inner
+    name-link anchor's aria-hidden span (LinkedIn's visual-text pattern).
+    Falls back to the outer anchor's first text node if no inner anchor found.
     """
     payload: dict = await page.evaluate("""
         () => {
@@ -65,19 +59,12 @@ async def _extract_profile_urls(page: Page) -> List[str]:
             // LinkedIn renders each result card as a large outer <a href="/in/slug">
             // that wraps the whole card. Inside that outer anchor there are 2-3 more
             // /in/ links: a name link (same person) and 1-2 "people also viewed"
-            // suggestions (different people). The diagnostic confirmed this structure:
-            //
-            //   A.outerCard href="/in/thomas-stray"   ← the real result (outermost)
-            //     └── A.nameLink href="/in/thomas-stray"   ← duplicate, skip
-            //     └── A.suggestion href="/in/jihanesadiq"  ← extra person, skip
-            //     └── A.suggestion href="/in/reneegtouma"  ← extra person, skip
+            // suggestions (different people).
             //
             // Fix: keep only /in/ anchors that have NO /in/ ancestor within scope.
             // That selects exactly the outer card anchor per result (one per card).
-            // This is class-name-independent and survives LinkedIn DOM changes.
 
             for (const a of scope.querySelectorAll('a[href*="/in/"]')) {
-                // Walk up — if any ancestor within scope is also a /in/ anchor, skip.
                 let nested = false;
                 let el = a.parentElement;
                 while (el && el !== scope) {
@@ -96,21 +83,32 @@ async def _extract_profile_urls(page: Page) -> List[str]:
                 if (/^ACoA/i.test(slug)) continue;
                 if (slug.length < 3 || seen.has(slug)) continue;
                 seen.add(slug);
-                results.push('https://www.linkedin.com/in/' + slug);
+
+                // Extract name: look for the inner anchor with the same slug,
+                // then grab its aria-hidden span (LinkedIn's visual-name pattern).
+                let name = '';
+                const inner = a.querySelector('a[href*="/in/' + slug + '"]');
+                if (inner) {
+                    const span = inner.querySelector('span[aria-hidden="true"]');
+                    name = span ? span.textContent.trim() : inner.textContent.trim().split('\\n')[0].trim();
+                }
+                // Fallback: first aria-hidden span anywhere inside the outer anchor
+                if (!name) {
+                    const span = a.querySelector('span[aria-hidden="true"]');
+                    name = span ? span.textContent.trim() : '';
+                }
+
+                results.push({ url: 'https://www.linkedin.com/in/' + slug, name });
             }
 
-            return { method: 'outer-anchor', ul_li_count: 0, results };
+            return { method: 'outer-anchor', results };
         }
     """)
     if not payload:
         return []
-    logger.debug(
-        "scraper.extract",
-        method=payload.get("method"),
-        ul_li_count=payload.get("ul_li_count"),
-        found=len(payload.get("results") or []),
-    )
-    return payload.get("results") or []
+    items = payload.get("results") or []
+    logger.debug("scraper.extract", method=payload.get("method"), found=len(items))
+    return items
 
 
 async def scrape_event_attendees(
@@ -118,23 +116,23 @@ async def scrape_event_attendees(
     search_url: str,
     limit: Optional[int] = None,
     on_progress: Optional[Callable[[int, int], None]] = None,
-) -> List[str]:
+) -> List[dict]:
     """
-    Scrape profile URLs from a LinkedIn people search results page.
+    Scrape profile data from a LinkedIn people search results page.
 
     Paginates through results using &page=N, collecting unique /in/ profile
-    URLs until the limit is reached or results are exhausted (~10 per page).
+    entries until the limit is reached or results are exhausted (~10 per page).
 
     Args:
         page: Authenticated Playwright page (browser must be logged in).
         search_url: Full LinkedIn people search URL (e.g. event attendees URL).
-        limit: Max profile URLs to collect. None = collect everything available.
+        limit: Max profiles to collect. None = collect everything available.
         on_progress: Optional callback(total_collected, page_num) for live updates.
 
     Returns:
-        List of canonical profile URLs, e.g. ["https://www.linkedin.com/in/johndoe"].
+        List of {url, name} dicts, e.g. [{"url": "https://www.linkedin.com/in/johndoe", "name": "John Doe"}].
     """
-    collected: List[str] = []
+    collected: List[dict] = []
     seen: set[str] = set()
     page_num = 1
 
@@ -170,19 +168,19 @@ async def scrape_event_attendees(
         # Brief pause for React to finish rendering all cards
         await asyncio.sleep(random.uniform(0.8, 1.5))
 
-        page_urls = await _extract_profile_urls(page)
-        if not page_urls:
+        page_items = await _extract_profile_data(page)
+        if not page_items:
             logger.info("scraper.page_empty", page=page_num)
             break
 
         new_count = 0
-        for profile_url in page_urls:
+        for item in page_items:
             if limit is not None and len(collected) >= limit:
                 break
-            slug = profile_url.split("/in/")[-1].rstrip("/")
+            slug = item["url"].split("/in/")[-1].rstrip("/")
             if slug not in seen:
                 seen.add(slug)
-                collected.append(profile_url)
+                collected.append(item)
                 new_count += 1
 
         logger.info("scraper.page_done", page=page_num, new=new_count, total=len(collected))
