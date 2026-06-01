@@ -377,7 +377,6 @@ async def import_csv(
         imported=result.imported,
         duplicates_skipped=result.duplicates_skipped,
         no_url_skipped=result.no_url_skipped,
-        no_identifier_skipped=result.no_identifier_skipped,
         errors=result.errors,
     )
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import csv
 import re
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -82,13 +81,11 @@ _COLUMN_MAP = {
     "role": "title",
     "designation": "title",
     "titel": "title",
-    "headline": "title",
     # email
     "email": "email",
     "e-mail": "email",
     "email_address": "email",
     "emailaddress": "email",
-    "email address": "email",
     "mail": "email",
     "courriel": "email",
     # phone
@@ -143,7 +140,6 @@ class ImportResult:
     duplicates_skipped: int = 0
     no_url_skipped: int = 0
     no_url_rows: list = field(default_factory=list)
-    no_identifier_skipped: int = 0
     column_mapping: dict = field(default_factory=dict)
     extra_columns: list = field(default_factory=list)
     errors: list = field(default_factory=list)
@@ -274,7 +270,6 @@ def parse_csv(
     campaign_id: Optional[str] = None,
     lead_list_id: Optional[str] = None,
     existing_urls: Optional[set] = None,
-    require_linkedin_url: Optional[bool] = None,
 ) -> tuple:
     """
     Parse a CSV file and return (leads, import_result).
@@ -284,21 +279,13 @@ def parse_csv(
         campaign_id: Campaign to assign leads to (optional if lead_list_id provided)
         lead_list_id: Lead list to assign leads to (optional if campaign_id provided)
         existing_urls: Set of normalized URLs already in the target (for dedup)
-        require_linkedin_url: If True, skip rows without a LinkedIn URL (default:
-            True for campaign imports, False for lead-list imports so that
-            event-attendee CSVs without profile URLs are still imported).
 
     Returns:
         Tuple of (list[Lead], ImportResult)
     """
     if not campaign_id and not lead_list_id:
         raise ValueError("Either campaign_id or lead_list_id must be provided")
-    # Lead-list imports (e.g. LinkedIn event attendees) are URL-optional by default;
-    # campaign imports still require a URL so the scheduler has something to navigate to.
-    if require_linkedin_url is None:
-        require_linkedin_url = campaign_id is not None
     existing_urls = existing_urls or set()
-    existing_emails: set = set()
     result = ImportResult()
     leads = []
 
@@ -354,19 +341,16 @@ def parse_csv(
             linkedin_url = _extract_linkedin_url(row, url_column)
 
             if not linkedin_url:
-                if require_linkedin_url:
-                    result.no_url_skipped += 1
-                    result.no_url_rows.append(row_idx)
-                    continue
-                # URL-optional mode: will resolve dedup and synthetic URL after
-                # we've parsed the email field below.
-                pass
-            else:
-                # Dedup check on URL
-                if linkedin_url in existing_urls:
-                    result.duplicates_skipped += 1
-                    continue
-                existing_urls.add(linkedin_url)
+                result.no_url_skipped += 1
+                result.no_url_rows.append(row_idx)
+                continue
+
+            # Dedup check
+            if linkedin_url in existing_urls:
+                result.duplicates_skipped += 1
+                continue
+
+            existing_urls.add(linkedin_url)
 
             # Extract standard fields
             first_name = None
@@ -422,23 +406,6 @@ def parse_csv(
             if location is None and any([_city, _state, _country]):
                 parts = [p for p in [_city, _state, _country] if p]
                 location = ", ".join(parts)
-
-            # URL-optional: resolve dedup and assign a synthetic placeholder URL.
-            # The synthetic URL is never navigated to by the scheduler — it just
-            # satisfies the NOT NULL DB constraint and makes each row unique.
-            if not linkedin_url:
-                if email:
-                    email_key = email.lower()
-                    if email_key in existing_emails:
-                        result.duplicates_skipped += 1
-                        continue
-                    existing_emails.add(email_key)
-                    linkedin_url = f"urn:email-lead:{uuid.uuid4()}"
-                elif first_name or last_name:
-                    linkedin_url = f"urn:name-lead:{uuid.uuid4()}"
-                else:
-                    result.no_identifier_skipped += 1
-                    continue
 
             lead_kwargs = dict(
                 linkedin_url=linkedin_url,
