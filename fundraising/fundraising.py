@@ -1441,7 +1441,13 @@ def resolve_telegram_via_api(people: list, between_person_delay: float = None) -
     }
     resolve_endpoint = f"{RELEASI_BASE_URL}/telegram/resolve"
 
-    candidates = [p for p in people if p.get('name')]
+    # Filter to real person names only — "Ample Tech", single words, non-ASCII etc.
+    # must be excluded before they ever hit the API (they'd trigger flood waits for nothing).
+    _name_re = re.compile(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+){1,3}$')
+    candidates = [p for p in people if p.get('name') and _name_re.match(p['name'])]
+    skipped_non_persons = len([p for p in people if p.get('name')]) - len(candidates)
+    if skipped_non_persons:
+        print(f"  Filtered out {skipped_non_persons} non-person name(s) before Telegram resolution", flush=True)
     print(f" Resolving Telegram for {len(candidates)} people via Linauto API...")
 
     # Filter out people already in Releasi (LinkedIn URL check)
@@ -1767,6 +1773,20 @@ def gather_all():
                     person['email'] = email
                     enriched_count += 1
         print(f"\n Enrichment complete: Added emails to {enriched_count} people")
+
+    # ── Dedup all_people by LinkedIn URL before Telegram (Apollo batches produce duplicates) ──
+    seen_linkedin: set[str] = set()
+    deduped_people: list[dict] = []
+    for p in all_people:
+        url = (p.get('linkedin_url') or '').strip()
+        if url:
+            if url in seen_linkedin:
+                continue
+            seen_linkedin.add(url)
+        deduped_people.append(p)
+    if len(deduped_people) < len(all_people):
+        print(f" Deduped {len(all_people) - len(deduped_people)} duplicate people (by LinkedIn URL) before Telegram phase", flush=True)
+    all_people = deduped_people
 
     # ── Phase 5: Telegram resolution ─────────────────────────────────────────
     people_with_names = [p for p in all_people if p.get('name')]
