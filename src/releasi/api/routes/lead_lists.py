@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional
 
 import structlog
+import yaml
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, File  # noqa: F401
 from pydantic import BaseModel
 
@@ -30,6 +31,22 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
 # ── Event import job tracking (in-memory) ────────────────────────────────
 # Maps lead_list_id → job state. Single-process FastAPI — safe for our use case.
 _scrape_jobs: dict[str, dict] = {}
+
+
+def _get_apollo_key() -> str:
+    """Read apollo_api_key from settings.yaml (top-level or under fundraising:)."""
+    for path in ["/app/config/settings.yaml", "config/settings.yaml"]:
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f) or {}
+            return (
+                data.get("apollo_api_key")
+                or (data.get("fundraising") or {}).get("apollo_api_key")
+                or ""
+            )
+        except FileNotFoundError:
+            continue
+    return ""
 
 
 class EventImportRequest(BaseModel):
@@ -101,8 +118,6 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
     from releasi.db.models import Lead, LeadStatus
     from releasi.linkedin.browser import LinkedInBrowser
     from releasi.linkedin.scraper import scrape_event_attendees
-    from releasi.config import get_settings
-
     _scrape_jobs[list_id] = {"status": "running", "collected": 0, "enriched": 0}
 
     session = get_session_factory()()
@@ -139,7 +154,7 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
             await page.close()
 
         # Apollo enrichment — batches of 10, only if API key is configured
-        apollo_key = get_settings().apollo_api_key
+        apollo_key = _get_apollo_key()
         enrichment: dict = {}
         if apollo_key and items:
             _scrape_jobs[list_id]["status"] = "enriching"

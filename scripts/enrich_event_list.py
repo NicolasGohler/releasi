@@ -8,12 +8,26 @@ import httpx
 import sqlite3
 import sys
 
-sys.path.insert(0, "/app/src")
-from releasi.config import get_settings
-_cfg = get_settings()
-APOLLO_API_KEY = _cfg.apollo_api_key
+import yaml as _yaml
+
+def _get_apollo_key():
+    for path in ["/app/config/settings.yaml", "config/settings.yaml"]:
+        try:
+            with open(path) as f:
+                data = _yaml.safe_load(f) or {}
+            # top-level or nested under fundraising:
+            return (
+                data.get("apollo_api_key")
+                or (data.get("fundraising") or {}).get("apollo_api_key")
+                or ""
+            )
+        except FileNotFoundError:
+            continue
+    return ""
+
+APOLLO_API_KEY = _get_apollo_key()
 if not APOLLO_API_KEY:
-    print("ERROR: apollo_api_key not set in settings.yaml")
+    print("ERROR: apollo_api_key not found in settings.yaml")
     sys.exit(1)
 
 LIST_ID = "98ba35cc-77e0-4fb8-bf72-95b33c82dfad"
@@ -43,15 +57,16 @@ async def enrich():
         if resp.status_code != 200:
             print(f"  Batch {i // batch_size + 1}: HTTP {resp.status_code}")
             continue
-        matches = resp.json().get("matches") or []
+        matches = [m for m in (resp.json().get("matches") or []) if m]
+        # Build a slug→lead_id map for flexible URL matching
+        slug_to_lead = {url.rstrip("/").split("/in/")[-1].lower(): lid for lid, url in batch}
         for m in matches:
             li_url = (m.get("linkedin_url") or "").lower().rstrip("/")
+            # Match by slug so minor URL format differences don't break lookup
+            slug = li_url.split("/in/")[-1].lower() if "/in/" in li_url else ""
+            lead_id = slug_to_lead.get(slug) if slug else None
             if not li_url:
                 continue
-            lead_id = next(
-                (lid for lid, url in batch if url.lower().rstrip("/") == li_url),
-                None,
-            )
             if not lead_id:
                 continue
             first_name = m.get("first_name") or None
