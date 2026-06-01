@@ -264,6 +264,18 @@ class CampaignExecutor:
                 # Don't burn the lead — message never went through.
                 result["fatal"] = True
                 result["session_expired"] = True
+            elif "Cannot transition" in err_str:
+                # Lead/assignment desync: the assignment row said pending but the
+                # canonical lead row is already in a terminal state (e.g. error).
+                # This is a data integrity issue, not a session or network problem.
+                # Mark as skipped so the dispatcher moves on without pausing the
+                # account or sending a false-positive CAPTCHA Slack alert.
+                logger.warning(
+                    "executor.status_desync_skipped",
+                    lead_url=getattr(lead, "linkedin_url", "unknown"),
+                    error=err_str,
+                )
+                result["skipped"] = True
             else:
                 try:
                     await self.repo.update_lead(

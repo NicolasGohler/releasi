@@ -731,6 +731,40 @@ class LinkedInActions:
                 except Exception:
                     pass
                 return ActionResult(ActionStatus.SKIPPED, reason="already_connected")
+
+            # Check for LinkedIn's "How do you know [Person]?" dialog — shown for
+            # high-profile / creator-mode accounts. LinkedIn requires selecting a
+            # relationship type (Colleague, Classmate, etc.) before allowing an
+            # invitation. We don't automate relationship selection, so skip cleanly.
+            is_how_do_you_know = await self.page.evaluate("""() => {
+                const d = document.querySelector('[role="dialog"]');
+                if (!d) return false;
+                const t = d.innerText.toLowerCase();
+                return (
+                    t.includes('how do you know') ||
+                    t.includes('how do you two know') ||
+                    (t.includes('colleague') && t.includes('classmate')) ||
+                    t.includes('tell them how you know')
+                );
+            }""")
+            if is_how_do_you_know:
+                logger.info("action.how_do_you_know_dialog", url=profile_url)
+                await self._debug_screenshot("how_do_you_know")
+                try:
+                    close_btn = await self._try_locator(
+                        self.page.locator('[role="dialog"] button[aria-label*="Dismiss" i], [role="dialog"] button[aria-label*="Close" i]'),
+                        timeout_ms=1000,
+                    )
+                    if close_btn:
+                        await close_btn.click()
+                except Exception:
+                    pass
+                return ActionResult(
+                    ActionStatus.SKIPPED,
+                    reason="how_do_you_know_required",
+                    details={"url": profile_url},
+                )
+
             await self._dump_buttons_debug()
             await self._debug_screenshot("send_btn_missing")
             return ActionResult(
