@@ -61,35 +61,51 @@ def get_company_shorthands(company_name: Optional[str]) -> list[str]:
     if not company_name or not company_name.isascii():
         return []
 
-    SUFFIXES = {
+    # Words excluded from handle generation — corporate/legal suffixes plus
+    # generic industry terms that rarely appear in personal Telegram handles.
+    SKIP_WORDS = {
+        # Corporate / legal suffixes
         "labs", "protocol", "protocols", "network", "networks", "finance",
         "technologies", "technology", "tech", "dao", "foundation", "capital",
         "ventures", "venture", "inc", "ltd", "llc", "co", "corp", "group",
         "platform", "platforms", "exchange", "markets", "market", "ecosystem",
+        # Financial structures & instruments
+        "trust", "fund", "funds", "asset", "assets", "etf", "index",
+        "investment", "investments", "management", "holdings", "financial",
+        "partners", "advisory", "securities",
+        # Crypto / Web3 descriptors
+        "bitcoin", "btc", "ethereum", "eth", "crypto", "defi", "web3",
+        "blockchain", "tokenized", "token", "tokens", "digital", "decentralized",
+        "layer", "onchain",
+        # Generic business qualifiers
+        "trading", "global", "international", "solutions", "services",
+        "innovation", "innovations", "infrastructure", "shares", "ishares",
     }
 
     name_spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", company_name.strip())
     words = re.split(r"[\s\-_]+", name_spaced)
     words = [w for w in words if w]
 
-    meaningful = [w for w in words if w.lower() not in SUFFIXES] or words
+    meaningful = [w for w in words if w.lower() not in SKIP_WORDS] or words
 
-    shorthands: set[str] = set()
+    # Collect candidate shorthands, then keep the 2 shortest — shorter words
+    # are more likely to be distinctive brand names (e.g. "ondo" over "tokenized").
+    raw: list[str] = []
     for w in meaningful:
         clean = re.sub(r"[^a-zA-Z0-9]", "", w)
         if clean and len(clean) >= 2:
-            shorthands.add(clean.lower())
+            raw.append(clean.lower())
 
-    if len(meaningful) > 1:
-        full = re.sub(r"[^a-zA-Z0-9]", "", "".join(meaningful))
-        if full:
-            shorthands.add(full.lower())
-        if 2 <= len(meaningful) <= 4:
-            initials = "".join(w[0] for w in meaningful if w)
-            if len(initials) >= 2:
-                shorthands.add(initials.lower())
+    seen: set[str] = set()
+    shorthands: list[str] = []
+    for s in sorted(raw, key=len):
+        if s not in seen:
+            seen.add(s)
+            shorthands.append(s)
+            if len(shorthands) >= 2:
+                break
 
-    return list(shorthands)
+    return shorthands
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +122,12 @@ def score_entity_match(entity, person_name: str, candidate: str,
     person_last  = parts[-1] if len(parts) > 1 else ""
 
     first_match = bool(person_first and (person_first in tg_first or tg_first in person_first))
-    last_match  = bool(person_last  and (person_last  in tg_last  or tg_last  in person_last))
+    # Short last names (≤ 2 chars) match too broadly — any TG profile whose
+    # last name contains "c" would match "C". Treat as no signal.
+    last_match  = bool(
+        person_last and len(person_last) > 2
+        and (person_last in tg_last or tg_last in person_last)
+    )
 
     if not first_match:
         return None  # Minimum bar: first name must match
@@ -149,6 +170,7 @@ def generate_name_candidates(name: str, company_name: Optional[str] = None) -> l
     l  = last.lower()
     Fc = first[0].upper() + first[1:].lower()
     Lc = last[0].upper()  + last[1:].lower()
+    short_last = len(last) <= 2
 
     # 1. Company-specific patterns first — most discriminating
     if company_name:
@@ -156,8 +178,13 @@ def generate_name_candidates(name: str, company_name: Optional[str] = None) -> l
             Co = co[0].upper() + co[1:]
             add([
                 f"{f}_{co}", f"{f}{Co}", f"{Co}_{Fc}", f"{co}_{f}", f"{f}{co}", f"{co}{f}",
-                f"{l}_{co}", f"{l}{Co}", f"{Co}_{Lc}", f"{co}_{l}", f"{l}{co}", f"{co}{l}",
             ])
+            # Skip last-name + company combos for short last names — single-char
+            # or two-char last names produce noise (e.g. "c_ondo", "bitcoinc").
+            if not short_last:
+                add([
+                    f"{l}_{co}", f"{l}{Co}", f"{Co}_{Lc}", f"{co}_{l}", f"{l}{co}", f"{co}{l}",
+                ])
 
     # 2. Full-name patterns — common and recognisable
     add([
