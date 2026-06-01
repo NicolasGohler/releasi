@@ -278,8 +278,11 @@ export const fetchLeadLists = (params?: { include_archived?: boolean }) => {
 export const fetchLeadList = (id: string) =>
   apiFetch<LeadListDetail>(`/lead-lists/${id}`);
 
-export const createLeadList = (data: { name: string }) =>
+export const createLeadList = (data: { name: string; tg_enrich_enabled?: boolean }) =>
   apiFetch<LeadList>("/lead-lists", { method: "POST", body: JSON.stringify(data) });
+
+export const updateLeadList = (id: string, data: { name?: string; tg_enrich_enabled?: boolean }) =>
+  apiFetch<LeadList>(`/lead-lists/${id}`, { method: "PATCH", body: JSON.stringify(data) });
 
 export const deleteLeadList = (id: string) =>
   apiFetch<{ ok: boolean }>(`/lead-lists/${id}`, { method: "DELETE" });
@@ -539,6 +542,28 @@ export const finishScraperLoginSession = (site: string) =>
 
 export const cancelScraperLoginSession = (site: string) =>
   apiFetch<{ success: boolean }>(`/scrapers/${site}/login-session/cancel`, { method: "POST" });
+
+export const fetchActivity = (params: {
+  page?: number;
+  per_page?: number;
+  since?: string;
+  until?: string;
+  sources?: string;
+  event_types?: string;
+  account_id?: string;
+  campaign_id?: string;
+}) => {
+  const qs = new URLSearchParams();
+  if (params.page)        qs.set("page",        String(params.page));
+  if (params.per_page)    qs.set("per_page",     String(params.per_page));
+  if (params.since)       qs.set("since",        params.since);
+  if (params.until)       qs.set("until",        params.until);
+  if (params.sources)     qs.set("sources",      params.sources);
+  if (params.event_types) qs.set("event_types",  params.event_types);
+  if (params.account_id)  qs.set("account_id",   params.account_id);
+  if (params.campaign_id) qs.set("campaign_id",  params.campaign_id);
+  return apiFetch<import("./types").ActivityPage>(`/activity?${qs.toString()}`);
+};
 
 export const fetchFundraisingRunStatus = () =>
   apiFetch<{ running: boolean; started_at?: string; finished_at?: string; exit?: string }>(

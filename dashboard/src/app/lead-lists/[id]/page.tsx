@@ -15,6 +15,7 @@ import {
   useCampaigns,
   useAssignListToCampaign,
   useUnassignListFromCampaign,
+  useUpdateLeadList,
 } from "@/hooks/use-queries";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
@@ -61,6 +62,7 @@ export default function LeadListDetailPage({
   const { data: campaigns } = useCampaigns();
   const assign = useAssignListToCampaign();
   const unassign = useUnassignListFromCampaign();
+  const updateList = useUpdateLeadList(id);
   const [selectedCampaign, setSelectedCampaign] = useState("");
   const [isExporting, startExport] = useTransition();
 
@@ -193,6 +195,42 @@ export default function LeadListDetailPage({
           </div>
         )}
       </div>
+
+      {/* Telegram enrichment toggle */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Settings</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <label className="flex items-start gap-3 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={list.tg_enrich_enabled}
+              onChange={(e) => {
+                updateList.mutate(
+                  { tg_enrich_enabled: e.target.checked },
+                  {
+                    onSuccess: () => toast.success(
+                      e.target.checked
+                        ? "Telegram enrichment enabled"
+                        : "Telegram enrichment disabled"
+                    ),
+                    onError: (err) => toast.error(err.message),
+                  }
+                );
+              }}
+              className="mt-0.5 h-4 w-4 rounded border-border accent-primary"
+            />
+            <div>
+              <p className="text-sm font-medium">Telegram enrichment</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                When enabled, the background sweeper will look up Telegram handles for leads in this list.
+                Disable for lists where Telegram outreach doesn&apos;t make sense.
+              </p>
+            </div>
+          </label>
+        </CardContent>
+      </Card>
 
       {/* Campaigns using this list */}
       <Card>

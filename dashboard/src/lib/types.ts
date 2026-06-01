@@ -88,8 +88,32 @@ export interface LeadList {
   total_leads: number;
   campaign_count: number;
   archived: boolean;
+  tg_enrich_enabled: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface ActivityItem {
+  id: string;
+  source: "action_log" | "lead_event";
+  event_type: string;
+  created_at: string;
+  account_id?: string | null;
+  account_name?: string | null;
+  campaign_id?: string | null;
+  campaign_name?: string | null;
+  lead_id?: string | null;
+  lead_name?: string | null;
+  status?: string | null;
+  details?: Record<string, unknown> | null;
+}
+
+export interface ActivityPage {
+  items: ActivityItem[];
+  total: number;
+  page: number;
+  per_page: number;
+  pages: number;
 }
 
 export interface LeadListStats {

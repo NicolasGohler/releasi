@@ -103,14 +103,8 @@ When running any diagnostic script, test, or one-off action against LinkedIn:
 Dripify alternative. Automates LinkedIn connection requests and follow-up messages with safety-first design (warmup ramps, cooldowns, rate limits, stealth browsing).
 
 ## Tech Stack
-- **Python 3.11** (container image is python:3.11-slim; server host is 3.12.3 — use `Optional[X]` not `X | None` in SQLAlchemy `Mapped[]`)
-- **Playwright 1.58+** (async) + playwright-stealth for browser automation
-- **SQLAlchemy 2.0** async ORM + aiosqlite (SQLite)
-- **FastAPI** + uvicorn for REST API (port 8000)
-- **Typer** CLI + Rich for terminal output
-- **APScheduler** for daemon scheduling (7 jobs)
-- **Pydantic Settings** for YAML config (`config/settings.yaml`)
-- **Telethon 1.36+** (async) for Telegram username resolution
+- **Python 3.11 image / 3.12 host**: use `Optional[X]` not `X | None` in SQLAlchemy `Mapped[]` annotations — `X | None` syntax breaks on the container's pydantic_core build.
+- FastAPI + SQLAlchemy 2.0 async (aiosqlite) + APScheduler (7 jobs) + Playwright + Telethon.
 
 ## Project Structure
 ```
@@ -189,21 +183,10 @@ All times are **in the account's configured timezone** (e.g. `America/New_York` 
 ## Anti-Detection Layer
 
 ### Browser Fingerprinting (`browser.py`)
-- **UA must match Chromium binary**: `_CHROMIUM_MAJOR = 145` — update when rebuilding with newer Playwright. Mismatch between `navigator.userAgent` and `navigator.userAgentData` is a strong bot signal.
-  - Check actual version: `docker exec releasi /home/appuser/.cache/ms-playwright/chromium-*/chrome-linux64/chrome --version`
-- **Country-aware UA pool**: Mac UAs only for `{us, ca, gb, au, nz, ie}`; Windows-only for all other markets.
-- **Timezone derived from proxy country**: `browser.py` maps `proxy_country` → IANA timezone via `_COUNTRY_TIMEZONE` dict (40+ countries). The browser `timezone_id` is always set to match the proxy IP's country, regardless of the account's `timezone` field. If they differ, a warning is logged (`browser.timezone_proxy_mismatch`). This prevents the fingerprint mismatch where an IP geolocates to Germany but `navigator.timezone` reports America/New_York.
-- **Sec-CH-UA headers**: Set on context to align Client Hints with UA string.
-- **Deterministic viewport**: 5 realistic sizes `[(1366,768),(1440,900),(1920,1080),(1280,800),(1536,864)]`, hash-selected per account for consistent fingerprint.
-- **Residential proxy**: IPRoyal sticky sessions via `proxy_country` per account. Session ID derived from `account_id` hash for consistent IP.
-- **playwright-stealth**: Applied on context launch (gracefully skipped if not installed).
-- **`--disable-blink-features=AutomationControlled`**: Suppresses `navigator.webdriver`.
-
-### Click Behaviour (`actions.py`)
-- **`_hover_and_click()`**: All button activations hover first (80–350ms pause) before clicking. Triggers `mouseover`/`mousemove` events that real users always generate.
-- **No DOM mutations**: JS finders use index-based `page.locator('button').nth(idx)` — no `data-*` attribute injection that LinkedIn's JS could observe.
-- **Focus clicks stay direct**: `note_field.click()`, `msg_input.click()` are focus actions, not button activations — left as-is.
-- **JS fallback**: `el.click()` only used when Playwright pointer events are intercepted by sticky nav bar.
+- **UA must match Chromium binary**: `_CHROMIUM_MAJOR` in `browser.py` must match the actual Playwright Chromium binary — a mismatch between `navigator.userAgent` and `navigator.userAgentData` is a strong bot signal. Check: `docker exec releasi /home/appuser/.cache/ms-playwright/chromium-*/chrome-linux64/chrome --version`
+- **Timezone derived from proxy country**: The browser timezone is always set to match the proxy IP's country, not the account's `timezone` field. This prevents the fingerprint mismatch where the IP geolocates to Germany but `navigator.timezone` reports America/New_York. A warning is logged if they differ.
+- **Residential proxy**: IPRoyal sticky sessions per account. Session ID rotates weekly so a dead IP self-heals within a week rather than persisting indefinitely.
+- Other signals: country-aware UA pool (Mac for `{us, ca, gb, au, nz, ie}`, Windows elsewhere), deterministic viewport per account, playwright-stealth, `AutomationControlled` suppressed.
 
 ### Profile Filters (`profile_filter.py`)
 Per-campaign filters checked live on the profile page before a connection request is sent. All filters **fail open** — if detection is uncertain (LinkedIn DOM change, restricted profile), the lead is not blocked.
@@ -214,25 +197,12 @@ Per-campaign filters checked live on the profile page before a connection reques
 | Fewer than N connections | `filter_min_connections` | `filter_low_connections:<count>` |
 | "Open to Work" badge | `filter_exclude_open_to_work` | `filter_open_to_work` |
 
-**Open to Work detection**: Primary strategy is a JS text scan for any element whose trimmed text is exactly `"open to work"` (case-insensitive) — robust against LinkedIn's obfuscated class names. CSS fallbacks: `img[alt*="open to work" i]` and `svg[aria-label*="open to work" i]`. All three signals are stable across LinkedIn deploys.
-
 All three filters are toggleable per campaign from the dashboard Settings tab.
 
 ### Already-Connected Detection (`actions.py` → `send_connection_request`)
-LinkedIn profiles that are already 1st-degree connections must be caught before the connect flow is attempted. Detection runs in layers:
-1. **JS scan of profile header** for `\b1st\b` text → `SKIPPED(already_connected)`
-2. **CSS selectors** (`ALREADY_CONNECTED_INDICATORS`) as fallback
-3. **More dropdown guard** — after opening the More dropdown, explicitly checks for a "Remove connection" menu item before searching for Connect. Returns `"already_connected"` sentinel immediately if found.
-4. **Dialog fallback** — if the connect button was clicked but no Send button appears in the resulting dialog, checks whether the open dialog is a removal confirmation (`contains "remove" + "connection"`). If so → `SKIPPED(already_connected)` and closes the dialog cleanly.
+Multi-layer detection catches 1st-degree connections before the connect flow is attempted (JS scan, CSS selectors, More dropdown guard, dialog fallback).
 
-**Critical**: `_find_dropdown_item_by_js("Connect")` uses **word-boundary matching** (exact/starts-with/ends-with), NOT substring `.includes()`. Substring matching caused "Remove connection" to match "connect" and be clicked instead, opening a removal confirmation dialog instead of an invite modal.
-
-### Browsing Noise (`noise.py`)
-- **Back-scroll 15%**: Occasional upward scroll during feed browsing.
-- **Horizontal drift**: `delta_x = random.randint(-3, 3)` — humans don't scroll perfectly vertically.
-- **PageDown 25%**: Substitutes mouse wheel ~25% of forward scrolls.
-- **Hover before like**: `btn.hover()` + 80–300ms pause before clicking Like.
-- **Profile view back-scroll**: 15% chance per step to scroll back briefly.
+**Critical**: `_find_dropdown_item_by_js("Connect")` uses **word-boundary matching** (exact/starts-with/ends-with), NOT substring `.includes()`. Substring matching caused "Remove connection" to match "connect" and be clicked instead, opening a removal confirmation dialog rather than an invite modal.
 
 ### Session Health Model
 **Reactive-first** — LinkedIn sessions last months when left alone. Do not ping proactively.
@@ -251,67 +221,51 @@ LinkedIn profiles that are already 1st-degree connections must be caught before 
 
 **What NOT to do**: Never send bare HTTP requests with only `li_at` from the server IP. LinkedIn treats this as a stolen-cookie test and invalidates the session.
 
-**Failure mode separation** (`executor.py` → `_is_network_error()`): Navigation timeouts and proxy errors set `result["network_error"]=True` and are tracked separately from session errors. Only session errors (non-network) count toward cookie expiry detection.
+**Failure mode separation**: Navigation timeouts and proxy errors are tracked separately from session errors (`result["network_error"]=True`). Only session errors count toward cookie expiry detection — network errors skip the cycle without marking the account expired.
 
 ### Dispatcher Architecture (`runner.py` + `safety/dispatch_decisions.py`)
-The dispatchers (`_dispatch_continuous`, `_dispatch_planned`, `dispatch_followups`) use a two-layer design:
+Two-layer design keeps session-health logic testable and prevents silent drift between dispatchers:
 
-1. **Pure classifiers** (`safety/dispatch_decisions.py`) — `classify_connection_result()` and `classify_followup_result()` take an executor result dict + current consecutive-error counters and return a `DispatchIntent` dataclass encoding exactly what to do (lead action, account action, Slack message, log event, stop flag, scheduled-revert flag). No side effects — fully unit-testable.
+1. **Pure classifiers** (`safety/dispatch_decisions.py`) — `classify_connection_result()` and `classify_followup_result()` return a `DispatchIntent` dataclass (lead action, account action, Slack message, log event, stop flag). No side effects — fully unit-testable.
+2. **Side-effect helpers** (`runner.py`) — `_apply_connection_intent()` and `_apply_followup_intent()` execute the DB writes, Slack pings, and structured logging.
 
-2. **Side-effect helpers** (`runner.py`) — `_apply_connection_intent()` and `_apply_followup_intent()` consume a `DispatchIntent` and execute the DB writes, Slack pings, and structured logging. Dispatchers call these helpers then check `intent.stop_account` to decide whether to break.
-
-**Key invariant**: never inline session-health decision logic in a dispatcher. Add a new case to the classifier instead, keep the dispatcher thin. This prevents the classifiers from drifting silently from the dispatchers.
-
-**What the classifiers do NOT cover** (dispatcher handles separately):
-- `soft_limit_reached` / `limit_reached` → cooldown flow (checked before classifier call)
-- `add_proxy_mb` on success (dispatcher-specific accounting)
-- `sent_this_cycle` / `backfill_count` bookkeeping
+**Key invariant**: never inline session-health decision logic in a dispatcher. Add a new case to the classifier instead, keep the dispatcher thin.
 
 ### Acceptance Checker (`runner.py` → `check_acceptances`)
-- Runs **once daily at 10:00** (`acceptance_check_hour` setting, default 10).
-- **Connections page only** — loads `linkedin.com/mynetwork/connections/`, infinite-scrolls until the age cutoff (default 30h), collects all profile slugs via content-based JS (anchors on "Connected on" text nodes). No individual profile visits.
-- **Diffs** scraped slugs against `CONNECTION_REQUESTED` leads in DB → marks matches as `CONNECTED`.
+- Runs once daily at `acceptance_check_hour` (default 10 AM local time).
+- Loads `linkedin.com/mynetwork/connections/`, infinite-scrolls until the age cutoff (default 30h), diffs scraped slugs against `CONNECTION_REQUESTED` leads → marks matches as `CONNECTED`. No individual profile visits needed.
 - Does **not** detect declines — withdrawn/declined invitations are intentionally ignored.
 - Manual run: `releasi check-acceptances --account "Name" [--cutoff-hours 96] [--dry-run]`
-- Cost: ~1 page load + scroll per run (vs. old invitation manager approach which was ~240 MB/day).
-- LinkedIn connection timestamp format: `"Connected on April 7, 2026"` (full date, not relative). Parsed in `actions.py` → `_parse_connection_age_hours()`.
-- Connections page uses infinite scroll (not a "Load more" button) — pagination handled by `window.scrollTo` + height-change guard in `get_recent_connections()`.
+- Much cheaper than the old invitation manager approach (~240 MB/day saved).
 
 ### Daily Planner (`runner.py` → `daily_planning_sweep`)
-- Uses `repo.plan_generated_today(campaign_id, local_date)` to determine if today's plan already ran — checks `action_log` for a `DAILY_PLAN_GENERATED` entry with today's local date.
+- Uses `repo.plan_generated_today(campaign_id, local_date)` to guard against re-planning on mid-day restarts.
 - **Do NOT use `future_scheduled > 0`** as the "already planned" guard. The dispatcher backfill always keeps 1 lead in `SCHEDULED` state, so `future_scheduled` is almost always ≥ 1 and would permanently block the planner after a mid-day container restart.
-- On mid-day restart: `effective_start = now` (spreads remaining slots across the rest of the window).
-- Skips planning if past `work_end_hour` — tomorrow's morning run handles it.
+- On mid-day restart: spreads remaining slots across the rest of the window. Skips planning if past `work_end_hour`.
 
 ### Morning Warm-Up (`runner.py` → `keep_alive`)
-- Runs once per local day in the account's 7–10 AM window (hourly job with per-account time check).
-- Step 1: Feed scroll 15–35 seconds (most natural morning action).
-- Step 2: One additional page — notifications, network, or messaging (random weighted).
-- Detects session expiry via URL redirect check, not HTTP pre-check.
+- Runs once per local day in the 7–10 AM window: feed scroll followed by one additional page (notifications, network, or messaging). Mimics a real morning LinkedIn session to maintain account health.
+- Session expiry detected via URL redirect check, not an HTTP pre-check.
 
 ### Proxy Health Check (`_http_check_session`)
-- Always routed through account's residential proxy (consistent IP = no location jump signal).
-- Used only on startup + post-login, never on a recurring schedule.
-- Uses lightweight `httpx` — confirms cookie validity but NOT browser-level connectivity. A passing HTTP check does not guarantee Playwright navigation will succeed.
+- Used only on startup + post-login, never on a recurring schedule — pinging sessions proactively shortens their lifespan.
+- Confirms cookie validity via `httpx` through the account's residential proxy, but does NOT guarantee Playwright browser navigation will succeed. A passing HTTP check is a necessary but not sufficient condition.
 
 ### Navigation Timeouts (`navigator.py`)
-- All `page.goto()` calls use `wait_until="domcontentloaded"` (not `"load"`) and 15s timeout.
-- `domcontentloaded` fires immediately on a /login redirect → expired session detected in <2s instead of a 30s timeout that masks the root cause.
-- Profile content rendering is handled separately by `_wait_for_profile_rendered()` after session is confirmed valid.
-
+- All `page.goto()` calls use `wait_until="domcontentloaded"` rather than `"load"` — `domcontentloaded` fires immediately on a `/login` redirect, so an expired session is detected in <2s rather than waiting out a 30s load timeout.
 
 ### Playwright Proxy Credentials
 - **Always use separate `username`/`password` fields** — Playwright/Chromium silently ignores credentials embedded in the server URL string (`http://user:pass@host:port`). The browser code in `browser.py` parses the URL and splits them out; do not revert this.
-- httpx (`_http_check_session`, `check-connection` endpoint) uses the URL format fine — only Playwright needs the split.
+- `httpx` (health checks) handles embedded URL credentials fine — only Playwright needs the split.
 
 ### Proxy Sticky Sessions (`_build_proxy_url`)
-- Session ID is `sha256(f"{account_id}-{year}-w{isoweek}")[:12]` — **rotates every Monday**. This prevents being permanently stuck on a dead/slow residential IP; worst case is one bad week.
+- Session ID rotates every Monday — prevents being permanently stuck on a dead/slow residential IP; worst case is one bad week.
 - Do not remove the week component. The old fixed hash caused Italy proxy failures for 10+ days with no self-healing.
 
 ### Proxy Location Notes
-- **Avoid city-level specificity** — use `ca` not `ca-montreal`. City filtering shrinks the IP pool and IPRoyal often returns 502 when no city IP is available for the session. Country-level is always preferred.
-- **Avoid Greece (`gr`)**: residential IPs there are too slow for browser-grade traffic (Playwright timeouts even with valid session). Use `it`, `de`, `nl`, `fr`, or `es` for Southern/Central European accounts.
-- **Mac UA markets**: `{us, ca, gb, au, nz, ie}` — all others get Windows UA. Account for this when choosing proxy country if the login browser UA matters.
+- **Avoid city-level specificity** — use `ca` not `ca-montreal`. City filtering shrinks the IP pool and IPRoyal often returns 502 when no city IP is available.
+- **Avoid Greece (`gr`)**: residential IPs there are too slow for browser-grade traffic. Use `it`, `de`, `nl`, `fr`, or `es` for Southern/Central European accounts.
+- **Mac UA markets**: `{us, ca, gb, au, nz, ie}` — all others get Windows UA. Account for this when choosing proxy country.
 
 ## noVNC Login Flow
 - `POST /api/v1/accounts/{id}/login-session` → starts ephemeral Xvfb + x11vnc + websockify on port 6080.
@@ -348,7 +302,7 @@ Note: pydantic-dependent tests (cooldown, planner, warmup) fail locally on ARM M
 
 ## Lead Social Fields & Outreach Tracking
 
-The `leads` table has social/outreach columns that are enriched outside the main LinkedIn automation flow:
+The `leads` table has social/outreach columns enriched outside the main LinkedIn automation flow:
 
 | Column | Type | Purpose |
 |--------|------|---------|
@@ -358,26 +312,11 @@ The `leads` table has social/outreach columns that are enriched outside the main
 | `tg_contacted_at` | `DateTime` | UTC timestamp set when user marks "contacted via Telegram"; NULL = not yet contacted |
 | `email` | `String` | Email from CSV import |
 
-**Backfill note**: many imported CSVs stored social data in `extra_data` rather than the typed columns. Backfills already applied on 2026-05-20:
-- Twitter/X: 2,152 leads updated from `extra_data["Twitter Url"]` → `twitter_url`
-- Telegram: 143 leads updated from `extra_data` keys → `telegram_username`
-
-If new imports contain social data in `extra_data`, run a similar backfill script targeting the relevant keys.
+**Backfill note**: older CSVs stored social data in `extra_data` rather than the typed columns. If new imports contain social data in `extra_data`, run a backfill script targeting the relevant keys (e.g. `extra_data["Twitter Url"]` → `twitter_url`).
 
 ## lead_events Table (migration 023)
 
 Lightweight event log for lead-level actions that don't require an `account_id` (unlike `action_log`). Used by the lead detail activity feed alongside `action_log` rows.
-
-```sql
-CREATE TABLE lead_events (
-    id          VARCHAR(36) PRIMARY KEY,
-    lead_id     VARCHAR(36) NOT NULL REFERENCES leads(id),
-    event_type  VARCHAR(64) NOT NULL,
-    details     JSON,
-    created_at  DATETIME NOT NULL
-);
-CREATE INDEX ix_lead_events_lead_id ON lead_events(lead_id);
-```
 
 Current `event_type` values: `telegram_found`, `telegram_saved`, `telegram_removed`, `tg_contacted`, `tg_contacted_cleared`.
 
@@ -389,11 +328,11 @@ Add via `repo.log_lead_event(lead_id, event_type, details_dict)`.
 - `POST /leads/{lead_id}/find-telegram` — starts background `asyncio.create_task()`, returns `{task_id}` immediately
 - `GET /leads/{lead_id}/find-telegram/{task_id}` — polls status; `status` is `"running" | "done" | "error"`
 
-**In-memory task store**: `_find_tg_tasks: dict[str, dict]` in the leads route module. Tasks live in memory only — they are lost on container restart (client must retry).
+**In-memory task store**: tasks live in memory only — lost on container restart, client must retry.
 
 **Session factory pattern**: background task creates its own DB session via `get_session_factory()()` (not the request-scoped session). This is the correct pattern for tasks that outlive the HTTP request.
 
-**Re-search guard**: if a previous search completed with no match (`telegram_found` event exists with null `best_match`) and no `telegram_username` is saved, the endpoint returns **409**. Pass `?force=true` to bypass. The dashboard shows a greyed-out "No match / retry" state instead of the Find button.
+**Re-search guard**: if a previous search completed with no match and no `telegram_username` is saved, the endpoint returns **409**. Pass `?force=true` to bypass. The dashboard shows a greyed-out "No match / retry" state instead of the Find button.
 
 **Two-pass resolver** (`telegram/resolver.py`):
 1. Pass 1: checks if the lead's Twitter handle exists on Telegram (fast, one lookup)
@@ -412,7 +351,7 @@ On completion, `telegram_alternatives` is persisted to the lead row and a `teleg
 | `has_email` | `bool` | `true` = `email IS NOT NULL`, `false` = IS NULL |
 | `tg_contacted` | `bool` | `true` = `tg_contacted_at IS NOT NULL`, `false` = IS NULL |
 
-All implemented in `repository.py → list_leads_global()`. The dashboard renders these as toggle chips above the lead table (6 chips: Has Telegram, No Telegram, Has X/Twitter, Has Email, TG Contacted, TG Not Contacted).
+All implemented in `repository.py → list_leads_global()`. The dashboard renders these as toggle chips above the lead table.
 
 ## Database Migrations
 ```bash
@@ -452,20 +391,17 @@ Option 2 is fine for simple `ADD COLUMN` migrations. Use option 1 for complex mi
 - **Fingerprint stability**: UA, viewport, proxy session ID are all hash-derived from `account_id` — same account always presents identical fingerprint across restarts.
 
 ## Auto-Withdraw (currently disabled)
-The auto-withdraw feature is **fully implemented but disabled**. It withdraws the N oldest pending invitations per daily acceptance check run when the pending count exceeds a threshold.
+The auto-withdraw feature is **fully implemented but disabled**. It withdraws the oldest pending invitations when the pending count exceeds a threshold. To enable/disable for an account:
 
-To enable for an account:
 ```bash
-# Set threshold (e.g. 300 = withdraw oldest invitations when pending > 300, 10/day)
+# Enable (e.g. withdraw oldest when pending > 300)
 docker exec releasi python3 -c "
 import sqlite3; c=sqlite3.connect('/app/data/releasi.db')
 c.execute(\"UPDATE accounts SET withdraw_threshold=300 WHERE name='Nicolas Goehler'\")
 c.commit(); c.close()
 "
-```
 
-To disable again (set back to NULL):
-```bash
+# Disable (set back to NULL)
 docker exec releasi python3 -c "
 import sqlite3; c=sqlite3.connect('/app/data/releasi.db')
 c.execute(\"UPDATE accounts SET withdraw_threshold=NULL WHERE name='Nicolas Goehler'\")
@@ -473,7 +409,7 @@ c.commit(); c.close()
 "
 ```
 
-The withdrawal happens on the already-loaded invitation manager page (no extra navigation cost). Code is in `runner.py` → `check_acceptances()`, `actions.py` → `withdraw_oldest_invitations()`.
+Code is in `runner.py` → `check_acceptances()`, `actions.py` → `withdraw_oldest_invitations()`.
 
 ## On-Demand Withdrawal (dashboard UI)
 A manual withdrawal panel lives in the account Settings tab. It lets you:
@@ -486,33 +422,23 @@ A manual withdrawal panel lives in the account Settings tab. It lets you:
 
 `withdraw_invitations_sweep` APScheduler job fires hourly; per-account logic enforces the configured interval.
 
-**How it works:**
-1. Skips accounts where `withdraw_threshold` is NULL (feature disabled).
-2. Checks if `auto_withdraw_interval_days` have elapsed since `auto_withdraw_last_run` (or never run).
-3. Navigates to the invitation manager via browser+proxy and reads the live pending count.
-4. Caches the count as `pending_invitations_count` on the account row.
-5. If `live_count > withdraw_threshold`: picks a random target in `[threshold*0.95, threshold]`, withdraws `min(live_count - target, 200)` oldest invitations in a single session.
-6. Stamps `auto_withdraw_last_run = now` regardless of whether withdrawal was needed.
+**How it works:** skips accounts where `withdraw_threshold` is NULL; checks if `auto_withdraw_interval_days` have elapsed; reads live pending count via browser; if `live_count > withdraw_threshold`, withdraws oldest invitations targeting a randomised count just below the threshold (within 5%), capped at 200/session. Stamps `auto_withdraw_last_run` regardless of whether withdrawal was needed.
 
 **Account model fields** (migration 017):
-- `withdraw_threshold: Optional[int]` — trigger threshold; NULL = disabled (existing field)
+- `withdraw_threshold: Optional[int]` — trigger threshold; NULL = disabled
 - `auto_withdraw_interval_days: int` — default 30; how often the sweep may fire per account
 - `auto_withdraw_last_run: Optional[datetime]` — last successful sweep timestamp
 - `pending_invitations_count: Optional[int]` — cached count from last sweep run
 
-**Dashboard:** Account Settings → Invitations panel. Threshold + interval inputs save via the standard PUT `/accounts/{id}` endpoint. Last-run timestamp + cached count are shown read-only below the inputs.
-
-**Design rationale:** Single session per run (never spreads across days). Hard 200/session cap for safety. Organic target randomisation (within 5% of threshold) avoids a predictable pattern. Interval-based rather than daily so infrequent LinkedIn users (e.g. once a month) don't get daily withdrawals.
+**Dashboard:** Account Settings → Invitations panel. Threshold + interval inputs save via the standard PUT `/accounts/{id}` endpoint. Last-run timestamp + cached count are shown read-only.
 
 ## Database Backup
 
 `scripts/backup_db.sh` — uses the SQLite online backup API (`sqlite3.backup()`) which is WAL-safe and works on a live DB.
 
-- **Daily local backup**: keeps the 7 most recent snapshots in `/root/linauto/data/backups/` on the host (= `/app/data/backups/` inside container). Run as: `bash /root/linauto/scripts/backup_db.sh`
+- **Daily local backup**: keeps the 7 most recent snapshots in `/root/linauto/data/backups/`. Run as: `bash /root/linauto/scripts/backup_db.sh`
 - **Weekly offsite backup to Google Drive**: pass `--offsite` flag → `rclone copyto` uploads to `gdrive:releasi-backups/`. Cron on server: `0 3 * * 6` (Saturday 03:00 UTC).
 - rclone config lives at `/root/linauto/.config/rclone/rclone.conf` (server only, not in repo). Remote is named `gdrive`.
-- The backup script runs `docker exec -u root` (not the default appuser) because `/app/data/backups/` is owned by root:root and appuser (uid 1000) cannot write there.
-- Total runtime: ~3 seconds for a typical DB size.
 
 To run a one-off offsite backup: `ssh root@REDACTED 'bash /root/linauto/scripts/backup_db.sh --offsite'`
 

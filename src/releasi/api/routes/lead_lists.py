@@ -14,6 +14,7 @@ from releasi.api.deps import get_repo
 from releasi.api.schemas import (
     LeadListOut,
     LeadListCreate,
+    LeadListUpdate,
     LeadListDetail,
     LeadListStats,
     AssignListRequest,
@@ -100,7 +101,7 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
     from releasi.db.models import Lead, LeadStatus
     from releasi.linkedin.browser import LinkedInBrowser
     from releasi.linkedin.scraper import scrape_event_attendees
-    from releasi.config import Config
+    from releasi.config import get_settings
 
     _scrape_jobs[list_id] = {"status": "running", "collected": 0, "enriched": 0}
 
@@ -138,8 +139,7 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
             await page.close()
 
         # Apollo enrichment — batches of 10, only if API key is configured
-        cfg = Config()
-        apollo_key = cfg.apollo_api_key
+        apollo_key = get_settings().apollo_api_key
         enrichment: dict = {}
         if apollo_key and items:
             _scrape_jobs[list_id]["status"] = "enriching"
@@ -217,7 +217,7 @@ async def create_lead_list(
     existing = await repo.get_lead_list_by_name(body.name)
     if existing:
         raise HTTPException(status_code=409, detail="Lead list name already exists")
-    ll = await repo.create_lead_list(name=body.name)
+    ll = await repo.create_lead_list(name=body.name, tg_enrich_enabled=body.tg_enrich_enabled)
     return await _enrich_lead_list(repo, ll)
 
 
@@ -265,6 +265,26 @@ async def get_lead_list(lead_list_id: str, repo: Repository = Depends(get_repo))
     out.campaigns = campaigns
     out.stats = stats
     return out
+
+
+@router.patch("/lead-lists/{lead_list_id}", response_model=LeadListOut)
+async def update_lead_list(
+    lead_list_id: str,
+    body: LeadListUpdate,
+    repo: Repository = Depends(get_repo),
+):
+    """Update a lead list's name and/or tg_enrich_enabled flag."""
+    ll = await repo.get_lead_list(lead_list_id)
+    if not ll:
+        raise HTTPException(status_code=404, detail="Lead list not found")
+    updates = body.model_dump(exclude_none=True)
+    if "name" in updates:
+        existing = await repo.get_lead_list_by_name(updates["name"])
+        if existing and existing.id != lead_list_id:
+            raise HTTPException(status_code=409, detail="Lead list name already exists")
+    if updates:
+        ll = await repo.update_lead_list(ll, **updates)
+    return await _enrich_lead_list(repo, ll)
 
 
 @router.post("/lead-lists/{lead_list_id}/archive", response_model=LeadListOut)

@@ -218,6 +218,18 @@ export function useCreateLeadList() {
   });
 }
 
+export function useUpdateLeadList(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { name?: string; tg_enrich_enabled?: boolean }) =>
+      api.updateLeadList(id, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["lead-lists"] });
+      qc.invalidateQueries({ queryKey: ["lead-list", id] });
+    },
+  });
+}
+
 export function useDeleteLeadList() {
   const qc = useQueryClient();
   return useMutation({

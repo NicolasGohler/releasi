@@ -9,8 +9,8 @@ import sqlite3
 import sys
 
 sys.path.insert(0, "/app/src")
-from releasi.config import Config
-_cfg = Config()
+from releasi.config import get_settings
+_cfg = get_settings()
 APOLLO_API_KEY = _cfg.apollo_api_key
 if not APOLLO_API_KEY:
     print("ERROR: apollo_api_key not set in settings.yaml")

@@ -276,6 +276,7 @@ class LeadListOut(BaseModel):
     total_leads: int
     campaign_count: int = 0
     archived: bool = False
+    tg_enrich_enabled: bool = True
     created_at: datetime
     updated_at: datetime
 
@@ -285,6 +286,12 @@ class LeadListOut(BaseModel):
 
 class LeadListCreate(BaseModel):
     name: str
+    tg_enrich_enabled: bool = True
+
+
+class LeadListUpdate(BaseModel):
+    name: Optional[str] = None
+    tg_enrich_enabled: Optional[bool] = None
 
 
 class LeadListStats(BaseModel):
@@ -447,6 +454,31 @@ class TelegramResolveBatchStatus(BaseModel):
 class CloneCampaignRequest(BaseModel):
     name: str
     account_id: str
+
+
+# ── Global Activity Feed ──────────────────────────────────────────────────
+
+class ActivityItem(BaseModel):
+    id: str
+    source: str                      # "action_log" | "lead_event"
+    event_type: str
+    created_at: datetime
+    account_id: Optional[str] = None
+    account_name: Optional[str] = None
+    campaign_id: Optional[str] = None
+    campaign_name: Optional[str] = None
+    lead_id: Optional[str] = None
+    lead_name: Optional[str] = None
+    status: Optional[str] = None    # action_log only
+    details: Optional[Dict] = None
+
+
+class ActivityPage(BaseModel):
+    items: List[ActivityItem]
+    total: int
+    page: int
+    per_page: int
+    pages: int
 
 
 # ── Health ────────────────────────────────────────────────────────────────

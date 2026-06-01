@@ -1488,8 +1488,17 @@ class Repository:
 
     # ── Lead Lists ────────────────────────────────────────────────────────
 
-    async def create_lead_list(self, name: str, csv_filename: str | None = None) -> LeadList:
-        lead_list = LeadList(name=name, csv_filename=csv_filename)
+    async def create_lead_list(
+        self,
+        name: str,
+        csv_filename: str | None = None,
+        tg_enrich_enabled: bool = True,
+    ) -> LeadList:
+        lead_list = LeadList(
+            name=name,
+            csv_filename=csv_filename,
+            tg_enrich_enabled=tg_enrich_enabled,
+        )
         self.session.add(lead_list)
         await self.session.commit()
         await self.session.refresh(lead_list)
@@ -2051,6 +2060,181 @@ class Repository:
         self.session.add(event)
         await self.session.flush()
         return event
+
+    async def get_next_lead_for_tg_sweep(self) -> Optional[Lead]:
+        """Return the next lead to enrich with Telegram, or None if nothing is queued.
+
+        Eligibility:
+          - telegram_username IS NULL (not already found)
+          - no tg_sweep_searched event in lead_events (never searched before)
+          - at least one of the lead's lists has tg_enrich_enabled=True
+            (checked via legacy lead_list_id FK or LeadListMembership rows)
+          - must have first_name (need a real person name to search)
+
+        Newest imports are processed first so fresh fundraising leads are enriched
+        before older backlog entries.
+        """
+        already_searched = (
+            select(LeadEvent.id)
+            .where(LeadEvent.lead_id == Lead.id)
+            .where(LeadEvent.event_type == "tg_sweep_searched")
+            .exists()
+        )
+        legacy_enabled = (
+            select(LeadList.id)
+            .where(LeadList.id == Lead.lead_list_id)
+            .where(LeadList.tg_enrich_enabled == True)  # noqa: E712
+            .exists()
+        )
+        membership_enabled = (
+            select(LeadListMembership.lead_list_id)
+            .join(LeadList, LeadList.id == LeadListMembership.lead_list_id)
+            .where(LeadListMembership.lead_id == Lead.id)
+            .where(LeadList.tg_enrich_enabled == True)  # noqa: E712
+            .exists()
+        )
+        stmt = (
+            select(Lead)
+            .where(Lead.telegram_username.is_(None))
+            .where(not_(already_searched))
+            .where(or_(legacy_enabled, membership_enabled))
+            .where(Lead.first_name.isnot(None))
+            .order_by(Lead.created_at.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_activity(
+        self,
+        page: int = 1,
+        per_page: int = 50,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+        sources: Optional[list] = None,
+        event_types: Optional[list] = None,
+        account_id: Optional[str] = None,
+        campaign_id: Optional[str] = None,
+    ) -> tuple[list[dict], int]:
+        """Return a merged, time-sorted activity feed from action_log + lead_events.
+
+        Returns (items, total_count). Each item is a plain dict ready to be
+        converted to ActivityItem. Resolution of account/campaign/lead names is
+        done here to avoid N+1 queries in the route.
+        """
+        from releasi.db.models import Campaign
+
+        include_action_log  = not sources or "action_log" in sources
+        include_lead_events = not sources or "lead_events" in sources
+
+        items: list[dict] = []
+
+        # ── action_log ────────────────────────────────────────────────────────
+        if include_action_log:
+            stmt = select(ActionLog).order_by(ActionLog.created_at.desc())
+            if since:
+                stmt = stmt.where(ActionLog.created_at >= since)
+            if until:
+                stmt = stmt.where(ActionLog.created_at <= until)
+            if account_id:
+                stmt = stmt.where(ActionLog.account_id == account_id)
+            if campaign_id:
+                stmt = stmt.where(ActionLog.campaign_id == campaign_id)
+            if event_types:
+                stmt = stmt.where(ActionLog.action_type.in_(event_types))
+            # Fetch enough for the page; we'll merge and re-sort below
+            stmt = stmt.limit(per_page * page * 2)
+            rows = (await self.session.execute(stmt)).scalars().all()
+
+            # Collect unique IDs for name resolution
+            acct_ids  = {r.account_id for r in rows if r.account_id}
+            camp_ids  = {r.campaign_id for r in rows if r.campaign_id}
+            lead_ids  = {r.lead_id for r in rows if r.lead_id}
+
+            acct_names: dict[str, str] = {}
+            camp_names: dict[str, str] = {}
+            lead_names: dict[str, str] = {}
+
+            if acct_ids:
+                acct_rows = (await self.session.execute(
+                    select(Account.id, Account.name).where(Account.id.in_(acct_ids))
+                )).all()
+                acct_names = {r.id: r.name for r in acct_rows}
+            if camp_ids:
+                camp_rows = (await self.session.execute(
+                    select(Campaign.id, Campaign.name).where(Campaign.id.in_(camp_ids))
+                )).all()
+                camp_names = {r.id: r.name for r in camp_rows}
+            if lead_ids:
+                lead_rows = (await self.session.execute(
+                    select(Lead.id, Lead.first_name, Lead.last_name).where(Lead.id.in_(lead_ids))
+                )).all()
+                lead_names = {
+                    r.id: f"{r.first_name or ''} {r.last_name or ''}".strip()
+                    for r in lead_rows
+                }
+
+            for r in rows:
+                items.append({
+                    "id": r.id,
+                    "source": "action_log",
+                    "event_type": r.action_type.value if hasattr(r.action_type, "value") else str(r.action_type),
+                    "created_at": r.created_at,
+                    "account_id": r.account_id,
+                    "account_name": acct_names.get(r.account_id) if r.account_id else None,
+                    "campaign_id": r.campaign_id,
+                    "campaign_name": camp_names.get(r.campaign_id) if r.campaign_id else None,
+                    "lead_id": r.lead_id,
+                    "lead_name": lead_names.get(r.lead_id) if r.lead_id else None,
+                    "status": r.status.value if hasattr(r.status, "value") else str(r.status),
+                    "details": r.details,
+                })
+
+        # ── lead_events ───────────────────────────────────────────────────────
+        if include_lead_events:
+            stmt2 = select(LeadEvent).order_by(LeadEvent.created_at.desc())
+            if since:
+                stmt2 = stmt2.where(LeadEvent.created_at >= since)
+            if until:
+                stmt2 = stmt2.where(LeadEvent.created_at <= until)
+            if event_types:
+                stmt2 = stmt2.where(LeadEvent.event_type.in_(event_types))
+            # account_id / campaign_id filters don't apply to lead_events
+            stmt2 = stmt2.limit(per_page * page * 2)
+            rows2 = (await self.session.execute(stmt2)).scalars().all()
+
+            le_lead_ids = {r.lead_id for r in rows2}
+            le_lead_names: dict[str, str] = {}
+            if le_lead_ids:
+                le_lead_rows = (await self.session.execute(
+                    select(Lead.id, Lead.first_name, Lead.last_name).where(Lead.id.in_(le_lead_ids))
+                )).all()
+                le_lead_names = {
+                    r.id: f"{r.first_name or ''} {r.last_name or ''}".strip()
+                    for r in le_lead_rows
+                }
+
+            for r in rows2:
+                items.append({
+                    "id": r.id,
+                    "source": "lead_event",
+                    "event_type": r.event_type,
+                    "created_at": r.created_at,
+                    "account_id": None,
+                    "account_name": None,
+                    "campaign_id": None,
+                    "campaign_name": None,
+                    "lead_id": r.lead_id,
+                    "lead_name": le_lead_names.get(r.lead_id),
+                    "status": None,
+                    "details": r.details,
+                })
+
+        # Sort merged results, paginate, return total
+        items.sort(key=lambda x: x["created_at"], reverse=True)
+        total = len(items)
+        offset = (page - 1) * per_page
+        return items[offset : offset + per_page], total
 
     async def get_scraper_cookie(self, site: str) -> Optional[ScraperCookie]:
         result = await self.session.execute(

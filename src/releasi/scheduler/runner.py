@@ -158,6 +158,11 @@ _acceptance_checked: dict = {} # check_acceptances: only once per local day
 # {account_id: {state_date, work_start, work_end, target_gap_sec, next_gap_sec}}
 _continuous_state: dict = {}
 
+# Telegram enrichment sweeper lock — ensures only one sweep runs at a time.
+# Held for the duration of the find_telegram() call (and any flood-wait sleep).
+# The per-lead Find button does NOT use this lock — it creates its own client.
+_tg_sweep_lock = asyncio.Lock()
+
 
 def _acct_local_now(account):
     """Return current datetime in the account's timezone (aware), or UTC if unset/invalid."""
@@ -1568,6 +1573,106 @@ async def withdraw_invitations_sweep():
         await session.close()
 
 
+async def telegram_enrichment_sweep():
+    """Background Telegram enrichment: process one lead every 10 minutes.
+
+    Picks the next unenriched lead (no tg_sweep_searched event, telegram_username
+    IS NULL, in a list with tg_enrich_enabled=True), calls find_telegram(), and
+    persists the result.
+
+    If Telegram returns a FloodWaitError, the function sleeps for the requested
+    duration inside the lock — subsequent ticks see the lock is held and exit
+    immediately, so there is no pile-up. The lead is NOT marked as searched so
+    it will be retried on the next attempt after the flood wait ends.
+
+    Failures are fully isolated: an exception here does not affect any other
+    APScheduler job.
+    """
+    settings = get_settings()
+    if not all([settings.telegram_api_id, settings.telegram_api_hash, settings.telegram_session]):
+        return  # Telegram not configured
+
+    if _tg_sweep_lock.locked():
+        return  # Still processing previous lead (e.g. mid flood-wait sleep)
+
+    async with _tg_sweep_lock:
+        # ── 1. Pick next lead ────────────────────────────────────────────────
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            repo = Repository(session)
+            lead = await repo.get_next_lead_for_tg_sweep()
+            if not lead:
+                return
+
+            lead_id    = lead.id
+            lead_name  = f"{lead.first_name or ''} {lead.last_name or ''}".strip()
+            twitter_url = lead.twitter_url
+            company    = lead.company
+
+        # ── 2. Resolve Telegram (DB session closed — can take tens of seconds) ─
+        from releasi.telegram.resolver import find_telegram
+        try:
+            result = await find_telegram(
+                name=lead_name,
+                twitter_url=twitter_url,
+                company=company,
+                api_id=settings.telegram_api_id,
+                api_hash=settings.telegram_api_hash,
+                session_str=settings.telegram_session,
+            )
+        except Exception as exc:
+            logger.error("tg_sweep.find_error", lead_id=lead_id, error=str(exc))
+            return
+
+        # ── 3. Flood wait: sleep inside the lock, DO NOT write the event ──────
+        if result.flood_wait_seconds:
+            wait = result.flood_wait_seconds + 10
+            logger.warning(
+                "tg_sweep.flood_wait",
+                lead_id=lead_id,
+                lead_name=lead_name,
+                wait_seconds=wait,
+            )
+            await asyncio.sleep(wait)
+            return  # Lead will be retried on the next tick
+
+        # ── 4. Persist result ────────────────────────────────────────────────
+        async with session_factory() as session:
+            repo = Repository(session)
+            lead_obj = await repo.get_lead_by_id(lead_id)
+            if not lead_obj:
+                return
+
+            await repo.log_lead_event(
+                lead_id=lead_id,
+                event_type="tg_sweep_searched",
+                details={
+                    "found": result.best_match is not None,
+                    "match": result.best_match,
+                    "alternatives": result.alternatives,
+                    "logs": result.logs[-5:],  # keep last 5 for brevity
+                },
+            )
+
+            if result.best_match:
+                await repo.update_lead(lead_obj, telegram_username=result.best_match)
+                await repo.log_lead_event(
+                    lead_id=lead_id,
+                    event_type="telegram_found",
+                    details={"username": result.best_match, "source": "sweep"},
+                )
+                logger.info(
+                    "tg_sweep.found",
+                    lead_id=lead_id,
+                    lead_name=lead_name,
+                    username=result.best_match,
+                )
+            else:
+                logger.info("tg_sweep.no_match", lead_id=lead_id, lead_name=lead_name)
+
+            await session.commit()
+
+
 async def check_cookie_health():
     """
     Proactive session validation for all active AND cookie_expired accounts.
@@ -1878,6 +1983,19 @@ async def start_scheduler():
         id="withdraw_sweep",
         name="Auto-Withdraw Sweep",
         replace_existing=True,
+    )
+
+    # Telegram enrichment sweep — one lead per tick, 10-minute interval.
+    # A flood wait inside the job holds the asyncio.Lock for the wait duration;
+    # subsequent ticks see the lock and exit immediately (no pile-up).
+    # Requires RELEASI_TELEGRAM_* credentials to be configured.
+    scheduler.add_job(
+        telegram_enrichment_sweep,
+        IntervalTrigger(minutes=10),
+        id="tg_enrichment_sweep",
+        name="Telegram Enrichment Sweep",
+        replace_existing=True,
+        misfire_grace_time=600,
     )
 
     # Daily summary Slack notification disabled

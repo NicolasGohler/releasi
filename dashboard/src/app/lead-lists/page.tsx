@@ -50,6 +50,7 @@ export default function LeadListsPage() {
   const createList = useCreateLeadList();
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
+  const [newTgEnrich, setNewTgEnrich] = useState(true);
   const [showEventDialog, setShowEventDialog] = useState(false);
   const [scrapingIds, setScrapingIds] = useState<Set<string>>(new Set());
 
@@ -60,11 +61,12 @@ export default function LeadListsPage() {
   const handleCreate = () => {
     if (!newName.trim()) return;
     createList.mutate(
-      { name: newName.trim() },
+      { name: newName.trim(), tg_enrich_enabled: newTgEnrich },
       {
         onSuccess: () => {
           toast.success("Lead list created");
           setNewName("");
+          setNewTgEnrich(true);
           setShowCreate(false);
         },
         onError: (err) => toast.error(err.message),
@@ -85,6 +87,7 @@ export default function LeadListsPage() {
               <h3 className="font-medium truncate">{ll.name}</h3>
               <div className="flex items-center gap-1 shrink-0">
                 {ll.archived && <Badge variant="outline" className="text-xs">Archived</Badge>}
+                {!ll.tg_enrich_enabled && <Badge variant="outline" className="text-xs text-muted-foreground">TG off</Badge>}
                 {isScraping && <ScrapeProgressBadge listId={ll.id} />}
               </div>
             </div>
@@ -196,20 +199,32 @@ export default function LeadListsPage() {
 
       {showCreate && (
         <Card>
-          <CardContent className="flex gap-3 p-4">
-            <Input
-              placeholder="List name"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleCreate()}
-              autoFocus
-            />
-            <Button onClick={handleCreate} disabled={createList.isPending}>
-              Create
-            </Button>
-            <Button variant="outline" onClick={() => { setShowCreate(false); setNewName(""); }}>
-              Cancel
-            </Button>
+          <CardContent className="space-y-3 p-4">
+            <div className="flex gap-3">
+              <Input
+                placeholder="List name"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+                autoFocus
+              />
+              <Button onClick={handleCreate} disabled={createList.isPending}>
+                Create
+              </Button>
+              <Button variant="outline" onClick={() => { setShowCreate(false); setNewName(""); setNewTgEnrich(true); }}>
+                Cancel
+              </Button>
+            </div>
+            <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={newTgEnrich}
+                onChange={(e) => setNewTgEnrich(e.target.checked)}
+                className="h-4 w-4 rounded border-border accent-primary"
+              />
+              <span>Enable Telegram enrichment</span>
+              <span className="text-xs text-muted-foreground">(background sweeper will search TG handles for leads in this list)</span>
+            </label>
           </CardContent>
         </Card>
       )}

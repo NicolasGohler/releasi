@@ -266,6 +266,7 @@ class LeadList(Base):
     csv_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     total_leads: Mapped[int] = mapped_column(Integer, default=0)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    tg_enrich_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, onupdate=_utcnow
