@@ -207,11 +207,12 @@ export default function LeadListDetailPage({
               type="checkbox"
               checked={list.tg_enrich_enabled}
               onChange={(e) => {
+                const enabled = e.target.checked;
                 updateList.mutate(
-                  { tg_enrich_enabled: e.target.checked },
+                  { tg_enrich_enabled: enabled },
                   {
                     onSuccess: () => toast.success(
-                      e.target.checked
+                      enabled
                         ? "Telegram enrichment enabled"
                         : "Telegram enrichment disabled"
                     ),
