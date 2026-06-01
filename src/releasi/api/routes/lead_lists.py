@@ -253,6 +253,7 @@ async def import_csv_to_list(
         imported=result.imported,
         duplicates_skipped=result.duplicates_skipped,
         no_url_skipped=result.no_url_skipped,
+        no_identifier_skipped=result.no_identifier_skipped,
         errors=result.errors,
     )
 
@@ -272,16 +273,23 @@ async def export_lead_list_csv(lead_list_id: str, repo: Repository = Depends(get
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["linkedin_url", "first_name", "last_name", "company", "title", "email", "phone"])
+    writer.writerow(["first_name", "last_name", "email", "company", "title", "phone", "twitter_url", "telegram_username", "linkedin_url"])
     for lead in leads:
+        # Omit synthetic placeholder URLs (urn:*-lead:*) from the export —
+        # they carry no useful information for downstream tools like beehiiv.
+        li_url = lead.linkedin_url or ""
+        if li_url.startswith("urn:"):
+            li_url = ""
         writer.writerow([
-            lead.linkedin_url,
             lead.first_name or "",
             lead.last_name or "",
+            lead.email or "",
             lead.company or "",
             lead.title or "",
-            lead.email or "",
             lead.phone or "",
+            getattr(lead, "twitter_url", None) or "",
+            getattr(lead, "telegram_username", None) or "",
+            li_url,
         ])
 
     buf.seek(0)

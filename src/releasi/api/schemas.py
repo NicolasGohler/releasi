@@ -256,6 +256,7 @@ class ImportResponse(BaseModel):
     imported: int
     duplicates_skipped: int
     no_url_skipped: int
+    no_identifier_skipped: int = 0
     errors: List[str]
 
 
