@@ -1,7 +1,7 @@
 #!/bin/bash
 # Deploy code changes to the releasi server.
 # Usage: ssh root@REDACTED 'bash -s' < scripts/deploy.sh
-#    or: ssh root@REDACTED 'cd /root/releasi && bash scripts/deploy.sh'
+#    or: ssh root@REDACTED 'cd /root/linauto && bash scripts/deploy.sh'
 
 set -e
 
@@ -10,7 +10,7 @@ RESUME_FILE=/tmp/releasi_deploy_resume_ids
 
 _db() { docker exec releasi python3 -c "import sqlite3; c=sqlite3.connect('$DB'); $1; c.commit(); c.close()"; }
 
-cd /root/releasi
+cd /root/linauto
 echo "==> Pulling latest code ..."
 git pull
 
