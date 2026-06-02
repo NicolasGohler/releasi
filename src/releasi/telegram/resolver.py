@@ -152,34 +152,17 @@ def score_entity_match(entity, person_name: str, candidate: str,
 # Uncommon names (especially many Asian names) are intentionally excluded from
 # this list so the pattern remains available for them.
 _COMMON_FIRST_NAMES: set[str] = {
-    # English male
-    "aaron", "adam", "alex", "alexander", "andrew", "anthony", "ben", "benjamin",
-    "brandon", "brian", "charles", "chris", "christian", "christopher", "colin",
-    "daniel", "dave", "david", "derek", "dylan", "eric", "ethan", "evan",
-    "george", "greg", "gregory", "ian", "jack", "jake", "james", "jason",
-    "jeff", "jeffrey", "jeremy", "joe", "joel", "john", "jonathan", "jordan",
-    "joseph", "josh", "joshua", "justin", "kevin", "kyle", "liam", "lucas",
-    "luke", "mark", "matt", "matthew", "michael", "mike", "nathan", "nicholas",
-    "nick", "noah", "oliver", "patrick", "paul", "peter", "philip", "phillip",
-    "richard", "rob", "robert", "ross", "ryan", "sam", "samuel", "scott",
-    "sean", "simon", "stephen", "steve", "steven", "thomas", "tim", "timothy",
-    "tom", "tyler", "victor", "will", "william",
-    # English female
-    "alice", "allison", "amanda", "amber", "amy", "anna", "ashley", "brittany",
-    "caroline", "charlotte", "chelsea", "christina", "christine", "claire",
-    "danielle", "diana", "elena", "elizabeth", "emily", "emma", "grace",
-    "hannah", "heather", "isabella", "jessica", "julia", "julie", "kate",
-    "katherine", "katie", "kelly", "laura", "lauren", "leslie", "lily",
-    "linda", "lisa", "madison", "maria", "megan", "melissa", "michelle",
-    "molly", "natalie", "nichole", "nicole", "olivia", "patricia", "rachel",
-    "rebecca", "sandra", "sarah", "sophia", "sophie", "stephanie", "tiffany",
-    "victoria",
-    # Common European / international variants
-    "alexandre", "andrea", "anne", "carlo", "carlos", "david", "elena",
-    "filip", "francois", "jan", "jorge", "jose", "juan", "julien", "luca",
-    "lucas", "luis", "marco", "marcus", "martin", "max", "maximilian",
-    "nicolas", "niklas", "pedro", "pierre", "rafael", "rene", "sven",
-    "tobias", "vincent",
+    # Male
+    "adam", "alex", "andrew", "anthony", "ben", "brian", "chris", "daniel",
+    "david", "eric", "jack", "james", "jason", "john", "jonathan", "jordan",
+    "josh", "justin", "kevin", "kyle", "liam", "luke", "mark", "matt",
+    "michael", "mike", "nick", "noah", "oliver", "paul", "peter", "ryan",
+    "sam", "scott", "thomas", "tom", "will", "william",
+    # Female
+    "alice", "amanda", "amy", "anna", "ashley", "emily", "emma", "hannah",
+    "jessica", "julie", "kate", "kelly", "laura", "lauren", "lisa", "maria",
+    "megan", "melissa", "michelle", "nicole", "olivia", "rachel", "rebecca",
+    "sarah", "sophie", "stephanie", "victoria",
 }
 
 
