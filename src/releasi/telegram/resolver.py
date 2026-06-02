@@ -146,6 +146,43 @@ def score_entity_match(entity, person_name: str, candidate: str,
 # Helper: generate candidate Telegram usernames
 # ---------------------------------------------------------------------------
 
+# First names too common for "FirstL" / "FLast" handle patterns to be meaningful.
+# These names have so many Telegram users with that first name that a handle like
+# "AlexR" or "MikeS" could belong to thousands of unrelated people.
+# Uncommon names (especially many Asian names) are intentionally excluded from
+# this list so the pattern remains available for them.
+_COMMON_FIRST_NAMES: set[str] = {
+    # English male
+    "aaron", "adam", "alex", "alexander", "andrew", "anthony", "ben", "benjamin",
+    "brandon", "brian", "charles", "chris", "christian", "christopher", "colin",
+    "daniel", "dave", "david", "derek", "dylan", "eric", "ethan", "evan",
+    "george", "greg", "gregory", "ian", "jack", "jake", "james", "jason",
+    "jeff", "jeffrey", "jeremy", "joe", "joel", "john", "jonathan", "jordan",
+    "joseph", "josh", "joshua", "justin", "kevin", "kyle", "liam", "lucas",
+    "luke", "mark", "matt", "matthew", "michael", "mike", "nathan", "nicholas",
+    "nick", "noah", "oliver", "patrick", "paul", "peter", "philip", "phillip",
+    "richard", "rob", "robert", "ross", "ryan", "sam", "samuel", "scott",
+    "sean", "simon", "stephen", "steve", "steven", "thomas", "tim", "timothy",
+    "tom", "tyler", "victor", "will", "william",
+    # English female
+    "alice", "allison", "amanda", "amber", "amy", "anna", "ashley", "brittany",
+    "caroline", "charlotte", "chelsea", "christina", "christine", "claire",
+    "danielle", "diana", "elena", "elizabeth", "emily", "emma", "grace",
+    "hannah", "heather", "isabella", "jessica", "julia", "julie", "kate",
+    "katherine", "katie", "kelly", "laura", "lauren", "leslie", "lily",
+    "linda", "lisa", "madison", "maria", "megan", "melissa", "michelle",
+    "molly", "natalie", "nichole", "nicole", "olivia", "patricia", "rachel",
+    "rebecca", "sandra", "sarah", "sophia", "sophie", "stephanie", "tiffany",
+    "victoria",
+    # Common European / international variants
+    "alexandre", "andrea", "anne", "carlo", "carlos", "david", "elena",
+    "filip", "francois", "jan", "jorge", "jose", "juan", "julien", "luca",
+    "lucas", "luis", "marco", "marcus", "martin", "max", "maximilian",
+    "nicolas", "niklas", "pedro", "pierre", "rafael", "rene", "sven",
+    "tobias", "vincent",
+}
+
+
 def generate_name_candidates(name: str, company_name: Optional[str] = None) -> list[str]:
     if not name:
         return []
@@ -171,6 +208,7 @@ def generate_name_candidates(name: str, company_name: Optional[str] = None) -> l
     Fc = first[0].upper() + first[1:].lower()
     Lc = last[0].upper()  + last[1:].lower()
     short_last = len(last) <= 2
+    common_first = f in _COMMON_FIRST_NAMES
 
     # 1. Company-specific patterns first — most discriminating
     if company_name:
@@ -193,11 +231,14 @@ def generate_name_candidates(name: str, company_name: Optional[str] = None) -> l
         f"{f}_{l}",         # john_doe
     ])
 
-    # 3. Generic short patterns — lowest priority, high false-positive risk
-    add([
-        f"{f}{l[0]}",       # johnd
-        f"{f[0]}{l}",       # jdoe
-    ])
+    # 3. Generic short patterns — lowest priority, high false-positive risk.
+    # "FirstL" (e.g. AlexR, JulieR) is skipped for common first names — far too
+    # many Telegram users share those combinations.  Uncommon first names (many
+    # Asian names, rare European names, etc.) keep the pattern because "WeiL" or
+    # "YukiS" is meaningfully specific.
+    if not common_first:
+        add([f"{f}{l[0]}"])     # e.g. weil, yukis
+    add([f"{f[0]}{l}"])         # jdoe — kept regardless; last name drives specificity
 
     return candidates
 
