@@ -57,6 +57,13 @@ docker run -d --name releasi --restart unless-stopped \
   releasi_releasi:latest
 ```
 
+## Dashboard Deployment (Vercel)
+
+The dashboard (`dashboard/`) is deployed on Vercel and **is git-connected** — pushing to `master` on GitHub triggers an automatic Vercel deployment. No manual `npx vercel deploy` needed.
+
+- To deploy frontend changes: `git push` (Vercel picks it up automatically)
+- Vercel project is linked to the `NicolasGohler/releasi` GitHub repo, `master` branch
+
 ## Dashboard → API security model
 
 The dashboard (Vercel, Next.js) and backend API (FastAPI on `REDACTED:8000`) are gated as follows. **Do not regress any of this.**
