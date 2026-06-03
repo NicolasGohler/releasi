@@ -169,6 +169,19 @@ function ScraperCard({ status }: { status: ScraperStatus }) {
   );
 }
 
+// ── Relative time helper ─────────────────────────────────────────────────
+
+function relTime(iso: string): string {
+  const diff = Date.now() - new Date(iso.endsWith("Z") ? iso : iso + "Z").getTime();
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+// ── Fundraising Agent Panel ──────────────────────────────────────────────
+
 type RunStatus = {
   running: boolean;
   started_at?: string;
@@ -177,19 +190,31 @@ type RunStatus = {
   error?: string;
 };
 
-function formatTs(iso?: string) {
-  if (!iso) return null;
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
+// A run is "stale running" if started_at is > 4 hours ago but still flagged running
+// (happens when systemd kills the process before it can write the final status)
+function isStale(status: RunStatus): boolean {
+  if (!status.running || !status.started_at) return false;
+  return Date.now() - new Date(status.started_at).getTime() > 4 * 60 * 60 * 1000;
+}
+
+function nextMonday(): string {
+  const now = new Date();
+  const day = now.getUTCDay(); // 0=Sun 1=Mon ... 6=Sat
+  const daysUntil = day === 1 ? 7 : (8 - day) % 7;
+  const next = new Date(now);
+  next.setUTCDate(now.getUTCDate() + daysUntil);
+  next.setUTCHours(9, 0, 0, 0);
+  return next.toLocaleString(undefined, {
+    weekday: "short", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
 }
 
 function FundraisingRunPanel() {
   const [status, setStatus] = useState<RunStatus | null>(null);
   const [lines, setLines] = useState<string[]>([]);
   const [totalLines, setTotalLines] = useState(0);
+  const [logOpen, setLogOpen] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -207,63 +232,60 @@ function FundraisingRunPanel() {
     }
   };
 
-  // Auto-scroll to bottom when new lines arrive
+  // Auto-scroll to bottom when log is open and new lines arrive
   useEffect(() => {
-    const el = logRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [lines]);
+    if (logOpen) {
+      const el = logRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    }
+  }, [lines, logOpen]);
+
+  const livelyRunning = !!(status?.running && !isStale(status));
 
   useEffect(() => {
     fetchData();
-    // Poll every 4s when running, every 30s when idle
     const schedule = () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
       intervalRef.current = setInterval(async () => {
         await fetchData();
-        // Re-schedule with updated interval after each fetch
         schedule();
-      }, status?.running ? 4000 : 30000);
+      }, livelyRunning ? 4000 : 60000);
     };
     schedule();
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status?.running]);
+  }, [livelyRunning]);
 
-  const runColor =
-    status === null
-      ? "gray"
-      : status.running
-      ? "blue"
-      : status.exit === "error"
-      ? "red"
-      : status.exit === "ok"
-      ? "green"
-      : "gray";
+  type BadgeVariant = "blue" | "green" | "red" | "yellow" | "gray";
+  const stale = status ? isStale(status) : false;
+  const effectiveExit = stale ? "stale" : status?.exit;
 
-  const runLabel =
-    status === null
-      ? "Unknown"
-      : status.running
-      ? "Running"
-      : status.exit === "error"
-      ? "Failed"
-      : status.exit === "ok"
-      ? "Completed"
-      : "Idle";
+  const badgeVariant: BadgeVariant =
+    livelyRunning ? "blue"
+    : effectiveExit === "ok" ? "green"
+    : effectiveExit === "error" ? "red"
+    : effectiveExit === "timeout" || effectiveExit === "stale" ? "yellow"
+    : "gray";
 
-  const badgeClass =
-    runColor === "blue"
-      ? "bg-blue-500/15 text-blue-400 border-blue-500/30"
-      : runColor === "green"
-      ? "bg-green-500/15 text-green-400 border-green-500/30"
-      : runColor === "red"
-      ? "bg-red-500/15 text-red-400 border-red-500/30"
-      : "bg-muted text-muted-foreground border-border";
+  const badgeLabel =
+    livelyRunning ? "Running"
+    : effectiveExit === "ok" ? "Completed"
+    : effectiveExit === "error" ? "Failed"
+    : effectiveExit === "timeout" ? "Timed out"
+    : effectiveExit === "stale" ? "Stale"
+    : status ? "Idle" : "Unknown";
+
+  const badgeClasses: Record<BadgeVariant, string> = {
+    blue: "bg-blue-500/15 text-blue-400 border-blue-500/30",
+    green: "bg-green-500/15 text-green-400 border-green-500/30",
+    red: "bg-red-500/15 text-red-400 border-red-500/30",
+    yellow: "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
+    gray: "bg-muted text-muted-foreground border-border",
+  };
 
   return (
     <div className="rounded-lg border border-border bg-card p-6 space-y-4">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-md bg-muted">
@@ -271,96 +293,90 @@ function FundraisingRunPanel() {
           </div>
           <div>
             <h3 className="text-sm font-semibold leading-tight">Fundraising Agent</h3>
-            <p className="text-xs text-muted-foreground mt-0.5">Weekly pipeline — CryptoRank + RootData + Apollo</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Weekly — Monday 09:00 UTC · CryptoRank + RootData + Apollo</p>
           </div>
         </div>
-        <button
-          onClick={fetchData}
-          className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-          title="Refresh"
-        >
+        <button onClick={fetchData} className="text-xs text-muted-foreground hover:text-foreground transition-colors" title="Refresh">
           <RefreshCw className="h-3.5 w-3.5" />
         </button>
       </div>
 
+      {/* Status badge + last-run timestamps */}
       <div className="flex items-center gap-3 flex-wrap">
-        <span className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium ${badgeClass}`}>
-          {status?.running && (
+        <span className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium ${badgeClasses[badgeVariant]}`}>
+          {livelyRunning && (
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
               <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
             </span>
           )}
-          {runLabel}
+          {badgeLabel}
         </span>
-
         {status?.started_at && (
-          <span className="text-xs text-muted-foreground">
-            Started {formatTs(status.started_at)}
-          </span>
+          <span className="text-xs text-muted-foreground">Last run {relTime(status.started_at)}</span>
         )}
-        {status?.finished_at && !status.running && (
-          <span className="text-xs text-muted-foreground">
-            Finished {formatTs(status.finished_at)}
-          </span>
+        {status?.finished_at && !livelyRunning && (
+          <span className="text-xs text-muted-foreground">· finished {relTime(status.finished_at)}</span>
         )}
       </div>
 
-      {status?.exit === "error" && status.error && (
-        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+      {/* Next run estimate */}
+      {!livelyRunning && (
+        <p className="text-xs text-muted-foreground">Next run: {nextMonday()}</p>
+      )}
+
+      {/* Error / timeout / stale banner */}
+      {(effectiveExit === "error" || effectiveExit === "timeout" || effectiveExit === "stale") && status?.error && (
+        <div className={`rounded-md border px-3 py-2 text-xs ${
+          effectiveExit === "error"
+            ? "border-red-500/30 bg-red-500/10 text-red-400"
+            : "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
+        }`}>
           {status.error}
         </div>
       )}
 
-      {lines.length > 0 && (
+      {/* Collapsible log */}
+      {lines.length > 0 ? (
         <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-muted-foreground font-medium">Output log</p>
-            {totalLines > lines.length && (
-              <p className="text-xs text-muted-foreground">
-                showing last {lines.length} of {totalLines} lines
-              </p>
-            )}
-          </div>
-          <div
-            ref={logRef}
-            className="rounded-md bg-black/60 border border-border p-3 h-72 overflow-y-auto font-mono text-xs text-green-300 leading-relaxed"
+          <button
+            onClick={() => setLogOpen(o => !o)}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
-            {lines.map((line, i) => (
-              <div key={i} className={
-                line.includes("ERROR") || line.includes("FATAL") || line.includes("⚠")
-                  ? "text-red-400"
-                  : line.includes("✓") || line.includes("success") || line.includes("complete")
-                  ? "text-green-400"
-                  : line.includes("Rate limit") || line.includes("waiting") || line.includes("⏳")
-                  ? "text-yellow-400"
-                  : "text-green-300/80"
-              }>
-                {line || " "}
-              </div>
-            ))}
-          </div>
+            <Terminal className="h-3 w-3" />
+            {logOpen ? "Hide" : "Show"} output log
+            {totalLines > 0 && (
+              <span className="text-muted-foreground/60">({totalLines.toLocaleString()} lines)</span>
+            )}
+          </button>
+          {logOpen && (
+            <div
+              ref={logRef}
+              className="rounded-md bg-black/60 border border-border p-3 h-72 overflow-y-auto font-mono text-xs leading-relaxed"
+            >
+              {lines.map((line, i) => (
+                <div key={i} className={
+                  line.includes("ERROR") || line.includes("FATAL") || line.includes("⚠")
+                    ? "text-red-400"
+                    : line.includes("✓") || line.includes("success") || line.includes("complete")
+                    ? "text-green-400"
+                    : line.includes("Rate limit") || line.includes("waiting") || line.includes("⏳")
+                    ? "text-yellow-400"
+                    : "text-green-300/80"
+                }>
+                  {line || " "}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-      )}
-
-      {lines.length === 0 && (
+      ) : (
         <p className="text-xs text-muted-foreground">
-          No run log found. Logs appear here when the fundraising agent runs.
+          No run log yet — logs appear here after the first Monday run.
         </p>
       )}
     </div>
   );
-}
-
-// ── Relative time helper ─────────────────────────────────────────────────
-
-function relTime(iso: string): string {
-  const diff = Date.now() - new Date(iso.endsWith("Z") ? iso : iso + "Z").getTime();
-  const s = Math.floor(diff / 1000);
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
 }
 
 function formatFloodWait(seconds: number): string {
@@ -437,7 +453,6 @@ function TelegramSweepPanel() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.locked, status?.flood_wait_until]);
 
-  // Derive status badge
   const isFlooding = !!status?.flood_wait_remaining_seconds && status.flood_wait_remaining_seconds > 0;
   const isProcessing = !!status?.locked && !isFlooding;
 
@@ -476,7 +491,7 @@ function TelegramSweepPanel() {
           <div>
             <h3 className="text-sm font-semibold leading-tight">Telegram Enrichment</h3>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Background sweeper — one lead every 10 minutes
+              Background sweeper — one lead every 15 minutes
             </p>
           </div>
         </div>
@@ -530,7 +545,7 @@ function TelegramSweepPanel() {
         </div>
       ) : status ? (
         <p className="text-xs text-muted-foreground">
-          No leads processed yet. The sweeper runs every 10 minutes when Telegram credentials are configured.
+          No leads processed yet. The sweeper runs every 15 minutes when Telegram credentials are configured.
         </p>
       ) : null}
     </div>

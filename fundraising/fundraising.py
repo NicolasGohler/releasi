@@ -2049,6 +2049,14 @@ if __name__ == "__main__":
 
     _write_status(True, started_at=datetime.now().isoformat())
 
+    # Handle SIGTERM (systemd timeout kill) — write status before dying
+    import signal as _signal
+    def _sigterm_handler(signum, frame):
+        _write_status(False, started_at=datetime.now().isoformat(), exit="timeout",
+                      error="Process killed (SIGTERM) — likely systemd timeout during Telegram flood wait")
+        _sys.exit(1)
+    _signal.signal(_signal.SIGTERM, _sigterm_handler)
+
     print("\n" + "#"*60)
     print("# Crypto Fundraising Agent")
     print("# Sources: CryptoRank + RootData + Apollo.io")
