@@ -163,6 +163,14 @@ _continuous_state: dict = {}
 # The per-lead Find button does NOT use this lock — it creates its own client.
 _tg_sweep_lock = asyncio.Lock()
 
+# UTC datetime until which the sweeper is flood-waiting, or None.
+# Set before asyncio.sleep(); cleared after. Read by the status API endpoint.
+# Safe to read without a lock — asyncio is single-threaded.
+_tg_flood_wait_until: Optional[datetime] = None
+
+# UTC timestamp of the last successfully committed sweep tick.
+_tg_last_processed_at: Optional[datetime] = None
+
 
 def _acct_local_now(account):
     """Return current datetime in the account's timezone (aware), or UTC if unset/invalid."""
@@ -1574,7 +1582,7 @@ async def withdraw_invitations_sweep():
 
 
 async def telegram_enrichment_sweep():
-    """Background Telegram enrichment: process one lead every 10 minutes.
+    """Background Telegram enrichment: process one lead every 15 minutes.
 
     Picks the next unenriched lead (no tg_sweep_searched event, telegram_username
     IS NULL, in a list with tg_enrich_enabled=True), calls find_telegram(), and
@@ -1633,7 +1641,10 @@ async def telegram_enrichment_sweep():
                 lead_name=lead_name,
                 wait_seconds=wait,
             )
+            global _tg_flood_wait_until
+            _tg_flood_wait_until = datetime.utcnow() + timedelta(seconds=wait)
             await asyncio.sleep(wait)
+            _tg_flood_wait_until = None
             return  # Lead will be retried on the next tick
 
         # ── 4. Persist result ────────────────────────────────────────────────
@@ -1671,6 +1682,8 @@ async def telegram_enrichment_sweep():
                 logger.info("tg_sweep.no_match", lead_id=lead_id, lead_name=lead_name)
 
             await session.commit()
+            global _tg_last_processed_at
+            _tg_last_processed_at = datetime.utcnow()
 
 
 async def check_cookie_health():
@@ -1985,13 +1998,13 @@ async def start_scheduler():
         replace_existing=True,
     )
 
-    # Telegram enrichment sweep — one lead per tick, 10-minute interval.
+    # Telegram enrichment sweep — one lead per tick, 15-minute interval.
     # A flood wait inside the job holds the asyncio.Lock for the wait duration;
     # subsequent ticks see the lock and exit immediately (no pile-up).
     # Requires RELEASI_TELEGRAM_* credentials to be configured.
     scheduler.add_job(
         telegram_enrichment_sweep,
-        IntervalTrigger(minutes=10),
+        IntervalTrigger(minutes=15),
         id="tg_enrichment_sweep",
         name="Telegram Enrichment Sweep",
         replace_existing=True,
