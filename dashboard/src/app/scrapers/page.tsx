@@ -494,7 +494,7 @@ function TelegramSweepPanel() {
           <div>
             <h3 className="text-sm font-semibold leading-tight">Telegram Enrichment</h3>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Background sweeper — one lead every 15 minutes
+              Background sweeper — one lead every 20 minutes
             </p>
           </div>
         </div>
@@ -548,7 +548,7 @@ function TelegramSweepPanel() {
         </div>
       ) : status ? (
         <p className="text-xs text-muted-foreground">
-          No leads processed yet. The sweeper runs every 15 minutes when Telegram credentials are configured.
+          No leads processed yet. The sweeper runs every 20 minutes when Telegram credentials are configured.
         </p>
       ) : null}
     </div>

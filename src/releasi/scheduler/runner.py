@@ -1582,7 +1582,7 @@ async def withdraw_invitations_sweep():
 
 
 async def telegram_enrichment_sweep():
-    """Background Telegram enrichment: process one lead every 15 minutes.
+    """Background Telegram enrichment: process one lead every 20 minutes.
 
     Picks the next unenriched lead (no tg_sweep_searched event, telegram_username
     IS NULL, in a list with tg_enrich_enabled=True), calls find_telegram(), and
@@ -1998,13 +1998,13 @@ async def start_scheduler():
         replace_existing=True,
     )
 
-    # Telegram enrichment sweep — one lead per tick, 15-minute interval.
+    # Telegram enrichment sweep — one lead per tick, 20-minute interval.
     # A flood wait inside the job holds the asyncio.Lock for the wait duration;
     # subsequent ticks see the lock and exit immediately (no pile-up).
     # Requires RELEASI_TELEGRAM_* credentials to be configured.
     scheduler.add_job(
         telegram_enrichment_sweep,
-        IntervalTrigger(minutes=15),
+        IntervalTrigger(minutes=20),
         id="tg_enrichment_sweep",
         name="Telegram Enrichment Sweep",
         replace_existing=True,
