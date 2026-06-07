@@ -424,6 +424,11 @@ class LinkedInActions:
         # 1. Navigate to profile
         nav = await self.navigator.go_to_profile(profile_url)
         if not nav.success:
+            # Per-profile authwall: LinkedIn restricts viewing this profile for
+            # accounts with few connections. Session is valid; skip this lead.
+            if nav.error == "authwall_per_profile":
+                logger.info("action.authwall_per_profile", url=profile_url)
+                return ActionResult(ActionStatus.SKIPPED, reason="authwall_per_profile")
             return ActionResult(ActionStatus.ERROR, reason=f"Navigation failed: {nav.error}")
         if not nav.session_valid:
             return ActionResult(ActionStatus.SESSION_EXPIRED)
@@ -449,6 +454,8 @@ class LinkedInActions:
         # 1.4 Check for authwall / page-level error overlay.
         # These appear without a URL redirect, so the URL-based session check passes
         # but all profile action buttons are absent or replaced by sign-in elements.
+        # The navigator already verified via feed-ping that per-profile autchwalls are
+        # returned as SKIPPED; if we still see an authwall here the session is truly dead.
         authwall = await self._find_element(selectors.AUTHWALL_INDICATORS, timeout_ms=800)
         if authwall:
             logger.warning("action.authwall_detected", url=profile_url)

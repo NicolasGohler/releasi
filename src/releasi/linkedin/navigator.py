@@ -119,7 +119,33 @@ class LinkedInNavigator:
             # Secondary session check: LinkedIn may overlay the authwall on the
             # profile URL without redirecting (soft session expiry). The URL check
             # above passes but the page body is a login wall.
+            #
+            # Distinguish two authwall scenarios:
+            # 1. Session-expired authwall: cookie is invalid — ALL navigations fail.
+            # 2. Per-profile restriction: new/low-connection accounts are blocked
+            #    from viewing certain profiles even with a valid session. The same
+            #    authwall CSS selectors fire for both cases.
+            #
+            # To tell them apart, do a quick feed check. If the feed loads fine the
+            # session is alive and this is a profile-level restriction (return as a
+            # navigation failure so the executor marks the lead SKIPPED). If the
+            # feed also fails the session is truly dead (return session_valid=False).
             if await self._is_authwall_showing():
+                try:
+                    feed_result = await self.go_to_feed()
+                    if feed_result.session_valid:
+                        logger.warning(
+                            "navigator.authwall_per_profile",
+                            target=profile_url,
+                        )
+                        return NavigationResult(
+                            success=False,
+                            url=profile_url,
+                            session_valid=True,
+                            error="authwall_per_profile",
+                        )
+                except Exception:
+                    pass  # Feed check failed — fall through to session_valid=False
                 logger.warning("navigator.authwall_overlay_detected", target=profile_url)
                 return NavigationResult(
                     success=True, url=self.page.url, session_valid=False
