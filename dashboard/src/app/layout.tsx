@@ -3,8 +3,10 @@ import { Geist_Mono } from "next/font/google";
 import { DM_Sans, Cormorant_Garamond } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers";
-import { Sidebar } from "@/components/layout/sidebar";
+import { Sidebar, SidebarToggle } from "@/components/layout/sidebar";
+import { SidebarProvider } from "@/components/layout/sidebar-context";
 import { Toaster } from "@/components/ui/sonner";
+import { LayoutShell } from "@/components/layout/layout-shell";
 
 const dmSans = DM_Sans({
   variable: "--font-sans",
@@ -38,8 +40,11 @@ export default function RootLayout({
         className={`${dmSans.variable} ${cormorant.variable} ${geistMono.variable} antialiased`}
       >
         <Providers>
-          <Sidebar />
-          <main className="ml-56 min-h-screen p-6">{children}</main>
+          <SidebarProvider>
+            <Sidebar />
+            <SidebarToggle />
+            <LayoutShell>{children}</LayoutShell>
+          </SidebarProvider>
           <Toaster />
         </Providers>
       </body>
