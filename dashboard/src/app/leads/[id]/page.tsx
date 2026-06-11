@@ -838,58 +838,56 @@ export default function LeadDetailPage() {
           {/* Profile card */}
           <div className="rounded-xl border bg-card p-4">
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Profile</h2>
-            <div className="grid grid-cols-2 gap-x-6">
-              {/* Left column: all fields except last name */}
-              <div className="space-y-1">
-                <InlineField label="First name" value={lead.first_name} placeholder="Add first name"
-                  onSave={(v) => save("first_name", v)} />
-                <InlineField label="Title / Role" value={lead.title} placeholder="Add title"
-                  onSave={(v) => save("title", v)} />
-                <InlineField label="Company" value={lead.company} placeholder="Add company"
-                  onSave={(v) => save("company", v)} />
-                <InlineField label="Location" value={lead.location} placeholder="Add location"
-                  onSave={(v) => save("location", v)} />
-                <div className="flex items-start gap-2">
-                  <div className="flex-1">
-                    <InlineField label="Email" value={lead.email} placeholder="Add email"
-                      onSave={(v) => save("email", v)} />
-                  </div>
-                  {lead.email && (
-                    <div className="mt-6">
-                      <CopyButton text={lead.email} label="Copy email" />
-                    </div>
-                  )}
+            {/* Two-column grid — fields flow across both columns, row by row */}
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1">
+              <InlineField label="First name" value={lead.first_name} placeholder="Add first name"
+                onSave={(v) => save("first_name", v)} />
+              <InlineField label="Last name" value={lead.last_name} placeholder="Add last name"
+                onSave={(v) => save("last_name", v)} />
+
+              <InlineField label="Title / Role" value={lead.title} placeholder="Add title"
+                onSave={(v) => save("title", v)} />
+              <InlineField label="Company" value={lead.company} placeholder="Add company"
+                onSave={(v) => save("company", v)} />
+
+              <InlineField label="Location" value={lead.location} placeholder="Add location"
+                onSave={(v) => save("location", v)} />
+              <div className="flex items-start gap-2">
+                <div className="flex-1 min-w-0">
+                  <InlineField label="Email" value={lead.email} placeholder="Add email"
+                    onSave={(v) => save("email", v)} />
                 </div>
-                <div className="flex items-end gap-2">
-                  <div className="flex-1">
-                    <InlineField label="Phone" value={lead.phone} placeholder="Add phone"
-                      onSave={(v) => save("phone", v)} />
+                {lead.email && (
+                  <div className="mt-6">
+                    <CopyButton text={lead.email} label="Copy email" />
                   </div>
-                  <button
-                    onClick={async () => {
-                      try {
-                        const r = await enrichPhone.mutateAsync();
-                        if (r.found) toast.success(`Phone found: ${r.phone}`);
-                        else toast.info("No phone found on Apollo");
-                      } catch (e: unknown) {
-                        toast.error(e instanceof Error ? e.message : "Enrich failed");
-                      }
-                    }}
-                    disabled={enrichPhone.isPending}
-                    className="mb-1.5 flex items-center gap-1 rounded px-2 py-1 text-xs text-violet-600 dark:text-violet-400 border border-violet-500/30 hover:bg-violet-500/10 disabled:opacity-40 transition-colors whitespace-nowrap"
-                    title="Look up phone via Apollo"
-                  >
-                    {enrichPhone.isPending
-                      ? <Loader2 className="h-3 w-3 animate-spin" />
-                      : <Sparkles className="h-3 w-3" />}
-                    {enrichPhone.isPending ? "…" : "Enrich"}
-                  </button>
-                </div>
+                )}
               </div>
-              {/* Right column: last name only */}
-              <div className="space-y-1">
-                <InlineField label="Last name" value={lead.last_name} placeholder="Add last name"
-                  onSave={(v) => save("last_name", v)} />
+
+              <div className="flex items-end gap-2">
+                <div className="flex-1 min-w-0">
+                  <InlineField label="Phone" value={lead.phone} placeholder="Add phone"
+                    onSave={(v) => save("phone", v)} />
+                </div>
+                <button
+                  onClick={async () => {
+                    try {
+                      const r = await enrichPhone.mutateAsync();
+                      if (r.found) toast.success(`Phone found: ${r.phone}`);
+                      else toast.info("No phone found on Apollo");
+                    } catch (e: unknown) {
+                      toast.error(e instanceof Error ? e.message : "Enrich failed");
+                    }
+                  }}
+                  disabled={enrichPhone.isPending}
+                  className="mb-1.5 flex items-center gap-1 rounded px-2 py-1 text-xs text-violet-600 dark:text-violet-400 border border-violet-500/30 hover:bg-violet-500/10 disabled:opacity-40 transition-colors whitespace-nowrap"
+                  title="Look up phone via Apollo"
+                >
+                  {enrichPhone.isPending
+                    ? <Loader2 className="h-3 w-3 animate-spin" />
+                    : <Sparkles className="h-3 w-3" />}
+                  {enrichPhone.isPending ? "…" : "Enrich"}
+                </button>
               </div>
             </div>
           </div>
