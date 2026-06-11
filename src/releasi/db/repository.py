@@ -2061,6 +2061,42 @@ class Repository:
         await self.session.flush()
         return event
 
+    # ── Lead notes (HubSpot-style multi-note) ──────────────────────────────
+
+    async def list_lead_notes(self, lead_id: str) -> List["LeadNote"]:
+        """Return all notes for a lead, newest-first."""
+        from releasi.db.models import LeadNote
+
+        result = await self.session.execute(
+            select(LeadNote)
+            .where(LeadNote.lead_id == lead_id)
+            .order_by(LeadNote.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def add_lead_note(self, lead_id: str, body: str) -> "LeadNote":
+        """Create a new note for a lead."""
+        from releasi.db.models import LeadNote
+
+        note = LeadNote(lead_id=lead_id, body=body)
+        self.session.add(note)
+        await self.session.flush()
+        return note
+
+    async def get_lead_note(self, note_id: str) -> Optional["LeadNote"]:
+        from releasi.db.models import LeadNote
+
+        return await self.session.get(LeadNote, note_id)
+
+    async def update_lead_note(self, note: "LeadNote", body: str) -> "LeadNote":
+        note.body = body
+        await self.session.flush()
+        return note
+
+    async def delete_lead_note(self, note: "LeadNote") -> None:
+        await self.session.delete(note)
+        await self.session.flush()
+
     async def get_next_lead_for_tg_sweep(self) -> Optional[Lead]:
         """Return the next lead to enrich with Telegram, or None if nothing is queued.
 

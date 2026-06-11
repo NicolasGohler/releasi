@@ -14,17 +14,21 @@ import {
   useFindTelegram,
   useFindTelegramStatus,
   useEnrichLeadPhone,
+  useLeadNotes,
+  useCreateLeadNote,
+  useUpdateLeadNote,
+  useDeleteLeadNote,
 } from "@/hooks/use-queries";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import type { Lead, LeadActivity, FindTelegramTask } from "@/lib/types";
+import type { Lead, LeadActivity, LeadNote, FindTelegramTask } from "@/lib/types";
 import {
   ArrowLeft, ExternalLink, Pencil, Check, X,
   Copy, Send, RotateCcw, FastForward, Trash2, Undo2,
   Clock, Zap, MessageSquare, UserCheck, AlertCircle,
-  Link2, Loader2, Search, Sparkles, NotebookPen,
+  Link2, Loader2, Search, Sparkles, NotebookPen, Plus,
 } from "lucide-react";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -97,10 +101,12 @@ interface InlineFieldProps {
   prefix?: string;
   hint?: string;
   transform?: (raw: string) => string;
+  /** When provided, the displayed value renders as a link opening this URL. */
+  href?: (value: string) => string;
 }
 
 function InlineField({
-  label, value, onSave, placeholder = "—", prefix, hint, transform,
+  label, value, onSave, placeholder = "—", prefix, hint, transform, href,
 }: InlineFieldProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -162,9 +168,21 @@ function InlineField({
         </div>
       ) : (
         <div className="flex items-center gap-1.5 min-h-[1.75rem]">
-          <span className={`text-sm ${displayValue ? "" : "text-muted-foreground/50 italic"}`}>
-            {displayValue ? (prefix ? `${prefix}${displayValue}` : displayValue) : placeholder}
-          </span>
+          {displayValue && href ? (
+            <a
+              href={href(displayValue)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-primary hover:underline inline-flex items-center gap-1"
+            >
+              {prefix ? `${prefix}${displayValue}` : displayValue}
+              <ExternalLink className="h-3 w-3 flex-shrink-0" />
+            </a>
+          ) : (
+            <span className={`text-sm ${displayValue ? "" : "text-muted-foreground/50 italic"}`}>
+              {displayValue ? (prefix ? `${prefix}${displayValue}` : displayValue) : placeholder}
+            </span>
+          )}
           <button onClick={startEdit}
             className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-muted-foreground/60 hover:text-muted-foreground transition-all"
             title={`Edit ${label.toLowerCase()}`}>
@@ -514,6 +532,166 @@ function MilestoneRow({ icon, label, dateStr }: { icon: React.ReactNode; label: 
   );
 }
 
+// ── Notes (HubSpot-style multi-note) ─────────────────────────────────────────
+
+function NoteItem({ note, leadId }: { note: LeadNote; leadId: string }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(note.body);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  const updateNote = useUpdateLeadNote(leadId);
+  const deleteNote = useDeleteLeadNote(leadId);
+
+  useEffect(() => {
+    if (editing) {
+      taRef.current?.focus();
+      taRef.current?.setSelectionRange(draft.length, draft.length);
+    }
+  }, [editing]);
+
+  const created = relativeDate(note.created_at);
+  const edited =
+    note.updated_at && note.updated_at !== note.created_at
+      ? relativeDate(note.updated_at)
+      : null;
+
+  async function handleSave() {
+    const body = draft.trim();
+    if (!body) return;
+    try {
+      await updateNote.mutateAsync({ noteId: note.id, body });
+      setEditing(false);
+    } catch {
+      toast.error("Failed to update note");
+    }
+  }
+
+  async function handleDelete() {
+    try {
+      await deleteNote.mutateAsync(note.id);
+    } catch {
+      toast.error("Failed to delete note");
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="rounded-lg border border-border bg-background p-3 space-y-2">
+        <textarea
+          ref={taRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSave();
+            if (e.key === "Escape") { setDraft(note.body); setEditing(false); }
+          }}
+          rows={3}
+          className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+        />
+        <div className="flex items-center justify-end gap-1.5">
+          <Button size="sm" variant="ghost" onClick={() => { setDraft(note.body); setEditing(false); }}>
+            Cancel
+          </Button>
+          <Button size="sm" disabled={updateNote.isPending || !draft.trim()} onClick={handleSave}>
+            {updateNote.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="group rounded-lg border border-border bg-background p-3">
+      <p className="text-sm whitespace-pre-wrap break-words">{note.body}</p>
+      <div className="mt-2 flex items-center gap-2">
+        <span className="text-xs text-muted-foreground/60" title={created.full}>
+          {created.full}
+          {edited && <span className="ml-1 italic">· edited {edited.label}</span>}
+        </span>
+        <div className="ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button
+            onClick={() => { setDraft(note.body); setEditing(true); }}
+            className="rounded p-1 text-muted-foreground/60 hover:text-muted-foreground hover:bg-muted transition-colors"
+            title="Edit note"
+          >
+            <Pencil className="h-3 w-3" />
+          </button>
+          <button
+            onClick={handleDelete}
+            disabled={deleteNote.isPending}
+            className="rounded p-1 text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10 transition-colors"
+            title="Delete note"
+          >
+            {deleteNote.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NotesSection({ leadId }: { leadId: string }) {
+  const { data: notes, isLoading } = useLeadNotes(leadId);
+  const createNote = useCreateLeadNote(leadId);
+  const [draft, setDraft] = useState("");
+
+  async function handleAdd() {
+    const body = draft.trim();
+    if (!body) return;
+    try {
+      await createNote.mutateAsync(body);
+      setDraft("");
+    } catch {
+      toast.error("Failed to add note");
+    }
+  }
+
+  return (
+    <div className="rounded-xl border bg-card p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <NotebookPen className="h-3.5 w-3.5 text-muted-foreground" />
+        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notes</h2>
+        {notes && notes.length > 0 && (
+          <span className="text-xs text-muted-foreground/50">{notes.length}</span>
+        )}
+      </div>
+
+      {/* Composer */}
+      <div className="space-y-2">
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleAdd();
+          }}
+          placeholder="Add a note… (⌘/Ctrl+Enter to post)"
+          rows={3}
+          className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+        />
+        <div className="flex justify-end">
+          <Button size="sm" disabled={createNote.isPending || !draft.trim()} onClick={handleAdd}>
+            {createNote.isPending
+              ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              : <Plus className="mr-1.5 h-3.5 w-3.5" />}
+            Add note
+          </Button>
+        </div>
+      </div>
+
+      {/* Notes list */}
+      <div className="mt-4 space-y-2">
+        {isLoading ? (
+          <Skeleton className="h-16 w-full" />
+        ) : !notes || notes.length === 0 ? (
+          <p className="text-sm text-muted-foreground/60 text-center py-4">No notes yet</p>
+        ) : (
+          notes.map((note) => <NoteItem key={note.id} note={note} leadId={leadId} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ────────────────────────────────────────────────────────────────
 
 export default function LeadDetailPage() {
@@ -529,13 +707,6 @@ export default function LeadDetailPage() {
   const remove = useDeleteLead();
   const restore = useRestoreLead();
   const enrichPhone = useEnrichLeadPhone(id);
-
-  const [notesDraft, setNotesDraft] = useState("");
-  const [notesSaved, setNotesSaved] = useState(false);
-  const notesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Sync draft when lead loads or reloads
-  useEffect(() => { setNotesDraft(lead?.notes ?? ""); }, [lead?.notes]);
 
   const save = useCallback(async (field: string, value: string | null) => {
     await update.mutateAsync({ [field]: value });
@@ -568,20 +739,6 @@ export default function LeadDetailPage() {
   const twitterHandle = lead.twitter_url
     ? lead.twitter_url.replace(/.*x\.com\//, "").replace(/.*twitter\.com\//, "")
     : null;
-
-  function handleNotesChange(val: string) {
-    setNotesDraft(val);
-    if (notesTimerRef.current) clearTimeout(notesTimerRef.current);
-    notesTimerRef.current = setTimeout(async () => {
-      try {
-        await update.mutateAsync({ notes: val || null });
-        setNotesSaved(true);
-        setTimeout(() => setNotesSaved(false), 1500);
-      } catch {
-        toast.error("Failed to save notes");
-      }
-    }, 800);
-  }
 
   return (
     <div className="max-w-5xl mx-auto px-6 py-6 space-y-6">
@@ -679,55 +836,61 @@ export default function LeadDetailPage() {
         <div className="lg:col-span-2 space-y-4">
 
           {/* Profile card */}
-          <div className="rounded-xl border bg-card p-4 space-y-1">
+          <div className="rounded-xl border bg-card p-4">
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Profile</h2>
             <div className="grid grid-cols-2 gap-x-6">
-              <InlineField label="First name" value={lead.first_name} placeholder="Add first name"
-                onSave={(v) => save("first_name", v)} />
-              <InlineField label="Last name" value={lead.last_name} placeholder="Add last name"
-                onSave={(v) => save("last_name", v)} />
-            </div>
-            <InlineField label="Title / Role" value={lead.title} placeholder="Add title"
-              onSave={(v) => save("title", v)} />
-            <InlineField label="Company" value={lead.company} placeholder="Add company"
-              onSave={(v) => save("company", v)} />
-            <InlineField label="Location" value={lead.location} placeholder="Add location"
-              onSave={(v) => save("location", v)} />
-            <div className="flex items-start gap-2">
-              <div className="flex-1">
-                <InlineField label="Email" value={lead.email} placeholder="Add email"
-                  onSave={(v) => save("email", v)} />
-              </div>
-              {lead.email && (
-                <div className="mt-6">
-                  <CopyButton text={lead.email} label="Copy email" />
+              {/* Left column: all fields except last name */}
+              <div className="space-y-1">
+                <InlineField label="First name" value={lead.first_name} placeholder="Add first name"
+                  onSave={(v) => save("first_name", v)} />
+                <InlineField label="Title / Role" value={lead.title} placeholder="Add title"
+                  onSave={(v) => save("title", v)} />
+                <InlineField label="Company" value={lead.company} placeholder="Add company"
+                  onSave={(v) => save("company", v)} />
+                <InlineField label="Location" value={lead.location} placeholder="Add location"
+                  onSave={(v) => save("location", v)} />
+                <div className="flex items-start gap-2">
+                  <div className="flex-1">
+                    <InlineField label="Email" value={lead.email} placeholder="Add email"
+                      onSave={(v) => save("email", v)} />
+                  </div>
+                  {lead.email && (
+                    <div className="mt-6">
+                      <CopyButton text={lead.email} label="Copy email" />
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-            <div className="flex items-end gap-2">
-              <div className="flex-1">
-                <InlineField label="Phone" value={lead.phone} placeholder="Add phone"
-                  onSave={(v) => save("phone", v)} />
+                <div className="flex items-end gap-2">
+                  <div className="flex-1">
+                    <InlineField label="Phone" value={lead.phone} placeholder="Add phone"
+                      onSave={(v) => save("phone", v)} />
+                  </div>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const r = await enrichPhone.mutateAsync();
+                        if (r.found) toast.success(`Phone found: ${r.phone}`);
+                        else toast.info("No phone found on Apollo");
+                      } catch (e: unknown) {
+                        toast.error(e instanceof Error ? e.message : "Enrich failed");
+                      }
+                    }}
+                    disabled={enrichPhone.isPending}
+                    className="mb-1.5 flex items-center gap-1 rounded px-2 py-1 text-xs text-violet-600 dark:text-violet-400 border border-violet-500/30 hover:bg-violet-500/10 disabled:opacity-40 transition-colors whitespace-nowrap"
+                    title="Look up phone via Apollo"
+                  >
+                    {enrichPhone.isPending
+                      ? <Loader2 className="h-3 w-3 animate-spin" />
+                      : <Sparkles className="h-3 w-3" />}
+                    {enrichPhone.isPending ? "…" : "Enrich"}
+                  </button>
+                </div>
               </div>
-              <button
-                onClick={async () => {
-                  try {
-                    const r = await enrichPhone.mutateAsync();
-                    if (r.found) toast.success(`Phone found: ${r.phone}`);
-                    else toast.info("No phone found on Apollo");
-                  } catch (e: unknown) {
-                    toast.error(e instanceof Error ? e.message : "Enrich failed");
-                  }
-                }}
-                disabled={enrichPhone.isPending}
-                className="mb-1.5 flex items-center gap-1 rounded px-2 py-1 text-xs text-violet-600 dark:text-violet-400 border border-violet-500/30 hover:bg-violet-500/10 disabled:opacity-40 transition-colors whitespace-nowrap"
-                title="Look up phone via Apollo"
-              >
-                {enrichPhone.isPending
-                  ? <Loader2 className="h-3 w-3 animate-spin" />
-                  : <Sparkles className="h-3 w-3" />}
-                {enrichPhone.isPending ? "…" : "Enrich"}
-              </button>
+              {/* Right column: last name only */}
+              <div className="space-y-1">
+                <InlineField label="Last name" value={lead.last_name} placeholder="Add last name"
+                  onSave={(v) => save("last_name", v)} />
+              </div>
             </div>
           </div>
 
@@ -758,7 +921,7 @@ export default function LeadDetailPage() {
               value={twitterHandle}
               placeholder="Add X handle"
               prefix="@"
-              hint="opens x.com"
+              href={(h) => `https://x.com/${h.replace(/^@/, "")}`}
               onSave={async (v) => {
                 const url = v ? `https://x.com/${v.replace(/^@/, "")}` : null;
                 await save("twitter_url", url);
@@ -792,20 +955,7 @@ export default function LeadDetailPage() {
             </div>
           )}
           {/* Notes */}
-          <div className="rounded-xl border bg-card p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <NotebookPen className="h-3.5 w-3.5 text-muted-foreground" />
-              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notes</h2>
-              {notesSaved && <span className="text-xs text-emerald-500 ml-auto">Saved</span>}
-            </div>
-            <textarea
-              value={notesDraft}
-              onChange={(e) => handleNotesChange(e.target.value)}
-              placeholder="Add notes about this lead…"
-              rows={3}
-              className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-            />
-          </div>
+          <NotesSection leadId={lead.id} />
         </div>
 
         {/* Right: status + activity */}

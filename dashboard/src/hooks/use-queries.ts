@@ -544,6 +544,41 @@ export function useEnrichLeadPhone(leadId: string) {
   });
 }
 
+// ── Lead notes (HubSpot-style multi-note) ───────────────────────────────────
+
+export function useLeadNotes(leadId: string) {
+  return useQuery({
+    queryKey: ["lead-notes", leadId],
+    queryFn: () => api.fetchLeadNotes(leadId),
+    enabled: !!leadId,
+  });
+}
+
+export function useCreateLeadNote(leadId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: string) => api.createLeadNote(leadId, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["lead-notes", leadId] }),
+  });
+}
+
+export function useUpdateLeadNote(leadId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ noteId, body }: { noteId: string; body: string }) =>
+      api.updateLeadNote(leadId, noteId, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["lead-notes", leadId] }),
+  });
+}
+
+export function useDeleteLeadNote(leadId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (noteId: string) => api.deleteLeadNote(leadId, noteId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["lead-notes", leadId] }),
+  });
+}
+
 export function useCloneCampaign() {
   const qc = useQueryClient();
   return useMutation({

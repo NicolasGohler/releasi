@@ -399,6 +399,28 @@ class ScraperCookie(Base):
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class LeadNote(Base):
+    """HubSpot-style timestamped note attached to a lead.
+
+    Unlike the legacy single ``leads.notes`` column, a lead can have many
+    notes, each with its own created/updated timestamps and editable body.
+    """
+    __tablename__ = "lead_notes"
+    __table_args__ = (
+        Index("ix_lead_notes_lead_created", "lead_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    lead_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("leads.id"), nullable=False, index=True
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+
 class LeadEvent(Base):
     """Lightweight per-lead event log (no account_id required).
 

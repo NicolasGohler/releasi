@@ -14,6 +14,7 @@ import type {
   AccountHealth,
   LeadUpdateRequest,
   LeadActivity,
+  LeadNote,
   FindTelegramTask,
 } from "./types";
 
@@ -429,6 +430,26 @@ export const getFindTelegramStatus = (leadId: string, taskId: string) =>
 
 export const enrichLeadPhone = (leadId: string) =>
   apiFetch<{ phone: string | null; found: boolean }>(`/leads/${leadId}/enrich-phone`, { method: "POST" });
+
+// ── Lead notes (HubSpot-style multi-note) ───────────────────────────────────
+
+export const fetchLeadNotes = (leadId: string) =>
+  apiFetch<LeadNote[]>(`/leads/${leadId}/notes`);
+
+export const createLeadNote = (leadId: string, body: string) =>
+  apiFetch<LeadNote>(`/leads/${leadId}/notes`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
+  });
+
+export const updateLeadNote = (leadId: string, noteId: string, body: string) =>
+  apiFetch<LeadNote>(`/leads/${leadId}/notes/${noteId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ body }),
+  });
+
+export const deleteLeadNote = (leadId: string, noteId: string) =>
+  apiFetch<void>(`/leads/${leadId}/notes/${noteId}`, { method: "DELETE" });
 
 // ── TG Enrichment ─────────────────────────────────────────────────────────
 

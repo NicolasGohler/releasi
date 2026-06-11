@@ -244,6 +244,25 @@ class LeadActivityOut(BaseModel):
         from_attributes = True
 
 
+class LeadNoteOut(BaseModel):
+    id: str
+    lead_id: str
+    body: str
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class LeadNoteCreate(BaseModel):
+    body: str
+
+
+class LeadNoteUpdate(BaseModel):
+    body: str
+
+
 class LeadPage(BaseModel):
     items: List[LeadOut]
     total: int

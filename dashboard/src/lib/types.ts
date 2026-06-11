@@ -184,6 +184,14 @@ export interface FindTelegramTask {
   error: string | null;
 }
 
+export interface LeadNote {
+  id: string;
+  lead_id: string;
+  body: string;
+  created_at: string;
+  updated_at: string | null;
+}
+
 export interface LeadActivity {
   id: string;
   action_type: string;

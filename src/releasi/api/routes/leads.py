@@ -15,6 +15,7 @@ from releasi.api.schemas import (
     BulkLeadRequest, BulkLeadResponse,
     LeadUpdateRequest, LeadActivityOut,
     FindTelegramTaskOut,
+    LeadNoteOut, LeadNoteCreate, LeadNoteUpdate,
 )
 from releasi.db.repository import Repository
 
@@ -674,6 +675,68 @@ async def get_lead_activity(
 
     items.sort(key=lambda x: x.created_at, reverse=True)
     return items[:limit]
+
+
+# ── Lead notes (HubSpot-style multi-note) ─────────────────────────────
+
+@router.get("/leads/{lead_id}/notes", response_model=list[LeadNoteOut])
+async def list_lead_notes(lead_id: str, repo: Repository = Depends(get_repo)):
+    """Return all notes for a lead, newest-first."""
+    lead = await repo.get_lead_by_id(lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return await repo.list_lead_notes(lead_id)
+
+
+@router.post("/leads/{lead_id}/notes", response_model=LeadNoteOut, status_code=201)
+async def create_lead_note(
+    lead_id: str,
+    body: LeadNoteCreate,
+    repo: Repository = Depends(get_repo),
+):
+    """Create a new timestamped note on a lead."""
+    lead = await repo.get_lead_by_id(lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    text = (body.body or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Note body cannot be empty")
+    note = await repo.add_lead_note(lead_id, text)
+    await repo.session.commit()
+    return note
+
+
+@router.patch("/leads/{lead_id}/notes/{note_id}", response_model=LeadNoteOut)
+async def update_lead_note(
+    lead_id: str,
+    note_id: str,
+    body: LeadNoteUpdate,
+    repo: Repository = Depends(get_repo),
+):
+    """Edit the body of an existing note."""
+    note = await repo.get_lead_note(note_id)
+    if not note or note.lead_id != lead_id:
+        raise HTTPException(status_code=404, detail="Note not found")
+    text = (body.body or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Note body cannot be empty")
+    note = await repo.update_lead_note(note, text)
+    await repo.session.commit()
+    return note
+
+
+@router.delete("/leads/{lead_id}/notes/{note_id}", status_code=204)
+async def delete_lead_note(
+    lead_id: str,
+    note_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """Delete a note."""
+    note = await repo.get_lead_note(note_id)
+    if not note or note.lead_id != lead_id:
+        raise HTTPException(status_code=404, detail="Note not found")
+    await repo.delete_lead_note(note)
+    await repo.session.commit()
 
 
 # ── Apollo Phone Enrichment ───────────────────────────────────────────
