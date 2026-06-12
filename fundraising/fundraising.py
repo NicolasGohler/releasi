@@ -203,13 +203,29 @@ def get_projects_from_cryptorank(context):
         print(" Waited for complete rendering")
 
         print("\n Searching for project links using Playwright...")
-        project_links = page.locator("a[href*='/ico/']").all()
-        if not project_links:
-            project_links = page.locator("a[href*='/price/']").all()
 
-        print(f" Found {len(project_links)} potential project links")
+        # Extract project links + the stage text from the same table row.
+        # Stage is in a sibling cell — we walk up to the nearest row-like container
+        # and scan for a stage keyword. Post-IPO projects are skipped immediately.
+        raw_rows = page.evaluate("""() => {
+            const STAGE_RE = /post.ipo|series [a-z+]+|seed|pre-seed|strategic|grant|angel|pre-series/i;
+            const links = [...document.querySelectorAll('a[href*="/ico/"], a[href*="/price/"]')];
+            return links.map(a => {
+                let el = a;
+                let stageText = null;
+                for (let i = 0; i < 8; i++) {
+                    el = el.parentElement;
+                    if (!el) break;
+                    const m = el.innerText.match(STAGE_RE);
+                    if (m) { stageText = m[0]; break; }
+                }
+                return { href: a.href, name: a.innerText.trim(), stage: stageText };
+            });
+        }""")
 
-        if len(project_links) == 0 and len(page.locator("a").all()) < 10:
+        print(f" Found {len(raw_rows)} potential project links")
+
+        if len(raw_rows) == 0 and len(page.locator("a").all()) < 10:
             print(" Very few links on page - likely still blocked by Cloudflare")
             print(" ℹ Skipping CryptoRank - will continue with other data sources")
             page.close()
@@ -218,26 +234,31 @@ def get_projects_from_cryptorank(context):
         projects = []
         seen_urls = set()
 
-        for idx, link in enumerate(project_links):
+        for idx, row in enumerate(raw_rows):
             if len(projects) >= MAX_PROJECTS:
                 print(f"  Collected {MAX_PROJECTS} projects, stopping")
                 break
             try:
-                href = link.get_attribute("href")
-                text = link.inner_text()
-                if not href or not text.strip():
+                href = row.get("href", "")
+                text = row.get("name", "")
+                stage = (row.get("stage") or "").lower()
+                if not href or not text:
                     continue
                 if not href.startswith("http"):
                     href = "https://cryptorank.io" + href
                 if '/ico/' in href:
                     href = href.replace('/ico/', '/price/')
-                    print(f" Converted ICO URL to price URL: {href}")
+                # Skip already-public companies — Post-IPO rounds are not startup raises
+                if "post" in stage and "ipo" in stage:
+                    print(f"  Skipping Post-IPO project: {text} (stage: {stage})")
+                    continue
                 if href in seen_urls:
                     continue
                 seen_urls.add(href)
                 projects.append({
-                    "name": text.strip(),
+                    "name": text,
                     "url": href,
+                    "stage": stage or None,
                     "source": "cryptorank_funding_rounds",
                     "source_url": "https://cryptorank.io/funding-rounds",
                     "source_type": "funding_platform",
@@ -716,10 +737,10 @@ def _is_crypto_project(project_name: str, categories: list[str]) -> bool:
 
 
 def _fetch_cryptorank_combined(project_url, context):
-    """Extract company website AND team for a CryptoRank project.
+    """Extract company website, team, categories, and Post-IPO flag for a CryptoRank project.
 
     Uses the shared browser *context* (page-per-project, same session cookies).
-    Returns: (website_info dict | None, list of member dicts)
+    Returns: (website_info dict | None, list of member dicts, list of category slugs, post_ipo bool)
     """
     global _cryptorank_cookie_warning_sent
     website_info = None
@@ -740,7 +761,7 @@ def _fetch_cryptorank_combined(project_url, context):
             if _is_cloudflare_blocked(page):
                 print(" Cloudflare challenge on project page — skipping this project")
                 page.close()
-                return None, [], []
+                return None, [], [], False
 
             soup = BeautifulSoup(page.content(), "html.parser")
             website_url = _parse_cryptorank_website_from_soup(soup)
@@ -754,6 +775,13 @@ def _fetch_cryptorank_combined(project_url, context):
                 print(f" Categories: {', '.join(categories)}")
             else:
                 print("  No category tags found")
+
+            # Belt-and-suspenders Post-IPO check on the project page itself
+            page_text = soup.get_text(" ", strip=True).lower()
+            if "post-ipo" in page_text or "post ipo" in page_text:
+                print(f" Post-IPO detected on project page — skipping")
+                page.close()
+                return None, [], categories, True  # post_ipo=True
         except Exception as e:
             print(f" Error loading main page: {e}")
 
@@ -771,7 +799,7 @@ def _fetch_cryptorank_combined(project_url, context):
                 except Exception:
                     pass
             page.close()
-            return website_info, [], categories
+            return website_info, [], categories, False
 
         # ── Step 2: Navigate to /team page ────────────────────────────────────
         team_url = project_url.replace('/ico/', '/price/').split('#')[0].rstrip('/') + '/team'
@@ -797,7 +825,7 @@ def _fetch_cryptorank_combined(project_url, context):
 
         if not loaded:
             page.close()
-            return website_info, [], categories
+            return website_info, [], categories, False
 
         _sleep(3)
         print(" Waited for JavaScript to render")
@@ -813,7 +841,7 @@ def _fetch_cryptorank_combined(project_url, context):
         print(f" Unexpected error processing {project_url}: {e}")
 
     page.close()
-    return website_info, team, categories
+    return website_info, team, categories, False
 
 
 def extract_company_website(project_url, context):
@@ -1735,7 +1763,12 @@ def gather_all():
             print(f"{'='*60}")
 
             if project['source'] == 'cryptorank_funding_rounds':
-                website_info, team, categories = _fetch_cryptorank_combined(url, context)
+                website_info, team, categories, post_ipo = _fetch_cryptorank_combined(url, context)
+                if post_ipo:
+                    print(f" SKIPPED (Post-IPO / already public): {project['name']}")
+                    scraped_data[url] = {'project': project, 'website_info': None, 'team': [], '_skipped': True}
+                    _save_checkpoint(scraped_data)
+                    continue
                 if not _is_crypto_project(project['name'], categories):
                     print(f" SKIPPED (non-crypto): {project['name']} — categories: {categories or 'none'}")
                     scraped_data[url] = {'project': project, 'website_info': None, 'team': [], '_skipped': True}
