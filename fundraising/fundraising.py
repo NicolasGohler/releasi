@@ -655,6 +655,66 @@ def _build_website_info_from_url(website):
 _cryptorank_cookie_warning_sent = False
 
 
+# All slugs from cryptorank.io/categories — every slug here is a crypto-native category.
+# A project with ANY of these tags is definitively a crypto/Web3 project.
+_CRYPTO_CATEGORY_SLUGS = {
+    'currency', 'chain', 'stablecoin', 'defi', 'ce-fi', 'meme',
+    'blockchain-infrastructure', 'exchange', 'tokenizedassets', 'gamefi',
+    'ai', 'depin', 'social', 'blockchain-service', 'non-fungible-tokens-nft',
+    'payments', 'interoperability', 'wallet', 'rwa', 'dataanalytics',
+    'privacy', 'miningandcompute', 'liquidstaking', 'predictionmarkets',
+    'compliance', 'launchpad', 'treasure', 'brokerage',
+}
+
+# Keyword fallback for projects that have no category tags yet (new/untagged listings).
+# If the project name or description contains any of these it's still kept.
+_CRYPTO_NAME_KEYWORDS = {
+    'crypto', 'blockchain', 'defi', 'web3', 'nft', 'dao', 'dex', 'layer',
+    'protocol', 'chain', 'token', 'wallet', 'staking', 'yield', 'bridge',
+    'oracle', 'rwa', 'zk', 'rollup', 'l1', 'l2', 'on-chain', 'onchain',
+    'decentralized', 'decentralised', 'btc', 'eth', 'solana', 'bitcoin',
+    'ethereum', 'depin', 'metaverse', 'gamefi', 'socialfi',
+}
+
+
+def _extract_cryptorank_categories(soup) -> list[str]:
+    """Extract CryptoRank category slugs from an already-parsed project page.
+
+    Category tags link to /categories/<slug> — we collect all slugs found.
+    Returns a list of slug strings (may be empty for untagged projects).
+    """
+    slugs = []
+    for a in soup.find_all('a', href=True):
+        href = a['href']
+        if '/categories/' in href:
+            slug = href.split('/categories/')[-1].strip('/ ')
+            if slug:
+                slugs.append(slug)
+    return list(dict.fromkeys(slugs))  # deduplicate, preserve order
+
+
+def _is_crypto_project(project_name: str, categories: list[str]) -> bool:
+    """Return True if the project is crypto/Web3 based on its CryptoRank categories.
+
+    Primary check: at least one category slug matches the known crypto set.
+    Fallback: project name contains a crypto keyword (for new untagged listings).
+    """
+    if categories:
+        matched = [s for s in categories if s in _CRYPTO_CATEGORY_SLUGS]
+        if matched:
+            return True
+        # Has categories but none are crypto — non-crypto project
+        print(f"  Non-crypto categories found: {categories} — skipping")
+        return False
+    # No categories at all — fallback to name keywords
+    name_lower = project_name.lower()
+    if any(kw in name_lower for kw in _CRYPTO_NAME_KEYWORDS):
+        print(f"  No categories but name contains crypto keyword — keeping")
+        return True
+    print(f"  No categories and no crypto keywords in name — skipping")
+    return False
+
+
 def _fetch_cryptorank_combined(project_url, context):
     """Extract company website AND team for a CryptoRank project.
 
@@ -664,6 +724,7 @@ def _fetch_cryptorank_combined(project_url, context):
     global _cryptorank_cookie_warning_sent
     website_info = None
     team = []
+    categories = []
 
     page = _new_stealth_page(context)
 
@@ -679,7 +740,7 @@ def _fetch_cryptorank_combined(project_url, context):
             if _is_cloudflare_blocked(page):
                 print(" Cloudflare challenge on project page — skipping this project")
                 page.close()
-                return None, []
+                return None, [], []
 
             soup = BeautifulSoup(page.content(), "html.parser")
             website_url = _parse_cryptorank_website_from_soup(soup)
@@ -688,6 +749,11 @@ def _fetch_cryptorank_combined(project_url, context):
                 print(f" Website found: {website_info['website']} (domain: {website_info['domain']})")
             else:
                 print("  No website found")
+            categories = _extract_cryptorank_categories(soup)
+            if categories:
+                print(f" Categories: {', '.join(categories)}")
+            else:
+                print("  No category tags found")
         except Exception as e:
             print(f" Error loading main page: {e}")
 
@@ -705,7 +771,7 @@ def _fetch_cryptorank_combined(project_url, context):
                 except Exception:
                     pass
             page.close()
-            return website_info, []
+            return website_info, [], categories
 
         # ── Step 2: Navigate to /team page ────────────────────────────────────
         team_url = project_url.replace('/ico/', '/price/').split('#')[0].rstrip('/') + '/team'
@@ -731,7 +797,7 @@ def _fetch_cryptorank_combined(project_url, context):
 
         if not loaded:
             page.close()
-            return website_info, []
+            return website_info, [], categories
 
         _sleep(3)
         print(" Waited for JavaScript to render")
@@ -747,7 +813,7 @@ def _fetch_cryptorank_combined(project_url, context):
         print(f" Unexpected error processing {project_url}: {e}")
 
     page.close()
-    return website_info, team
+    return website_info, team, categories
 
 
 def extract_company_website(project_url, context):
@@ -1669,7 +1735,13 @@ def gather_all():
             print(f"{'='*60}")
 
             if project['source'] == 'cryptorank_funding_rounds':
-                website_info, team = _fetch_cryptorank_combined(url, context)
+                website_info, team, categories = _fetch_cryptorank_combined(url, context)
+                if not _is_crypto_project(project['name'], categories):
+                    print(f" SKIPPED (non-crypto): {project['name']} — categories: {categories or 'none'}")
+                    scraped_data[url] = {'project': project, 'website_info': None, 'team': [], '_skipped': True}
+                    _save_checkpoint(scraped_data)
+                    continue
+                print(f" ✓ Crypto project confirmed — categories: {categories or 'untagged (keyword match)'}")
             else:
                 print(" ℹ RootData project - skipping team page, will use Apollo")
                 website_info = extract_company_website(url, context)
@@ -1704,6 +1776,7 @@ def gather_all():
                 data['website_info'],
             ): url
             for url, data in scraped_data.items()
+            if not data.get('_skipped')
         }
         for future in as_completed(futures):
             url = futures[future]
@@ -1719,6 +1792,8 @@ def gather_all():
     all_people: list[dict] = []
 
     for url, data in scraped_data.items():
+        if data.get('_skipped'):
+            continue
         project      = data['project']
         website_info = data['website_info']
         team         = list(data['team'])   # copy so checkpoint data stays clean
