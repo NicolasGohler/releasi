@@ -56,6 +56,7 @@ async def _resolve_one(
                 name=body.name,
                 twitter_url=body.twitter_url,
                 company=body.company,
+                linkedin_url=body.linkedin_url,
                 exclude_usernames=body.exclude_usernames,
                 max_candidates=body.max_candidates,
                 sleep_between=sleep_between,

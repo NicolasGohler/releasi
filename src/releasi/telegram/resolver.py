@@ -4,8 +4,10 @@ Async Telegram username resolver.
 Adapted from telegram_resolver.py for use in the releasi async FastAPI backend.
 
 Two-pass approach:
-  Pass 1 — check the person's Twitter/X handle on Telegram (fast, high accuracy).
-  Pass 2 — try generated name + company pattern candidates, scoring by name match.
+  Pass 1  — check the person's Twitter/X handle on Telegram (fast, high accuracy).
+  Pass 1b — check a custom LinkedIn vanity slug (e.g. /in/parthbl) at the same
+            priority; skipped for LinkedIn's default first-last-<id> URLs.
+  Pass 2  — try generated name + company pattern candidates, scoring by name match.
 
 Returns a FindResult dataclass with:
   - best_match: str | None  (e.g. "johndoe", no @-prefix)
@@ -51,6 +53,89 @@ def extract_twitter_username(twitter_url: Optional[str]) -> Optional[str]:
     if username.lower() in ("home", "explore", "search", "settings", "i", "intent", "share"):
         return None
     return username
+
+
+# ---------------------------------------------------------------------------
+# Helper: derive a Telegram-username candidate from a *custom* LinkedIn slug
+# ---------------------------------------------------------------------------
+
+# LinkedIn public-profile path segments that are never personal vanity slugs.
+_LINKEDIN_RESERVED = {"in", "pub", "company", "school", "feed", "edit"}
+
+
+def _name_slug_cores(name: str) -> set[str]:
+    """Slug cores that LinkedIn's *default* URL format derives from a name.
+
+    Used to recognise (and skip) auto-generated slugs like ``first-last`` —
+    Pass 2 already covers every name-derived handle, so a LinkedIn slug only
+    adds value when it is a genuinely custom vanity handle.
+    """
+    parts = [re.sub(r"[^a-z0-9]", "", p.lower()) for p in name.split()]
+    parts = [p for p in parts if p]
+    cores: set[str] = set()
+    if parts:
+        cores.add("".join(parts))           # firstmiddlelast
+    if len(parts) >= 2:
+        first, last = parts[0], parts[-1]
+        cores.update({
+            first + last,                   # firstlast
+            last + first,                   # lastfirst
+            first[0] + last,                # flast
+            first + last[0],                # firstl
+        })
+    return cores
+
+
+def extract_linkedin_slug(linkedin_url: Optional[str]) -> Optional[str]:
+    """Return the bare ``/in/<slug>`` vanity slug from a LinkedIn URL, or None."""
+    if not linkedin_url:
+        return None
+    url = linkedin_url.strip().rstrip("/")
+    match = re.search(r"linkedin\.com/(?:in|pub)/([^/?#]+)", url, re.IGNORECASE)
+    if not match:
+        return None
+    slug = match.group(1).split("?")[0].split("#")[0]
+    return slug or None
+
+
+def linkedin_slug_candidate(linkedin_url: Optional[str], name: str) -> Optional[str]:
+    """Return a Telegram-username candidate from a custom LinkedIn vanity slug.
+
+    Returns None when:
+      - there is no ``/in/`` slug,
+      - the slug is LinkedIn's auto-generated ``first-last-<id>`` format
+        (a trailing hyphen-segment containing digits, e.g.
+        ``hamzah-abdul-aziz-735023203``), or
+      - the slug is simply the person's name (``first-last``) — those handles
+        are already produced by the Pass 2 name patterns.
+
+    People often reuse a custom LinkedIn vanity handle (e.g. ``parthbl``) as
+    their Telegram username, so this is checked at the same high priority as
+    the Twitter/X handle.
+    """
+    slug = extract_linkedin_slug(linkedin_url)
+    if not slug:
+        return None
+    raw = slug.lower()
+    if raw in _LINKEDIN_RESERVED:
+        return None
+
+    # Auto-generated public profile: a trailing hyphen-segment that carries the
+    # numeric/alphanumeric id. Its presence is a reliable "default format" signal.
+    segments = raw.split("-")
+    if len(segments) > 1 and any(ch.isdigit() for ch in segments[-1]):
+        return None
+
+    core = re.sub(r"[^a-z0-9]", "", raw.replace("-", ""))
+    # Telegram usernames are 5–32 chars; anything shorter is unusable anyway.
+    if not (5 <= len(core) <= 32):
+        return None
+
+    # Pure name-derived slug → default format, nothing the name patterns miss.
+    if core in _name_slug_cores(name):
+        return None
+
+    return core
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +319,7 @@ async def find_telegram(
     name: str,
     twitter_url: Optional[str] = None,
     company: Optional[str] = None,
+    linkedin_url: Optional[str] = None,
     *,
     api_id: int,
     api_hash: str,
@@ -248,6 +334,8 @@ async def find_telegram(
         name:              Full name, e.g. "John Doe"
         twitter_url:       Optional Twitter/X URL for Pass 1 shortcut
         company:           Optional company name for pattern generation
+        linkedin_url:      Optional LinkedIn URL — a custom vanity slug is
+                           checked directly on Telegram at Twitter-level priority
         api_id:            Telegram API ID (from my.telegram.org)
         api_hash:          Telegram API hash
         session_str:       Telethon StringSession string
@@ -300,6 +388,32 @@ async def find_telegram(
             await asyncio.sleep(sleep_between)
         else:
             result.logs.append("[Pass 1] No Twitter handle to check")
+
+        # ── Pass 1b: Custom LinkedIn vanity slug (same priority as Twitter) ───
+        li_slug = linkedin_slug_candidate(linkedin_url, name)
+        if li_slug and li_slug.lower() in exclude_set:
+            result.logs.append(f"[Pass 1b] @{li_slug} skipped (in exclude list)")
+            li_slug = None
+        if li_slug:
+            result.logs.append(f"[Pass 1b] Checking custom LinkedIn slug @{li_slug} on Telegram…")
+            try:
+                entity = await client.get_entity(li_slug)
+                if isinstance(entity, User):
+                    handle = entity.username or li_slug
+                    result.best_match = handle
+                    result.logs.append(f"  ✓ @{li_slug} → @{handle} (LinkedIn slug match)")
+                    return result  # High-confidence, done
+                else:
+                    result.logs.append(f"  – @{li_slug} is a channel/group, not a user")
+            except FloodWaitError as e:
+                result.logs.append(f"  Rate limited — Telegram asks to wait {e.seconds}s — surfacing to caller")
+                result.flood_wait_seconds = e.seconds
+                return result  # caller must sleep then retry; Pass 2 would also be rate-limited
+            except Exception:
+                result.logs.append(f"  – @{li_slug} not found on Telegram")
+            await asyncio.sleep(sleep_between)
+        elif linkedin_url:
+            result.logs.append("[Pass 1b] LinkedIn URL is default format — no custom slug to check")
 
         # ── Pass 2: Name + company pattern matching ──────────────────────────
         all_candidates = generate_name_candidates(name, company)

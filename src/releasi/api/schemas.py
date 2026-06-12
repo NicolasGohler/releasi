@@ -431,6 +431,7 @@ class TelegramResolveRequest(BaseModel):
     name: str
     company: Optional[str] = None
     twitter_url: Optional[str] = None
+    linkedin_url: Optional[str] = None             # custom vanity slug checked at Twitter-level priority
     exclude_usernames: Optional[List[str]] = None  # handles already verified as wrong
     max_seconds: Optional[int] = None              # server-side timeout cap; default 50s
     max_candidates: Optional[int] = None           # Pass 2 candidate cap; None = no cap

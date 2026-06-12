@@ -1616,6 +1616,7 @@ async def telegram_enrichment_sweep():
             lead_name  = f"{lead.first_name or ''} {lead.last_name or ''}".strip()
             twitter_url = lead.twitter_url
             company    = lead.company
+            linkedin_url = lead.linkedin_url
 
         # ── 2. Resolve Telegram (DB session closed — can take tens of seconds) ─
         from releasi.telegram.resolver import find_telegram
@@ -1624,6 +1625,7 @@ async def telegram_enrichment_sweep():
                 name=lead_name,
                 twitter_url=twitter_url,
                 company=company,
+                linkedin_url=linkedin_url,
                 api_id=settings.telegram_api_id,
                 api_hash=settings.telegram_api_hash,
                 session_str=settings.telegram_session,

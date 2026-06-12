@@ -874,13 +874,14 @@ async def start_find_telegram(lead_id: str, force: bool = False, repo: Repositor
         if ev.details and ev.details.get("username"):
             exclude_usernames.append(ev.details["username"].lstrip("@"))
 
-    async def _run(lid: str, name: str, twitter: Optional[str], company: Optional[str], exclude: list[str]) -> None:
+    async def _run(lid: str, name: str, twitter: Optional[str], company: Optional[str], linkedin: Optional[str], exclude: list[str]) -> None:
         task = _find_tg_tasks[task_id]
         try:
             find_result = await find_telegram(
                 name=name,
                 twitter_url=twitter,
                 company=company,
+                linkedin_url=linkedin,
                 api_id=settings.telegram_api_id,
                 api_hash=settings.telegram_api_hash,
                 session_str=settings.telegram_session,
@@ -922,6 +923,7 @@ async def start_find_telegram(lead_id: str, force: bool = False, repo: Repositor
         person_name,
         getattr(lead, "twitter_url", None),
         getattr(lead, "company", None),
+        getattr(lead, "linkedin_url", None),
         exclude_usernames,
     ))
 
