@@ -5,6 +5,7 @@ WORKDIR /app
 # 1. Install Playwright browser + system deps + noVNC dependencies (rarely changes — cached)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         xvfb x11vnc novnc websockify \
+        libgtk-3-0t64 \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir playwright playwright-stealth \
     && playwright install --with-deps chromium
