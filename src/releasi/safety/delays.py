@@ -47,5 +47,8 @@ class DelayGenerator:
     async def type_text(self, page_or_element, text: str):
         """Type text character by character with human-like delays."""
         for char in text:
-            await page_or_element.press(f"{char}" if len(char) == 1 else char)
+            # Use .type() (literal text insertion) rather than .press(), which
+            # treats its argument as a key NAME — non-ASCII chars like "é", "à",
+            # "ñ" or emoji are rejected as "Unknown key" and abort the message.
+            await page_or_element.type(char)
             await self.type_character_delay()
