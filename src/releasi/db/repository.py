@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional, Sequence
 
-from sqlalchemy import case, select, func, update, or_, not_, exists
+from sqlalchemy import case, select, func, update, or_, not_, exists, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from releasi.db.models import (
@@ -458,14 +458,27 @@ class Repository:
         legacy path uniformly.
         """
         status_str = LeadStatus.PENDING.value
+        # Order by list priority first (higher = dispatched first), then by
+        # lead creation time within a list. The outer join lets assignments
+        # with no matching CampaignLeadList link (NULL lead_list_id, or a list
+        # that was unlinked) fall back to priority 0 alongside the default.
+        priority_col = func.coalesce(CampaignLeadList.priority, 0)
         stmt = (
             select(Lead)
             .join(CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id)
+            .outerjoin(
+                CampaignLeadList,
+                and_(
+                    CampaignLeadList.campaign_id == CampaignLeadAssignment.campaign_id,
+                    CampaignLeadList.lead_list_id
+                    == CampaignLeadAssignment.lead_list_id,
+                ),
+            )
             .where(
                 CampaignLeadAssignment.campaign_id == campaign_id,
                 CampaignLeadAssignment.status == status_str,
             )
-            .order_by(Lead.created_at)
+            .order_by(priority_col.desc(), Lead.created_at)
         )
         if limit:
             stmt = stmt.limit(limit)
@@ -1666,13 +1679,38 @@ class Repository:
         return result.rowcount
 
     async def get_campaign_lists(self, campaign_id: str) -> Sequence[CampaignLeadList]:
-        """Get all lead list links for a campaign."""
+        """Get all lead list links for a campaign, highest priority first."""
         result = await self.session.execute(
-            select(CampaignLeadList).where(
-                CampaignLeadList.campaign_id == campaign_id
-            )
+            select(CampaignLeadList)
+            .where(CampaignLeadList.campaign_id == campaign_id)
+            .order_by(CampaignLeadList.priority.desc(), CampaignLeadList.created_at)
         )
         return result.scalars().all()
+
+    async def set_campaign_lists_order(
+        self, campaign_id: str, ordered_list_ids: Sequence[str]
+    ) -> int:
+        """Set dispatch priority for a campaign's lists from an ordered id list.
+
+        ``ordered_list_ids`` is highest-priority-first. Priority values are
+        assigned descending (first item gets the largest number) so the
+        existing ``priority DESC`` ordering dispatches them in array order.
+        Returns the number of links updated.
+        """
+        n = len(ordered_list_ids)
+        updated = 0
+        for idx, list_id in enumerate(ordered_list_ids):
+            result = await self.session.execute(
+                update(CampaignLeadList)
+                .where(
+                    CampaignLeadList.campaign_id == campaign_id,
+                    CampaignLeadList.lead_list_id == list_id,
+                )
+                .values(priority=n - idx)
+            )
+            updated += result.rowcount
+        await self.session.commit()
+        return updated
 
     async def get_list_campaigns(self, lead_list_id: str) -> Sequence[CampaignLeadList]:
         """Get all campaign links for a lead list."""

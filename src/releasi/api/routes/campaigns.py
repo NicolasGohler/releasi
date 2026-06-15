@@ -9,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from releasi.api.auth import require_api_key
 from releasi.api.deps import get_repo
-from releasi.api.schemas import CampaignOut, CampaignCreate, CampaignUpdate, CampaignStatsResponse, CloneCampaignRequest
+from releasi.api.schemas import CampaignOut, CampaignCreate, CampaignUpdate, CampaignStatsResponse, CloneCampaignRequest, ReorderListsRequest
 from releasi.db.models import CampaignStatus
 from releasi.db.repository import Repository
 
@@ -46,7 +46,7 @@ async def _enrich_campaign(repo: Repository, campaign) -> CampaignOut:
         ll = await repo.get_lead_list(link.lead_list_id)
         if ll:
             sc = await repo.get_list_status_counts_for_campaign(ll.id, campaign.id)
-            assigned.append({"id": ll.id, "name": ll.name, "total_leads": ll.total_leads, "status_counts": sc})
+            assigned.append({"id": ll.id, "name": ll.name, "total_leads": ll.total_leads, "status_counts": sc, "priority": link.priority})
     out.assigned_lists = assigned
     return out
 
@@ -69,6 +69,24 @@ async def get_campaign(campaign_id: str, repo: Repository = Depends(get_repo)):
     campaign = await repo.get_campaign(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    return await _enrich_campaign(repo, campaign)
+
+
+@router.put("/campaigns/{campaign_id}/lists/order", response_model=CampaignOut)
+async def reorder_campaign_lists(
+    campaign_id: str,
+    body: ReorderListsRequest,
+    repo: Repository = Depends(get_repo),
+):
+    """Set the dispatch priority order of a campaign's assigned lists.
+
+    ``ordered_list_ids`` is highest-priority-first: the first list's pending
+    leads are dispatched before the next list's, etc.
+    """
+    campaign = await repo.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    await repo.set_campaign_lists_order(campaign_id, body.ordered_list_ids)
     return await _enrich_campaign(repo, campaign)
 
 

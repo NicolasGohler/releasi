@@ -16,6 +16,7 @@ import {
   useLeadLists,
   useAssignListToCampaign,
   useUnassignListFromCampaign,
+  useReorderCampaignLists,
   useArchiveCampaign,
   useLeads,
   useCloneCampaign,
@@ -59,6 +60,7 @@ export default function CampaignDetailPage({
   const { data: allAccounts } = useAccounts();
   const assign = useAssignListToCampaign();
   const unassign = useUnassignListFromCampaign();
+  const reorderLists = useReorderCampaignLists();
   const { data: leadSample } = useLeads(id, { per_page: 200 });
 
   // Clone dialog state
@@ -508,7 +510,22 @@ export default function CampaignDetailPage({
                   <p className="text-sm text-muted-foreground">No lists assigned to this campaign.</p>
                 ) : (
                   <div className="space-y-2">
-                    {(campaign.assigned_lists ?? []).map((ll) => {
+                    {(campaign.assigned_lists ?? []).length > 1 && (
+                      <p className="text-xs text-muted-foreground">
+                        Leads are dispatched top-to-bottom — the list at the top is worked through first.
+                      </p>
+                    )}
+                    {(campaign.assigned_lists ?? []).map((ll, idx) => {
+                      const lists = campaign.assigned_lists ?? [];
+                      const move = (from: number, to: number) => {
+                        const ids = lists.map((l) => l.id);
+                        const [moved] = ids.splice(from, 1);
+                        ids.splice(to, 0, moved);
+                        reorderLists.mutate(
+                          { campaignId: id, orderedListIds: ids },
+                          { onError: (err) => toast.error(err.message) }
+                        );
+                      };
                       const counts = ll.status_counts ?? {};
                       const total = Object.values(counts).reduce((a: number, b: number) => a + b, 0);
                       const accepted = (counts["connected"] ?? 0) + (counts["followup_scheduled"] ?? 0) + (counts["followup_sent"] ?? 0) + (counts["completed"] ?? 0);
@@ -525,9 +542,38 @@ export default function CampaignDetailPage({
                           className="rounded-md bg-muted px-3 py-2 space-y-2"
                         >
                           <div className="flex items-center justify-between">
-                            <div>
-                              <span className="text-sm font-medium">{ll.name}</span>
-                              <span className="text-xs text-muted-foreground ml-2">{ll.total_leads} leads</span>
+                            <div className="flex items-center gap-2">
+                              {lists.length > 1 && (
+                                <div className="flex flex-col -my-1">
+                                  <button
+                                    type="button"
+                                    aria-label="Move up"
+                                    disabled={idx === 0 || reorderLists.isPending}
+                                    onClick={() => move(idx, idx - 1)}
+                                    className="text-muted-foreground hover:text-foreground disabled:opacity-30 leading-none"
+                                  >
+                                    ▲
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label="Move down"
+                                    disabled={idx === lists.length - 1 || reorderLists.isPending}
+                                    onClick={() => move(idx, idx + 1)}
+                                    className="text-muted-foreground hover:text-foreground disabled:opacity-30 leading-none"
+                                  >
+                                    ▼
+                                  </button>
+                                </div>
+                              )}
+                              <div>
+                                <span className="text-sm font-medium">{ll.name}</span>
+                                {idx === 0 && lists.length > 1 && (
+                                  <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-600 ml-2">
+                                    Priority
+                                  </span>
+                                )}
+                                <span className="text-xs text-muted-foreground ml-2">{ll.total_leads} leads</span>
+                              </div>
                             </div>
                             <Button
                               size="sm"

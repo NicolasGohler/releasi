@@ -382,6 +382,9 @@ class CampaignLeadList(Base):
     lead_list_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("lead_lists.id"), index=True
     )
+    # Higher priority is dispatched first. Default 0 keeps legacy created_at
+    # ordering for links that were never explicitly prioritised.
+    priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     campaign: Mapped[Campaign] = relationship()

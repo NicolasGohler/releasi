@@ -341,6 +341,11 @@ class AssignListRequest(BaseModel):
     campaign_id: str
 
 
+class ReorderListsRequest(BaseModel):
+    # Lead-list ids, highest dispatch priority first.
+    ordered_list_ids: List[str]
+
+
 # ── Action Log ────────────────────────────────────────────────────────────
 
 class ActionLogOut(BaseModel):

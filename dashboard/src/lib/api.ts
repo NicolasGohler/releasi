@@ -346,6 +346,12 @@ export const unassignListFromCampaign = (listId: string, campaignId: string) =>
     body: JSON.stringify({ campaign_id: campaignId }),
   });
 
+export const reorderCampaignLists = (campaignId: string, orderedListIds: string[]) =>
+  apiFetch<Campaign>(`/campaigns/${campaignId}/lists/order`, {
+    method: "PUT",
+    body: JSON.stringify({ ordered_list_ids: orderedListIds }),
+  });
+
 // ── Global Leads / Lead Management ──────────────────────────────────────
 
 export const fetchGlobalLeads = (params?: {

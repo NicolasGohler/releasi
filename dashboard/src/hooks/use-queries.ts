@@ -326,6 +326,17 @@ export function useUnassignListFromCampaign() {
   });
 }
 
+export function useReorderCampaignLists() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ campaignId, orderedListIds }: { campaignId: string; orderedListIds: string[] }) =>
+      api.reorderCampaignLists(campaignId, orderedListIds),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["campaigns"] });
+    },
+  });
+}
+
 // ── Global Leads ─────────────────────────────────────────────────────────
 
 export function useGlobalLeads(params?: {
