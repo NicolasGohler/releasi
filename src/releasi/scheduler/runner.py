@@ -251,6 +251,59 @@ async def _account_proxy_url(account) -> Optional[str]:
     return proxy_url
 
 
+_session_alerted: dict = {}  # (account_id, kind, utc_date) -> True; once/day dedup
+
+
+async def _check_session_alerts(account, curr, prev) -> None:
+    """Fire preventive Slack alerts by diffing consecutive ledger rows.
+
+    Edge-triggered checks (egress IP change, li_rm vanishing) fire once on the
+    transition; the level-triggered li_at-expiry warning is deduped to once per
+    UTC day. Best-effort — never raises into the caller.
+    """
+    if curr is None:
+        return
+    today = datetime.utcnow().date()
+
+    def first_today(kind: str) -> bool:
+        key = (account.id, kind, today)
+        if key in _session_alerted:
+            return False
+        _session_alerted[key] = True
+        return True
+
+    # Egress IP changed between two consecutive touches → impossible-travel risk.
+    if prev and prev.egress_ip and curr.egress_ip and prev.egress_ip != curr.egress_ip:
+        verdict = ""
+        try:
+            from releasi.linkedin.session_telemetry import vet_proxy_ip
+            v = await vet_proxy_ip(curr.egress_ip)
+            if v.get("risky"):
+                verdict = f" :rotating_light: New IP looks risky ({v.get('reason')})."
+        except Exception:
+            pass
+        await slack_notify(
+            f":satellite_antenna: Egress IP changed for *{account.name}*: "
+            f"`{prev.egress_ip}` → `{curr.egress_ip}`. A sudden IP/location shift "
+            f"is a top session-invalidation trigger — check the proxy.{verdict}"
+        )
+    # li_rm token disappeared → silent re-auth will no longer work.
+    if prev and prev.has_li_rm and not curr.has_li_rm:
+        await slack_notify(
+            f":warning: li_rm token disappeared for *{account.name}* — silent "
+            "re-auth is no longer possible; a manual re-login (with 'Keep me "
+            "logged in') will be needed when li_at next expires."
+        )
+    # li_at expiry approaching (level-triggered → once/day).
+    if curr.li_at_expires_at:
+        days = (curr.li_at_expires_at - datetime.utcnow()).days
+        if days <= 7 and first_today("expiry"):
+            await slack_notify(
+                f":hourglass_flowing_sand: li_at for *{account.name}* expires in "
+                f"~{days}d ({curr.li_at_expires_at.date()}). Consider a proactive re-login."
+            )
+
+
 async def _record_session_touch(
     context,
     account,
@@ -315,12 +368,84 @@ async def _record_session_touch(
                 kw["li_at_expires_at"] = snap["li_at_expires_at"]
             await repo.update_account(account, **kw)
             logger.info("session.li_at_written_back", account=account.name)
+
+        # Preventive alerts: diff this row against the previous one.
+        try:
+            recent = await repo.list_session_events(account_id=account.id, limit=2)
+            curr = recent[0] if recent else None
+            prev = recent[1] if len(recent) > 1 else None
+            await _check_session_alerts(account, curr, prev)
+        except Exception:
+            pass
     except Exception as e:
         logger.warning(
             "session_touch.record_failed",
             account=getattr(account, "name", "?"),
             error=str(e),
         )
+
+
+async def _attempt_li_rm_reauth(context, account, repo) -> bool:
+    """Silently re-mint li_at from the stored li_rm token. Returns True on success.
+
+    When a session redirects to login but the account has a li_rm ("remember me")
+    token, LinkedIn will auto-issue a fresh li_at on the next navigation — no
+    password needed. This is the mechanism behind "log in once, stay logged in
+    for months": it removes the human from the loop for the common case where
+    li_at aged out but li_rm is still valid.
+
+    Best-effort and fail-safe: any failure returns False so the caller falls
+    back to marking the account cookie_expired (manual re-login). li_rm itself
+    can be revoked by the same security triggers as li_at, so this is not a
+    guarantee — but it rescues the majority of routine expiries.
+    """
+    li_rm = getattr(account, "li_rm_cookie", None)
+    if not li_rm or context is None:
+        return False
+    try:
+        # Make sure li_rm is present in the context (inject from DB if the
+        # on-disk profile lost it). li_at is intentionally left as-is: if it is
+        # stale/invalid, li_rm drives the re-mint.
+        try:
+            cookies = await context.cookies("https://www.linkedin.com")
+            if not any(c.get("name") == "li_rm" for c in cookies):
+                await context.add_cookies([{
+                    "name": "li_rm", "value": li_rm, "domain": ".linkedin.com",
+                    "path": "/", "httpOnly": True, "secure": True, "sameSite": "None",
+                }])
+        except Exception:
+            pass
+
+        from releasi.linkedin.navigator import LinkedInNavigator
+        page = await context.new_page()
+        try:
+            feed = await LinkedInNavigator(page).go_to_feed()
+        finally:
+            await page.close()
+
+        if not feed.success:
+            # Network/proxy issue — not a re-auth failure; don't mark expired.
+            await repo.log_session_event(account.id, "reauth", "network_error")
+            return False
+        if not feed.session_valid:
+            # li_rm is also dead → genuine expiry, caller will mark cookie_expired.
+            await _record_session_touch(
+                context, account, repo, job="reauth", result="reauth_failed",
+            )
+            return False
+
+        # Healthy again. _record_session_touch captures the freshly minted li_at
+        # and writes it back to the DB (li_at_cookie + expiry).
+        await _record_session_touch(
+            context, account, repo, job="reauth", result="reauth_ok",
+        )
+        if account.status != AccountStatus.ACTIVE:
+            await repo.update_account(account, status="active")
+        logger.info("session.reauth_ok", account=account.name)
+        return True
+    except Exception as e:
+        logger.warning("session.reauth_error", account=account.name, error=str(e))
+        return False
 
 
 async def _get_repo() -> tuple:
@@ -1044,10 +1169,20 @@ async def dispatch():
                             job="dispatcher", result="redirect_login",
                             detail={"phase": "pre_dispatch_feed_ping"},
                         )
+                        # Try silent re-auth from li_rm before giving up. If it
+                        # works the account stays active — no manual re-login.
+                        if await _attempt_li_rm_reauth(pool_context, account, repo):
+                            logger.info("dispatch.reauth_ok", account=account.name)
+                            pool.confirm_session(account.id)
+                            await slack_notify(
+                                f":white_check_mark: *Session auto-healed* — *{account.name}* "
+                                "re-minted li_at from li_rm (no manual login needed)."
+                            )
+                            continue  # session healthy again; dispatch resumes next cycle
                         await repo.update_account(account, status="cookie_expired")
                         await slack_notify(
                             f":warning: *Cookie expired* — account *{account.name}* (detected at dispatch pre-check). "
-                            "Update the cookie in account settings."
+                            "li_rm re-auth failed; update the cookie in account settings."
                         )
                         await repo.log_action(
                             account_id=account.id,
@@ -1208,6 +1343,19 @@ async def check_acceptances():
 
                 if not conn_result.session_valid:
                     logger.error("acceptance.session_expired", account=account.name)
+                    await _record_session_touch(
+                        pool_context, account, repo,
+                        job="acceptance", result="redirect_login",
+                    )
+                    # Try silent re-auth from li_rm before marking expired.
+                    if await _attempt_li_rm_reauth(pool_context, account, repo):
+                        logger.info("acceptance.reauth_ok", account=account.name)
+                        pool.confirm_session(account.id)
+                        await slack_notify(
+                            f":white_check_mark: *Session auto-healed* — *{account.name}* "
+                            "re-minted li_at from li_rm (detected by acceptance checker)."
+                        )
+                        continue
                     await repo.update_account(account, status="cookie_expired")
                     await slack_notify(
                         f":warning: *Cookie expired* — account *{account.name}* (detected by acceptance checker)."

@@ -88,3 +88,54 @@ async def egress_identity(proxy_url: Optional[str], timeout: float = 8.0) -> dic
     except Exception:
         pass
     return result
+
+
+async def vet_proxy_ip(ip: Optional[str], timeout: float = 8.0) -> dict:
+    """Assess an IP's suitability for LinkedIn automation.
+
+    Uses ip-api.com (free, non-commercial) which exposes ``proxy``/``hosting``/
+    ``mobile`` flags. A *hosting* (datacenter) or *proxy/VPN*-flagged IP is one
+    LinkedIn strongly associates with bots — a good predictor of the fast
+    session death we saw on the new tr/us/it accounts. Returns a dict with the
+    flags plus a ``risky`` verdict + human ``reason``. Never raises.
+    """
+    out = {
+        "ip": ip, "isp": None, "org": None, "as_name": None,
+        "country": None, "city": None,
+        "is_proxy": None, "is_hosting": None, "is_mobile": None,
+        "risky": None, "reason": None,
+    }
+    if not ip:
+        out["reason"] = "no_ip"
+        return out
+    try:
+        import httpx
+
+        fields = "status,message,country,city,isp,org,as,proxy,hosting,mobile,query"
+        # ip-api free tier is HTTP-only; this carries no secrets (public IP only).
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(f"http://ip-api.com/json/{ip}?fields={fields}")
+        data = resp.json()
+        if data.get("status") != "success":
+            out["reason"] = data.get("message") or "lookup_failed"
+            return out
+        out.update({
+            "isp": data.get("isp"),
+            "org": data.get("org"),
+            "as_name": data.get("as"),
+            "country": data.get("country"),
+            "city": data.get("city"),
+            "is_proxy": bool(data.get("proxy")),
+            "is_hosting": bool(data.get("hosting")),
+            "is_mobile": bool(data.get("mobile")),
+        })
+        reasons = []
+        if out["is_hosting"]:
+            reasons.append("datacenter/hosting IP")
+        if out["is_proxy"]:
+            reasons.append("known proxy/VPN IP")
+        out["risky"] = bool(reasons)
+        out["reason"] = ", ".join(reasons) if reasons else "looks residential"
+    except Exception as e:
+        out["reason"] = f"error: {e}"
+    return out

@@ -15,13 +15,16 @@ echo "==> Pulling latest code ..."
 git pull
 
 echo "==> Pausing active accounts before restart ..."
-# Save active account IDs so we can restore exactly those after restart
-_db "rows=c.execute(\"SELECT id FROM accounts WHERE status='active'\").fetchall(); print(' '.join(str(r[0]) for r in rows))" \
+# Save active account IDs so we can restore exactly those after restart.
+# NOTE: the status column stores the enum NAME (e.g. 'ACTIVE'), not the value
+# ('active') — match case-insensitively and write the uppercase name back.
+_db "rows=c.execute(\"SELECT id FROM accounts WHERE UPPER(status)='ACTIVE'\").fetchall(); print(' '.join(str(r[0]) for r in rows))" \
   > "$RESUME_FILE" 2>/dev/null || true
-ACTIVE_IDS=$(cat "$RESUME_FILE" 2>/dev/null | tr -d '[:space:]')
+# Normalise to a single space-separated line (preserve the gaps BETWEEN ids).
+ACTIVE_IDS=$(tr '\n' ' ' < "$RESUME_FILE" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
 if [ -n "$ACTIVE_IDS" ]; then
-  _db "c.execute(\"UPDATE accounts SET status='paused' WHERE status='active'\")"
+  _db "c.execute(\"UPDATE accounts SET status='PAUSED' WHERE UPPER(status)='ACTIVE'\")"
   COUNT=$(echo "$ACTIVE_IDS" | wc -w | tr -d ' ')
   echo "    Paused $COUNT active account(s) (IDs: $ACTIVE_IDS)."
 else
@@ -37,9 +40,10 @@ docker logs releasi --since 5s 2>&1 | tail -5
 
 echo "==> Resuming accounts that were active before deploy ..."
 if [ -n "$ACTIVE_IDS" ]; then
-  IDS_CSV=$(echo "$ACTIVE_IDS" | tr ' ' ',')
-  _db "c.execute(\"UPDATE accounts SET status='active' WHERE id IN ($IDS_CSV)\")"
-  echo "    Resumed account IDs: $IDS_CSV"
+  # Quote each UUID so the IN (...) clause is valid SQL: 'id1','id2'
+  IDS_CSV=$(echo "$ACTIVE_IDS" | tr ' ' '\n' | sed "s/.*/'&'/" | paste -sd, -)
+  _db "c.execute(\"UPDATE accounts SET status='ACTIVE' WHERE id IN ($IDS_CSV)\")"
+  echo "    Resumed account IDs: $ACTIVE_IDS"
 else
   echo "    Nothing to resume."
 fi

@@ -420,6 +420,37 @@ async def check_connection(
             pass
 
 
+@router.post("/accounts/{account_id}/vet-proxy")
+async def vet_proxy(
+    account_id: str,
+    repo: Repository = Depends(get_repo),
+):
+    """Resolve the egress IP seen through the account's proxy and assess its
+    reputation (residential vs datacenter/proxy-flagged).
+
+    Catches the kind of low-reputation IP that kills new accounts within hours
+    (e.g. the tr account that died in 16 minutes). Run this before warming a new
+    account, or when diagnosing a fast expiry.
+    """
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    from releasi.linkedin.session_telemetry import egress_identity, vet_proxy_ip
+
+    proxy_url = account.proxy_url
+    if not proxy_url and account.proxy_country:
+        try:
+            from releasi.linkedin.browser import _build_proxy_url
+            proxy_url = _build_proxy_url(account.id, account.proxy_country)
+        except Exception:
+            proxy_url = None
+
+    egress = await egress_identity(proxy_url)
+    vet = await vet_proxy_ip(egress.get("egress_ip"))
+    return {"egress": egress, "vet": vet}
+
+
 @router.get("/accounts/{account_id}/session-events")
 async def list_session_events(
     account_id: str,
