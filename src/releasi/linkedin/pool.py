@@ -152,6 +152,15 @@ class BrowserPool:
         slot = self._slots.get(account_id)
         return slot.in_use if slot else False
 
+    def has_slot(self, account_id: str) -> bool:
+        """Return True if a live browser slot already exists for the account.
+
+        Used to decide whether a one-off session check can reuse the existing
+        context (preferred) or must open an ephemeral one — never both at once,
+        to avoid concurrent contexts for the same account.
+        """
+        return account_id in self._slots
+
     def time_since_validated(self, account_id: str) -> float:
         """Seconds since the slot's session was last confirmed healthy.
 
@@ -200,6 +209,7 @@ class BrowserPool:
             proxy_url=account.proxy_url,
             proxy_country=account.proxy_country,
             timezone=account.timezone,
+            cookies_json=getattr(account, "cookies_json", None),
         )
         # validate_session() is skipped — check_cookie_health() already ran.
         # which is slow (15s) and breaks when the proxy blocks LinkedIn.

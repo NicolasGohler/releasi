@@ -232,6 +232,7 @@ class LinkedInBrowser:
         proxy_url: Optional[str] = None,
         proxy_country: Optional[str] = None,
         timezone: Optional[str] = None,
+        cookies_json: Optional[str] = None,
     ) -> BrowserContext:
         """
         Launch a persistent Playwright Chromium browser context.
@@ -373,6 +374,34 @@ class LinkedInBrowser:
         existing_li_at = next(
             (c for c in existing_cookies if c["name"] == "li_at"), None
         )
+
+        # Fresh-profile recovery: if the on-disk profile has no li_at but the DB
+        # holds a full captured jar, restore it wholesale (li_rm, JSESSIONID,
+        # bcookie, bscookie, …) so we rebuild a complete session fingerprint
+        # instead of a bare li_at seed. Only fires on an empty profile, so it
+        # never clobbers a live on-disk session.
+        if not existing_li_at and cookies_json:
+            try:
+                import json as _json
+                jar = _json.loads(cookies_json)
+                if isinstance(jar, list) and jar:
+                    await self._context.add_cookies(jar)
+                    logger.info(
+                        "browser.full_jar_restored",
+                        account_id=account_id,
+                        count=len(jar),
+                    )
+                    existing_cookies = await self._context.cookies("https://www.linkedin.com")
+                    existing_li_at = next(
+                        (c for c in existing_cookies if c["name"] == "li_at"), None
+                    )
+            except Exception as e:
+                logger.warning(
+                    "browser.full_jar_restore_failed",
+                    account_id=account_id,
+                    error=str(e),
+                )
+
         if not existing_li_at or existing_li_at["value"] != li_at_cookie:
             if existing_li_at:
                 logger.info("browser.cookie_updated", account_id=account_id)

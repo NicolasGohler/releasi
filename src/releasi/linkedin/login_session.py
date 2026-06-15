@@ -208,6 +208,44 @@ class LoginSessionManager:
             **proxy_kwargs,
         )
 
+        # Login mode only: auto-tick "Keep me logged in" so LinkedIn issues the
+        # long-lived li_at (~1y) and the li_rm remember-me token instead of a
+        # short session cookie. This is the single biggest lever for session
+        # longevity. Best-effort: an init script installs a MutationObserver that
+        # ticks any remember-me checkbox whenever it appears across the multi-step
+        # login form. Fails open (never blocks login if the selector changes).
+        # NOTE: "Keep me logged in" is unavailable when 2FA is enabled — if a
+        # future account uses 2FA, no li_rm will be issued regardless.
+        if not li_at_cookie:
+            try:
+                await self._context.add_init_script(
+                    """
+                    (() => {
+                      function tick() {
+                        for (const el of document.querySelectorAll('input[type=checkbox]')) {
+                          const id = (el.id || '').toLowerCase();
+                          const nm = (el.name || '').toLowerCase();
+                          const lbl = (el.closest('label') ? el.closest('label').innerText : '').toLowerCase();
+                          if (id.includes('remember') || nm.includes('remember') ||
+                              lbl.includes('keep me logged in')) {
+                            if (!el.checked) {
+                              el.checked = true;
+                              el.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+                          }
+                        }
+                      }
+                      document.addEventListener('DOMContentLoaded', tick);
+                      try { new MutationObserver(tick).observe(document.documentElement,
+                            { childList: true, subtree: true }); } catch (e) {}
+                      setInterval(tick, 1000);
+                    })();
+                    """
+                )
+                logger.info("login_session.keep_logged_in_autotick_installed")
+            except Exception as e:
+                logger.warning("login_session.keep_logged_in_autotick_failed", error=str(e))
+
         # Inject stored cookie (browse mode) or navigate to login page (login mode)
         page = await self._context.new_page()
         if li_at_cookie:
@@ -252,20 +290,49 @@ class LoginSessionManager:
         if not self.is_active or not self._context:
             raise RuntimeError("No active login session to finish.")
 
-        result = {"li_at": None, "li_a": None, "account_id": self._account_id}
+        result = {
+            "li_at": None,
+            "li_a": None,
+            "li_rm": None,
+            "cookies_json": None,
+            "li_at_expires_at": None,  # ISO string (UTC) or None
+            "account_id": self._account_id,
+        }
 
         try:
+            import json as _json
+            from datetime import datetime as _dt
+
             cookies = await self._context.cookies(["https://www.linkedin.com"])
             for cookie in cookies:
-                if cookie["name"] == "li_at":
+                name = cookie.get("name")
+                if name == "li_at":
                     result["li_at"] = cookie["value"]
-                elif cookie["name"] == "li_a":
+                    exp = cookie.get("expires")
+                    if exp and exp > 0:
+                        try:
+                            result["li_at_expires_at"] = _dt.utcfromtimestamp(exp).isoformat()
+                        except Exception:
+                            pass
+                elif name == "li_a":
                     result["li_a"] = cookie["value"]
+                elif name == "li_rm":
+                    result["li_rm"] = cookie["value"]
+
+            # Persist the full jar so a fresh browser profile can be fully
+            # restored later (bcookie, bscookie, JSESSIONID, li_rm, …) rather
+            # than re-seeded from li_at alone.
+            try:
+                result["cookies_json"] = _json.dumps(cookies)
+            except Exception:
+                result["cookies_json"] = None
 
             logger.info(
                 "login_session.cookies_extracted",
                 has_li_at=result["li_at"] is not None,
                 has_li_a=result["li_a"] is not None,
+                has_li_rm=result["li_rm"] is not None,
+                li_at_expires_at=result["li_at_expires_at"],
                 total_cookies=len(cookies),
             )
         except Exception as e:

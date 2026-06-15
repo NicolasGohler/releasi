@@ -17,6 +17,7 @@ from releasi.db.models import (
     LeadListMembership, CampaignLeadAssignment,
     LeadEvent,
     ScraperCookie,
+    SessionEvent,
 )
 
 
@@ -159,6 +160,48 @@ class Repository:
         await self.session.commit()
         await self.session.refresh(account)
         return account
+
+    # ── Session-health ledger ────────────────────────────────────────────────
+
+    async def log_session_event(
+        self,
+        account_id: str,
+        job: str,
+        result: str,
+        **fields,
+    ) -> None:
+        """Append a session-health ledger row. Best-effort, never raises.
+
+        `fields` may include any SessionEvent column: egress_ip, geo, asn,
+        li_at_fp, li_at_expires_at, has_li_rm, cookie_names, user_agent,
+        timezone, viewport, consecutive_session_errors, detail.
+        """
+        try:
+            evt = SessionEvent(
+                account_id=account_id,
+                job=job,
+                result=result,
+                **fields,
+            )
+            self.session.add(evt)
+            await self.session.commit()
+        except Exception:
+            # Monitoring must never break the job it observes.
+            try:
+                await self.session.rollback()
+            except Exception:
+                pass
+
+    async def list_session_events(
+        self,
+        account_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> Sequence[SessionEvent]:
+        stmt = select(SessionEvent).order_by(SessionEvent.created_at.desc()).limit(limit)
+        if account_id:
+            stmt = stmt.where(SessionEvent.account_id == account_id)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
 
     # ── Campaigns ──────────────────────────────────────────────────────────
 

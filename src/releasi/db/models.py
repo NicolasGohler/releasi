@@ -90,6 +90,18 @@ class Account(Base):
     name: Mapped[str] = mapped_column(String(255), unique=True)
     li_at_cookie: Mapped[str] = mapped_column(Text)
     li_a_cookie: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Long-term "remember me" token. Present only when the login was done with
+    # "Keep me logged in" ticked (and 2FA off). Lets the session be re-minted and
+    # gives li_at a ~1y expiry instead of a short session cookie. See session
+    # longevity work — this is the single biggest lever for Dripify-like persistence.
+    li_rm_cookie: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Full cookie jar captured at login (JSON list of cookie dicts). Used to
+    # restore a complete session onto a fresh browser profile rather than
+    # re-seeding from li_at alone.
+    cookies_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Expiry of the live li_at cookie (UTC). Lets the dashboard surface a
+    # short-capture cookie the day it is saved instead of days later.
+    li_at_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     user_agent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[AccountStatus] = mapped_column(
         Enum(AccountStatus), default=AccountStatus.ACTIVE
@@ -442,3 +454,49 @@ class LeadEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     details: Mapped[Optional[Dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class SessionEvent(Base):
+    """Per-account session-health ledger (migration 031).
+
+    One row per session "touch" (dispatch pre-check, keepalive, acceptance
+    check, health sweep, login). Captures the full context at the moment we
+    learn whether the session is alive — egress IP/geo, a fingerprint of the
+    live cookies, the browser fingerprint, and the outcome — so that when an
+    account expires we can reconstruct *what changed in the hours before*.
+
+    This is the data foundation for understanding (not just detecting) cookie
+    expiry. It adds no LinkedIn traffic: it records data the existing jobs
+    already gather. li_at itself is never stored here — only a short hash
+    (`li_at_fp`) so cookie rotation is visible without leaking the secret.
+    """
+    __tablename__ = "session_events"
+    __table_args__ = (
+        Index("ix_session_events_account_created", "account_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    account_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("accounts.id"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    # Which job recorded this: dispatcher | keepalive | acceptance | health | login
+    job: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Outcome: ok | redirect_login | network_error | challenge | unknown
+    result: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Egress identity (what LinkedIn actually saw)
+    egress_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    geo: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    asn: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # Cookie fingerprint — short hash of li_at (detects rotation), expiry, li_rm presence
+    li_at_fp: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    li_at_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    has_li_rm: Mapped[bool] = mapped_column(Boolean, default=False)
+    cookie_names: Mapped[Optional[List]] = mapped_column(JSON, nullable=True)
+    # Browser fingerprint used for this touch
+    user_agent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    timezone: Mapped[Optional[str]] = mapped_column(String(63), nullable=True)
+    viewport: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    consecutive_session_errors: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Free-form extras: redirect URL, checkpoint type, error string, etc.
+    detail: Mapped[Optional[Dict]] = mapped_column(JSON, nullable=True)

@@ -332,63 +332,132 @@ async def check_connection(
     account_id: str,
     repo: Repository = Depends(get_repo),
 ):
-    """Fast HTTP session check — no browser, no proxy, completes in ~1-2s."""
+    """Session check via a real browser through the account's proxy.
+
+    NEVER sends a bare ``li_at`` HTTP request from the server IP. LinkedIn
+    treats a cookie request from a non-browser user-agent / datacenter IP as a
+    stolen-cookie test and invalidates the session — the old implementation did
+    exactly that and was a likely cause of premature expiry.
+
+    Strategy (respects the one-context-per-account invariant):
+      • Path A — if the pool already has a live slot for this account, reuse it
+        (navigate the feed in the existing context). Never opens a 2nd context.
+      • Path B — otherwise launch an ephemeral browser through the account's
+        residential proxy and validate the feed there.
+    """
+    import time
     account = await repo.get_account(account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-
     if not account.li_at_cookie:
         return {"valid": False, "reason": "no_cookie", "elapsed_ms": 0}
 
-    import time
-    import httpx
     start = time.monotonic()
 
-    headers = {
-        "Cookie": f"li_at={account.li_at_cookie}",
-        "User-Agent": account.user_agent or (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+    def _ms() -> int:
+        return int((time.monotonic() - start) * 1000)
 
-    # No proxy — cookie validity is independent of proxy; keeps check fast and reliable
-    login_patterns = ["/login", "/uas/login", "/signup", "/checkpoint/"]
-
+    # ── Path A: reuse the live pool slot if one exists ───────────────────────
+    pool = None
     try:
-        async with httpx.AsyncClient(
-            headers=headers,
-            follow_redirects=True,
-            timeout=5.0,
-        ) as client:
-            resp = await client.get("https://www.linkedin.com/feed/")
+        from releasi.linkedin.pool import get_browser_pool
+        pool = get_browser_pool()
+    except RuntimeError:
+        pool = None  # pool not initialised (CLI / API-only context)
 
-        elapsed = int((time.monotonic() - start) * 1000)
-        final_url = str(resp.url)
-
-        if any(p in final_url for p in login_patterns):
-            await repo.update_account(account, status="cookie_expired")
-            return {"valid": False, "reason": "redirected_to_login", "elapsed_ms": elapsed}
-
-        if resp.status_code == 200:
+    if pool is not None and pool.has_slot(account.id):
+        if pool.is_busy(account.id):
+            return {
+                "valid": None,
+                "reason": "in_use",
+                "elapsed_ms": _ms(),
+                "message": "Account browser is busy with automation; try again shortly.",
+            }
+        ctx = await pool.acquire(account)
+        try:
+            from releasi.linkedin.navigator import LinkedInNavigator
+            page = await ctx.new_page()
+            try:
+                feed = await LinkedInNavigator(page).go_to_feed()
+            finally:
+                await page.close()
+            if not feed.success:
+                return {"valid": None, "reason": "network_error", "error": feed.error, "elapsed_ms": _ms()}
+            if not feed.session_valid:
+                await repo.update_account(account, status="cookie_expired")
+                return {"valid": False, "reason": "redirected_to_login", "elapsed_ms": _ms()}
             if account.status == "cookie_expired":
                 await repo.update_account(account, status="active")
-            return {"valid": True, "elapsed_ms": elapsed}
+            return {"valid": True, "elapsed_ms": _ms()}
+        finally:
+            await pool.release_idle(account.id)
 
-        return {"valid": False, "reason": f"unexpected_status_{resp.status_code}", "elapsed_ms": elapsed}
-
-    except httpx.ProxyError as e:
-        elapsed = int((time.monotonic() - start) * 1000)
-        return {"valid": False, "reason": "proxy_unreachable", "error": str(e), "elapsed_ms": elapsed}
-    except httpx.TimeoutException:
-        elapsed = int((time.monotonic() - start) * 1000)
-        return {"valid": False, "reason": "proxy_unreachable", "error": "Connection timed out", "elapsed_ms": elapsed}
+    # ── Path B: ephemeral browser through the account's residential proxy ────
+    from releasi.linkedin.browser import LinkedInBrowser
+    browser = LinkedInBrowser()
+    try:
+        await browser.launch(
+            account_id=account.id,
+            li_at_cookie=account.li_at_cookie,
+            user_agent=account.user_agent,
+            proxy_url=account.proxy_url,
+            proxy_country=account.proxy_country,
+            timezone=account.timezone,
+        )
+        valid = await browser.validate_session()
+        if valid:
+            if account.status == "cookie_expired":
+                await repo.update_account(account, status="active")
+            return {"valid": True, "elapsed_ms": _ms()}
+        await repo.update_account(account, status="cookie_expired")
+        return {"valid": False, "reason": "redirected_to_login", "elapsed_ms": _ms()}
     except Exception as e:
-        elapsed = int((time.monotonic() - start) * 1000)
-        return {"valid": False, "reason": "error", "error": str(e), "elapsed_ms": elapsed}
+        return {"valid": False, "reason": "error", "error": str(e), "elapsed_ms": _ms()}
+    finally:
+        try:
+            await browser.close()
+        except Exception:
+            pass
+
+
+@router.get("/accounts/{account_id}/session-events")
+async def list_session_events(
+    account_id: str,
+    limit: int = Query(200, le=1000),
+    repo: Repository = Depends(get_repo),
+):
+    """Session-health ledger for an account (most-recent first).
+
+    Each row is what LinkedIn saw at one session touch — egress IP/geo, cookie
+    fingerprint (li_at_fp changes ⇒ rotation), li_rm presence, fingerprint, and
+    outcome. Use it to answer *why* a cookie expired: diff the rows in the hours
+    before status flipped to cookie_expired (did the IP/ASN change? did li_rm
+    disappear? was the cookie a short-capture?).
+    """
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    events = await repo.list_session_events(account_id=account_id, limit=limit)
+    return [
+        {
+            "id": e.id,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+            "job": e.job,
+            "result": e.result,
+            "egress_ip": e.egress_ip,
+            "geo": e.geo,
+            "asn": e.asn,
+            "li_at_fp": e.li_at_fp,
+            "li_at_expires_at": e.li_at_expires_at.isoformat() if e.li_at_expires_at else None,
+            "has_li_rm": e.has_li_rm,
+            "cookie_names": e.cookie_names,
+            "user_agent": e.user_agent,
+            "timezone": e.timezone,
+            "consecutive_session_errors": e.consecutive_session_errors,
+            "detail": e.detail,
+        }
+        for e in events
+    ]
 
 
 @router.post("/accounts/{account_id}/login-session")
@@ -449,11 +518,40 @@ async def finish_login_session(
     if not result["li_at"]:
         return {"success": False, "message": "No li_at cookie found. Did you complete the login?"}
 
-    # Save cookies to database
+    # Save cookies to database — including the long-term li_rm token, the full
+    # cookie jar, and the li_at expiry, so the captured session is complete and
+    # the dashboard can surface a short-capture cookie immediately.
     update_kwargs = {"li_at_cookie": result["li_at"], "status": "active"}
-    if result["li_a"]:
+    if result.get("li_a"):
         update_kwargs["li_a_cookie"] = result["li_a"]
+    if result.get("li_rm"):
+        update_kwargs["li_rm_cookie"] = result["li_rm"]
+    if result.get("cookies_json"):
+        update_kwargs["cookies_json"] = result["cookies_json"]
+    li_at_exp_dt = None
+    if result.get("li_at_expires_at"):
+        from datetime import datetime as _dt
+        try:
+            li_at_exp_dt = _dt.fromisoformat(result["li_at_expires_at"])
+            update_kwargs["li_at_expires_at"] = li_at_exp_dt
+        except Exception:
+            li_at_exp_dt = None
     await repo.update_account(account, **update_kwargs)
+
+    # Ledger: record the login touch (did we get li_rm / a long-lived cookie?).
+    try:
+        from releasi.linkedin.session_telemetry import li_at_fingerprint
+        await repo.log_session_event(
+            account_id=account.id,
+            job="login",
+            result="ok",
+            li_at_fp=li_at_fingerprint(result["li_at"]),
+            li_at_expires_at=li_at_exp_dt,
+            has_li_rm=bool(result.get("li_rm")),
+            detail={"source": "novnc_login"},
+        )
+    except Exception:
+        pass
 
     # Evict old pool slot so the pool creates a fresh browser with the new cookie
     # on next acquire (avoids stale cookie / fingerprint mismatch)

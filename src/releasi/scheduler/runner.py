@@ -239,6 +239,90 @@ async def _http_check_session(
         raise
 
 
+async def _account_proxy_url(account) -> Optional[str]:
+    """Resolve the account's residential proxy URL (explicit, else built)."""
+    proxy_url = account.proxy_url
+    if not proxy_url and account.proxy_country:
+        try:
+            from releasi.linkedin.browser import _build_proxy_url
+            proxy_url = _build_proxy_url(account.id, account.proxy_country)
+        except Exception:
+            proxy_url = None
+    return proxy_url
+
+
+async def _record_session_touch(
+    context,
+    account,
+    repo,
+    *,
+    job: str,
+    result: str,
+    detail: Optional[dict] = None,
+    consecutive_session_errors: Optional[int] = None,
+    fetch_egress: bool = True,
+) -> None:
+    """Record one session-health ledger row + write back a rotated li_at.
+
+    Captures, at the moment we learn the session's health, the live cookie
+    fingerprint, the egress IP/geo LinkedIn actually saw, and the browser
+    fingerprint. Also keeps ``accounts.li_at_cookie`` in sync with the live
+    (possibly rotated) cookie so slot recreation never re-stamps a stale token.
+
+    Best-effort: monitoring must never break the job it observes.
+    """
+    try:
+        from releasi.linkedin.session_telemetry import cookie_snapshot, egress_identity
+
+        cookies = []
+        try:
+            if context is not None:
+                cookies = await context.cookies("https://www.linkedin.com")
+        except Exception:
+            cookies = []
+        snap = cookie_snapshot(cookies)
+        live_li_at = next(
+            (c.get("value") for c in cookies if c.get("name") == "li_at"), None
+        )
+
+        egress = {"egress_ip": None, "geo": None, "asn": None}
+        if fetch_egress:
+            egress = await egress_identity(await _account_proxy_url(account))
+
+        await repo.log_session_event(
+            account_id=account.id,
+            job=job,
+            result=result,
+            egress_ip=egress["egress_ip"],
+            geo=egress["geo"],
+            asn=egress["asn"],
+            li_at_fp=snap["li_at_fp"],
+            li_at_expires_at=snap["li_at_expires_at"],
+            has_li_rm=snap["has_li_rm"],
+            cookie_names=snap["cookie_names"],
+            user_agent=account.user_agent,
+            timezone=account.timezone,
+            consecutive_session_errors=consecutive_session_errors,
+            detail=detail,
+        )
+
+        # Write-back: keep the DB li_at in sync with the live cookie. Without
+        # this the DB is a frozen login-time snapshot and a slot recreation can
+        # re-inject a stale token over a fresher on-disk one.
+        if live_li_at and live_li_at != account.li_at_cookie:
+            kw = {"li_at_cookie": live_li_at}
+            if snap["li_at_expires_at"]:
+                kw["li_at_expires_at"] = snap["li_at_expires_at"]
+            await repo.update_account(account, **kw)
+            logger.info("session.li_at_written_back", account=account.name)
+    except Exception as e:
+        logger.warning(
+            "session_touch.record_failed",
+            account=getattr(account, "name", "?"),
+            error=str(e),
+        )
+
+
 async def _get_repo() -> tuple:
     """Get a Repository + session."""
     session = get_session_factory()()
@@ -943,10 +1027,23 @@ async def dispatch():
                             account=account.name,
                             error=_feed.error,
                         )
-                        # Proxy/network issue — skip this cycle, will retry in 5 min
+                        # Proxy/network issue — skip this cycle, will retry in 5 min.
+                        # Skip egress lookup (proxy itself may be down).
+                        await _record_session_touch(
+                            pool_context, account, repo,
+                            job="dispatcher", result="network_error",
+                            detail={"error": _feed.error}, fetch_egress=False,
+                        )
                         continue
                     if not _feed.session_valid:
                         logger.error("dispatch.pre_check_session_expired", account=account.name)
+                        # Capture the full context at the moment of expiry — egress
+                        # IP/geo + cookie fingerprint — this is the row that explains *why*.
+                        await _record_session_touch(
+                            pool_context, account, repo,
+                            job="dispatcher", result="redirect_login",
+                            detail={"phase": "pre_dispatch_feed_ping"},
+                        )
                         await repo.update_account(account, status="cookie_expired")
                         await slack_notify(
                             f":warning: *Cookie expired* — account *{account.name}* (detected at dispatch pre-check). "
@@ -962,6 +1059,13 @@ async def dispatch():
                     # Feed navigation confirmed session healthy — stamp validated time
                     pool.confirm_session(account.id)
                     await repo.add_proxy_mb(account.id, 1.0)  # feed pre-check page
+                    # Ledger: healthy touch. Runs once per validation window
+                    # (~30 min), so the egress lookup cost is bounded. Also
+                    # writes back a rotated li_at to the DB.
+                    await _record_session_touch(
+                        pool_context, account, repo,
+                        job="dispatcher", result="ok",
+                    )
                 else:
                     logger.debug(
                         "dispatch.pre_check_skipped",
