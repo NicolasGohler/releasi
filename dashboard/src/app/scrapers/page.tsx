@@ -425,6 +425,7 @@ function SweepResultRow({ item }: { item: TgSweepResult }) {
 
 function TelegramSweepPanel() {
   const [status, setStatus] = useState<TgSweepStatus | null>(null);
+  const [unreachable, setUnreachable] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -432,10 +433,14 @@ function TelegramSweepPanel() {
     try {
       const data = await api.fetchTgSweepStatus();
       setStatus(data);
+      setUnreachable(false);
       // Keep newest results at top
       if (containerRef.current) containerRef.current.scrollTop = 0;
     } catch {
-      // silently ignore
+      // Surface the failure instead of silently looking "Idle" — a down or
+      // missing backend endpoint must not be indistinguishable from a healthy
+      // but idle sweeper.
+      setUnreachable(true);
     }
   };
 
@@ -459,7 +464,14 @@ function TelegramSweepPanel() {
   const isFlooding = !!status?.flood_wait_remaining_seconds && status.flood_wait_remaining_seconds > 0;
   const isProcessing = !!status?.locked && !isFlooding;
 
-  const badgeContent = isProcessing
+  const badgeContent = unreachable
+    ? (
+      <span className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium bg-red-500/15 text-red-400 border-red-500/30">
+        <AlertCircle className="h-3 w-3" />
+        Backend unreachable
+      </span>
+    )
+    : isProcessing
     ? (
       <span className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium bg-blue-500/15 text-blue-400 border-blue-500/30">
         <span className="relative flex h-2 w-2">
@@ -510,9 +522,14 @@ function TelegramSweepPanel() {
       {/* Status + last processed */}
       <div className="flex items-center gap-3 flex-wrap">
         {badgeContent}
-        {status?.last_processed_at && (
+        {!unreachable && status?.last_processed_at && (
           <span className="text-xs text-muted-foreground">
             Last processed {relTime(status.last_processed_at)}
+          </span>
+        )}
+        {unreachable && (
+          <span className="text-xs text-red-400/80">
+            Can&apos;t reach the status endpoint — the sweeper may still be running.
           </span>
         )}
       </div>

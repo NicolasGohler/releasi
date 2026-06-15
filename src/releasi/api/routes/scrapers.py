@@ -293,11 +293,21 @@ async def get_tg_sweep_status(repo: Repository = Depends(get_repo)):
         flood_wait_until_iso = _tg_flood_wait_until.isoformat()
         flood_wait_remaining_seconds = int((_tg_flood_wait_until - now).total_seconds())
 
+    # Prefer the in-memory timestamp (set on each sweep), but fall back to the
+    # newest tg_sweep_searched event so the value survives a container restart
+    # — otherwise every deploy blanks "Last processed" until the next cycle.
+    if _tg_last_processed_at:
+        last_processed_at = _tg_last_processed_at.isoformat()
+    elif recent:
+        last_processed_at = recent[0]["searched_at"]
+    else:
+        last_processed_at = None
+
     return {
         "locked": _tg_sweep_lock.locked(),
         "flood_wait_until": flood_wait_until_iso,
         "flood_wait_remaining_seconds": flood_wait_remaining_seconds,
-        "last_processed_at": _tg_last_processed_at.isoformat() if _tg_last_processed_at else None,
+        "last_processed_at": last_processed_at,
         "pending_count": stats["pending_count"],
         "searched_count": stats["searched_count"],
         "found_count": stats["found_count"],
