@@ -477,6 +477,21 @@ CryptoRank and RootData require valid session cookies to avoid CAPTCHAs. Cookies
 - **Sites**: `cryptorank` (domain: `cryptorank.io`) and `rootdata` (domain: `rootdata.com`)
 - **Conflict guard**: `ScraperSessionManager` refuses to start if a LinkedIn `LoginSessionManager` session is active (shared Xvfb/VNC port).
 
+## Telegram Enrichment Sweep Status
+
+The `/scrapers` page also hosts the **Telegram Enrichment** panel, which monitors the committed `tg_enrichment_sweep` scheduler job (one unenriched lead looked up every 20 min).
+
+- **Endpoint**: `GET /api/v1/scrapers/tg-sweep/status` (`routes/scrapers.py`) — returns live sweeper state (`locked`, `flood_wait_until`/`flood_wait_remaining_seconds`, `last_processed_at`) plus `pending_count`/`searched_count`/`found_count` and the last 20 searched leads. Backed by `repo.get_tg_sweep_stats()` and `repo.get_recent_tg_sweep_results()`.
+- **`last_processed_at` survives restarts**: it prefers the in-memory `_tg_last_processed_at` global (set each sweep) but falls back to the newest `tg_sweep_searched` event so a deploy doesn't blank it.
+- **Panel fails loud, not silent**: on fetch error the `TelegramSweepPanel` shows a red "Backend unreachable" badge instead of falling back to a fake "Idle" — a 404/down endpoint must never look like a healthy idle sweeper. Don't reintroduce a silent `catch`.
+
+## Lead-List Dispatch Priority
+
+When a campaign has multiple assigned lead lists, `campaign_lead_lists.priority` (migration 030, higher = dispatched first) controls which list's pending leads go out first. `get_pending_leads_via_assignments` orders by list priority then `Lead.created_at`. Default 0 preserves legacy created-at ordering.
+
+- Reorder via `PUT /api/v1/campaigns/{id}/lists/order` with `{ordered_list_ids: [...]}` (highest-priority-first → assigned `priority = n - index`).
+- Dashboard: campaign **Lists** tab has ▲/▼ controls and a "Priority" badge on the top list.
+
 ## Phase Status
 - Phase 1 (Foundation): COMPLETE — CLI, CSV import, template rendering, browser module
 - Phase 2 (Scheduling & Safety): COMPLETE — Clustered planner, warmup, cooldown, APScheduler, stealth, noise, proxy/timezone
