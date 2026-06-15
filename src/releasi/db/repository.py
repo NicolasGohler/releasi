@@ -2179,6 +2179,94 @@ class Repository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_tg_sweep_stats(self) -> dict:
+        """Stats for the Telegram enrichment sweep dashboard panel.
+
+        Returns pending_count (eligible but not yet searched), searched_count
+        (ever attempted), and found_count (found via sweep — source='sweep').
+        """
+        # Reuse the same eligibility predicates as get_next_lead_for_tg_sweep
+        already_searched = (
+            select(LeadEvent.id)
+            .where(LeadEvent.lead_id == Lead.id)
+            .where(LeadEvent.event_type == "tg_sweep_searched")
+            .exists()
+        )
+        legacy_enabled = (
+            select(LeadList.id)
+            .where(LeadList.id == Lead.lead_list_id)
+            .where(LeadList.tg_enrich_enabled == True)  # noqa: E712
+            .exists()
+        )
+        membership_enabled = (
+            select(LeadListMembership.lead_list_id)
+            .join(LeadList, LeadList.id == LeadListMembership.lead_list_id)
+            .where(LeadListMembership.lead_id == Lead.id)
+            .where(LeadList.tg_enrich_enabled == True)  # noqa: E712
+            .exists()
+        )
+        pending_r = await self.session.execute(
+            select(func.count())
+            .select_from(Lead)
+            .where(Lead.telegram_username.is_(None))
+            .where(not_(already_searched))
+            .where(or_(legacy_enabled, membership_enabled))
+            .where(Lead.first_name.isnot(None))
+        )
+        pending_count = pending_r.scalar_one()
+
+        searched_r = await self.session.execute(
+            select(func.count(func.distinct(LeadEvent.lead_id)))
+            .where(LeadEvent.event_type == "tg_sweep_searched")
+        )
+        searched_count = searched_r.scalar_one()
+
+        # Count leads found via sweep specifically (details->source == "sweep")
+        found_r = await self.session.execute(
+            select(func.count(func.distinct(LeadEvent.lead_id)))
+            .where(LeadEvent.event_type == "telegram_found")
+            .where(func.json_extract(LeadEvent.details, "$.source") == "sweep")
+        )
+        found_count = found_r.scalar_one()
+
+        return {
+            "pending_count": pending_count,
+            "searched_count": searched_count,
+            "found_count": found_count,
+        }
+
+    async def get_recent_tg_sweep_results(self, limit: int = 20) -> list:
+        """Return the last `limit` tg_sweep_searched events with lead info."""
+        stmt = (
+            select(
+                LeadEvent.lead_id,
+                LeadEvent.details,
+                LeadEvent.created_at,
+                Lead.first_name,
+                Lead.last_name,
+                Lead.company,
+                Lead.telegram_username,
+            )
+            .join(Lead, Lead.id == LeadEvent.lead_id)
+            .where(LeadEvent.event_type == "tg_sweep_searched")
+            .order_by(LeadEvent.created_at.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        rows = result.all()
+        return [
+            {
+                "lead_id": str(row.lead_id),
+                "lead_name": f"{row.first_name or ''} {row.last_name or ''}".strip(),
+                "company": row.company,
+                "found": bool(row.telegram_username),
+                "telegram_username": row.telegram_username,
+                "searched_at": row.created_at.isoformat(),
+                "match": (row.details or {}).get("match"),
+            }
+            for row in rows
+        ]
+
     async def list_activity(
         self,
         page: int = 1,

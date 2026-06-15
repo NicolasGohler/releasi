@@ -273,6 +273,38 @@ async def get_fundraising_run_log(tail: int = 200):
         return {"lines": [f"Error reading log: {e}"], "total_lines": 0}
 
 
+@router.get("/scrapers/tg-sweep/status")
+async def get_tg_sweep_status(repo: Repository = Depends(get_repo)):
+    """Return real-time Telegram enrichment sweeper status and stats."""
+    # Lazy import to avoid circular import (runner imports from db/repository)
+    from releasi.scheduler.runner import (
+        _tg_sweep_lock,
+        _tg_flood_wait_until,
+        _tg_last_processed_at,
+    )
+
+    stats = await repo.get_tg_sweep_stats()
+    recent = await repo.get_recent_tg_sweep_results(limit=20)
+
+    flood_wait_remaining_seconds = None
+    flood_wait_until_iso = None
+    now = datetime.utcnow()
+    if _tg_flood_wait_until and _tg_flood_wait_until > now:
+        flood_wait_until_iso = _tg_flood_wait_until.isoformat()
+        flood_wait_remaining_seconds = int((_tg_flood_wait_until - now).total_seconds())
+
+    return {
+        "locked": _tg_sweep_lock.locked(),
+        "flood_wait_until": flood_wait_until_iso,
+        "flood_wait_remaining_seconds": flood_wait_remaining_seconds,
+        "last_processed_at": _tg_last_processed_at.isoformat() if _tg_last_processed_at else None,
+        "pending_count": stats["pending_count"],
+        "searched_count": stats["searched_count"],
+        "found_count": stats["found_count"],
+        "recent_results": recent,
+    }
+
+
 @router.get("/scrapers")
 async def list_scrapers(repo: Repository = Depends(get_repo)):
     """Return cookie freshness status for all scraper sites."""
