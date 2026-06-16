@@ -536,15 +536,6 @@ export function useFindTelegramStatus(leadId: string, taskId: string | null) {
   });
 }
 
-// ── Activity ──────────────────────────────────────────────────────────────
-
-export function useGlobalActivity() {
-  return useQuery({
-    queryKey: ["activity"],
-    queryFn: () => api.fetchGlobalActivity(),
-  });
-}
-
 export function useEnrichLeadPhone(leadId: string) {
   const qc = useQueryClient();
   return useMutation({

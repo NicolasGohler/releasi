@@ -55,7 +55,7 @@ def create_app() -> FastAPI:
     app.add_middleware(SlowAPIMiddleware)
 
     # Mount routes
-    from releasi.api.routes import health, accounts, campaigns, leads, lead_lists, stats, telegram, scrapers, activity, users
+    from releasi.api.routes import health, accounts, campaigns, leads, lead_lists, telegram, scrapers, activity, users
 
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(accounts.router, prefix="/api/v1")
@@ -63,7 +63,6 @@ def create_app() -> FastAPI:
     app.include_router(campaigns.router, prefix="/api/v1")
     app.include_router(leads.router, prefix="/api/v1")
     app.include_router(lead_lists.router, prefix="/api/v1")
-    app.include_router(stats.router, prefix="/api/v1")
     app.include_router(telegram.router, prefix="/api/v1")
     app.include_router(scrapers.router, prefix="/api/v1")
     app.include_router(activity.router, prefix="/api/v1")

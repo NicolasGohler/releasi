@@ -472,11 +472,6 @@ export const fetchTgEnrichmentStatus = (campaignId: string) =>
 export const startTgEnrichment = (campaignId: string) =>
   apiFetch<{ message: string }>(`/campaigns/${campaignId}/leads/enrich/telegram`, { method: "POST" });
 
-// ── Activity ──────────────────────────────────────────────────────────────
-
-export const fetchGlobalActivity = (limit = 500) =>
-  apiFetch<ActionLog[]>(`/activity?limit=${limit}`);
-
 // ── Avatars ──────────────────────────────────────────────────────────────
 
 export const getAvatarUrl = (accountId: string) =>
