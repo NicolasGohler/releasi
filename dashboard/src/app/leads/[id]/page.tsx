@@ -630,8 +630,26 @@ function NoteItem({ note, leadId }: { note: LeadNote; leadId: string }) {
   );
 }
 
-function NotesSection({ leadId }: { leadId: string }) {
-  const { data: notes, isLoading } = useLeadNotes(leadId);
+// ── Merged Notes & Activity feed (composer on top, interleaved by time) ───────
+
+function tsMillis(dateStr: string): number {
+  return new Date(dateStr.endsWith("Z") ? dateStr : dateStr + "Z").getTime();
+}
+
+interface ActivityFeedProps {
+  lead: Lead;
+  notes: LeadNote[] | undefined;
+  notesLoading: boolean;
+  activity: LeadActivity[] | undefined;
+  activityLoading: boolean;
+}
+
+type FeedItem =
+  | { kind: "note"; created_at: string; note: LeadNote }
+  | { kind: "activity"; created_at: string; entry: LeadActivity };
+
+function ActivityFeed({ lead, notes, notesLoading, activity, activityLoading }: ActivityFeedProps) {
+  const leadId = lead.id;
   const createNote = useCreateLeadNote(leadId);
   const [draft, setDraft] = useState("");
 
@@ -646,14 +664,58 @@ function NotesSection({ leadId }: { leadId: string }) {
     }
   }
 
+  const loading = notesLoading || activityLoading;
+
+  // Interleave notes + activity, newest-first
+  const items: FeedItem[] = [
+    ...(notes ?? []).map((n): FeedItem => ({ kind: "note", created_at: n.created_at, note: n })),
+    ...(activity ?? []).map((e): FeedItem => ({ kind: "activity", created_at: e.created_at, entry: e })),
+  ].sort((a, b) => tsMillis(b.created_at) - tsMillis(a.created_at));
+
   return (
     <div className="rounded-xl border bg-card p-4">
+      {/* Campaign status summary */}
+      <div className="mb-4 pb-4 border-b">
+        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Campaign Status</h2>
+        {lead.campaign_name && (
+          <p className="text-sm font-medium mb-1">{lead.campaign_name}</p>
+        )}
+        <div className="mb-3">
+          <StatusBadge status={lead.status} />
+        </div>
+        {lead.error_message && (
+          <div className="rounded-md bg-rose-500/10 border border-rose-500/20 px-3 py-2 mb-3">
+            <p className="text-xs text-rose-600 dark:text-rose-400 font-medium">Error</p>
+            <p className="text-xs text-rose-600/80 dark:text-rose-400/80 mt-0.5">
+              {lead.error_message.replace(/_/g, " ")}
+            </p>
+            {lead.retry_count > 0 && (
+              <p className="text-xs text-rose-600/60 mt-0.5">{lead.retry_count} retry attempt{lead.retry_count !== 1 ? "s" : ""}</p>
+            )}
+          </div>
+        )}
+
+        <div className="space-y-0">
+          <MilestoneRow icon={<Clock className="h-3.5 w-3.5" />} label="Imported" dateStr={lead.created_at} />
+          <MilestoneRow icon={<UserCheck className="h-3.5 w-3.5" />} label="Connection requested" dateStr={lead.connection_requested_at} />
+          <MilestoneRow icon={<UserCheck className="h-3.5 w-3.5" />} label="Connection accepted" dateStr={lead.connection_accepted_at} />
+          <MilestoneRow icon={<MessageSquare className="h-3.5 w-3.5" />} label="Follow-up sent" dateStr={lead.followup_sent_at} />
+          {lead.scheduled_at && lead.status === "scheduled" && (
+            <MilestoneRow icon={<Clock className="h-3.5 w-3.5" />} label="Scheduled for" dateStr={lead.scheduled_at} />
+          )}
+          {lead.updated_at && (
+            <div className="pt-2 mt-1 border-t">
+              <p className="text-xs text-muted-foreground/50">
+                Last updated {relativeDate(lead.updated_at).label}
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+
       <div className="flex items-center gap-2 mb-3">
         <NotebookPen className="h-3.5 w-3.5 text-muted-foreground" />
-        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notes</h2>
-        {notes && notes.length > 0 && (
-          <span className="text-xs text-muted-foreground/50">{notes.length}</span>
-        )}
+        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notes & Activity</h2>
       </div>
 
       {/* Composer */}
@@ -678,14 +740,24 @@ function NotesSection({ leadId }: { leadId: string }) {
         </div>
       </div>
 
-      {/* Notes list */}
-      <div className="mt-4 space-y-2">
-        {isLoading ? (
-          <Skeleton className="h-16 w-full" />
-        ) : !notes || notes.length === 0 ? (
-          <p className="text-sm text-muted-foreground/60 text-center py-4">No notes yet</p>
+      {/* Merged feed */}
+      <div className="mt-4">
+        {loading ? (
+          <div className="space-y-2">
+            {[1, 2, 3].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
+          </div>
+        ) : items.length === 0 ? (
+          <p className="text-sm text-muted-foreground/60 text-center py-4">No notes or activity yet</p>
         ) : (
-          notes.map((note) => <NoteItem key={note.id} note={note} leadId={leadId} />)
+          <div className="max-h-[32rem] overflow-y-auto -mx-1 px-1 space-y-2">
+            {items.map((item) =>
+              item.kind === "note" ? (
+                <NoteItem key={`note-${item.note.id}`} note={item.note} leadId={leadId} />
+              ) : (
+                <ActivityItem key={`act-${item.entry.id}`} entry={item.entry} />
+              )
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -701,6 +773,7 @@ export default function LeadDetailPage() {
 
   const { data: lead, isLoading } = useLead(id);
   const { data: activity, isLoading: activityLoading } = useLeadActivity(id);
+  const { data: notes, isLoading: notesLoading } = useLeadNotes(id);
   const update = useUpdateLead(id);
   const skip = useSkipLead();
   const requeue = useRequeueLead();
@@ -889,6 +962,13 @@ export default function LeadDetailPage() {
                   {enrichPhone.isPending ? "…" : "Enrich"}
                 </button>
               </div>
+
+              {lead.lead_list_name && (
+                <div className="flex flex-col gap-0.5 py-1.5">
+                  <span className="text-xs font-medium text-muted-foreground">List</span>
+                  <span className="text-sm min-h-[1.75rem] flex items-center">{lead.lead_list_name}</span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -938,6 +1018,20 @@ export default function LeadDetailPage() {
             />
           </div>
 
+        </div>
+
+        {/* Right: status + additional data + notes/activity */}
+        <div className="space-y-4">
+
+          {/* Campaign status + Notes & Activity (merged) */}
+          <ActivityFeed
+            lead={lead}
+            notes={notes}
+            notesLoading={notesLoading}
+            activity={activity}
+            activityLoading={activityLoading}
+          />
+
           {/* Extra data if any */}
           {lead.extra_data && Object.keys(lead.extra_data).length > 0 && (
             <div className="rounded-xl border bg-card p-4">
@@ -952,72 +1046,6 @@ export default function LeadDetailPage() {
               </div>
             </div>
           )}
-          {/* Notes */}
-          <NotesSection leadId={lead.id} />
-        </div>
-
-        {/* Right: status + activity */}
-        <div className="space-y-4">
-
-          {/* Status & timestamps card */}
-          <div className="rounded-xl border bg-card p-4">
-            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Campaign Status</h2>
-            {lead.campaign_name && (
-              <p className="text-sm font-medium mb-1">{lead.campaign_name}</p>
-            )}
-            {lead.lead_list_name && (
-              <p className="text-xs text-muted-foreground mb-3">List: {lead.lead_list_name}</p>
-            )}
-            <div className="mb-3">
-              <StatusBadge status={lead.status} />
-            </div>
-            {lead.error_message && (
-              <div className="rounded-md bg-rose-500/10 border border-rose-500/20 px-3 py-2 mb-3">
-                <p className="text-xs text-rose-600 dark:text-rose-400 font-medium">Error</p>
-                <p className="text-xs text-rose-600/80 dark:text-rose-400/80 mt-0.5">
-                  {lead.error_message.replace(/_/g, " ")}
-                </p>
-                {lead.retry_count > 0 && (
-                  <p className="text-xs text-rose-600/60 mt-0.5">{lead.retry_count} retry attempt{lead.retry_count !== 1 ? "s" : ""}</p>
-                )}
-              </div>
-            )}
-
-            <div className="space-y-0">
-              <MilestoneRow icon={<Clock className="h-3.5 w-3.5" />} label="Imported" dateStr={lead.created_at} />
-              <MilestoneRow icon={<UserCheck className="h-3.5 w-3.5" />} label="Connection requested" dateStr={lead.connection_requested_at} />
-              <MilestoneRow icon={<UserCheck className="h-3.5 w-3.5" />} label="Connection accepted" dateStr={lead.connection_accepted_at} />
-              <MilestoneRow icon={<MessageSquare className="h-3.5 w-3.5" />} label="Follow-up sent" dateStr={lead.followup_sent_at} />
-              {lead.scheduled_at && lead.status === "scheduled" && (
-                <MilestoneRow icon={<Clock className="h-3.5 w-3.5" />} label="Scheduled for" dateStr={lead.scheduled_at} />
-              )}
-              {lead.updated_at && (
-                <div className="pt-2 mt-1 border-t">
-                  <p className="text-xs text-muted-foreground/50">
-                    Last updated {relativeDate(lead.updated_at).label}
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Activity log */}
-          <div className="rounded-xl border bg-card p-4">
-            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Activity</h2>
-            {activityLoading ? (
-              <div className="space-y-2">
-                {[1, 2, 3].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
-              </div>
-            ) : !activity || activity.length === 0 ? (
-              <p className="text-sm text-muted-foreground/60 text-center py-4">No activity yet</p>
-            ) : (
-              <div className="max-h-80 overflow-y-auto -mx-1 px-1">
-                {activity.map((entry) => (
-                  <ActivityItem key={entry.id} entry={entry} />
-                ))}
-              </div>
-            )}
-          </div>
         </div>
       </div>
     </div>
