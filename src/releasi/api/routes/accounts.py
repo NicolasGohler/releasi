@@ -351,6 +351,24 @@ async def check_connection(
         raise HTTPException(status_code=404, detail="Account not found")
     if not account.li_at_cookie:
         return {"valid": False, "reason": "no_cookie", "elapsed_ms": 0}
+    # Only probe accounts the system believes hold a working session. An account
+    # that is cookie_expired / suspended / paused has no known-good cookie to
+    # validate — and one that was never genuinely connected to LinkedIn (login
+    # captured a dead li_at, as with the 16-minute account) has nothing to check.
+    # Probing it just burns a browser session. Recovery from cookie_expired
+    # happens via re-login or the cookie-health sweep, not this endpoint.
+    if account.status != "active":
+        status_val = getattr(account.status, "value", account.status)
+        return {
+            "valid": False,
+            "reason": "account_not_active",
+            "status": status_val,
+            "elapsed_ms": 0,
+            "message": (
+                f"Account status is '{status_val}', not active — no valid cookie "
+                "to check. Re-login to restore the session."
+            ),
+        }
 
     start = time.monotonic()
 
@@ -386,8 +404,6 @@ async def check_connection(
             if not feed.session_valid:
                 await repo.update_account(account, status="cookie_expired")
                 return {"valid": False, "reason": "redirected_to_login", "elapsed_ms": _ms()}
-            if account.status == "cookie_expired":
-                await repo.update_account(account, status="active")
             return {"valid": True, "elapsed_ms": _ms()}
         finally:
             await pool.release_idle(account.id)
@@ -406,8 +422,6 @@ async def check_connection(
         )
         valid = await browser.validate_session()
         if valid:
-            if account.status == "cookie_expired":
-                await repo.update_account(account, status="active")
             return {"valid": True, "elapsed_ms": _ms()}
         await repo.update_account(account, status="cookie_expired")
         return {"valid": False, "reason": "redirected_to_login", "elapsed_ms": _ms()}
