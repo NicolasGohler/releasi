@@ -456,6 +456,24 @@ class LeadEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
+class User(Base):
+    """Dashboard user with handle+password login.
+
+    Attribution target for human-driven actions across the app. Scheduler
+    jobs and API-key-only calls stay attributed to NULL ("System").
+    """
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    handle: Mapped[str] = mapped_column(String(64), unique=True)
+    display_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    password_hash: Mapped[str] = mapped_column(Text)
+    is_superadmin: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class SessionEvent(Base):
     """Per-account session-health ledger (migration 031).
 

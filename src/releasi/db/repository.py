@@ -18,6 +18,7 @@ from releasi.db.models import (
     LeadEvent,
     ScraperCookie,
     SessionEvent,
+    User,
 )
 
 
@@ -2466,3 +2467,58 @@ class Repository:
         if row:
             row.last_used_at = datetime.utcnow()
             await self.session.commit()
+
+    # ── Users (auth + attribution) ─────────────────────────────────────────
+
+    async def count_users(self) -> int:
+        result = await self.session.execute(select(func.count()).select_from(User))
+        return int(result.scalar_one())
+
+    async def get_user(self, user_id: str) -> Optional[User]:
+        result = await self.session.execute(select(User).where(User.id == user_id))
+        return result.scalar_one_or_none()
+
+    async def get_user_by_handle(self, handle: str) -> Optional[User]:
+        result = await self.session.execute(
+            select(User).where(User.handle == handle.lower())
+        )
+        return result.scalar_one_or_none()
+
+    async def list_users(self) -> Sequence[User]:
+        result = await self.session.execute(
+            select(User).order_by(User.created_at.asc())
+        )
+        return result.scalars().all()
+
+    async def create_user(
+        self,
+        *,
+        handle: str,
+        password_hash: str,
+        display_name: Optional[str] = None,
+        is_superadmin: bool = False,
+    ) -> User:
+        user = User(
+            handle=handle.lower(),
+            display_name=display_name,
+            password_hash=password_hash,
+            is_superadmin=is_superadmin,
+        )
+        self.session.add(user)
+        await self.session.commit()
+        await self.session.refresh(user)
+        return user
+
+    async def update_user(self, user: User, **kwargs) -> User:
+        for k, v in kwargs.items():
+            if hasattr(user, k):
+                setattr(user, k, v)
+        await self.session.commit()
+        await self.session.refresh(user)
+        return user
+
+    async def touch_user_last_seen(self, user_id: str) -> None:
+        await self.session.execute(
+            update(User).where(User.id == user_id).values(last_seen_at=datetime.utcnow())
+        )
+        await self.session.commit()

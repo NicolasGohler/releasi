@@ -506,6 +506,30 @@ class ActivityPage(BaseModel):
     pages: int
 
 
+# ── Users / Auth ──────────────────────────────────────────────────────────
+
+class UserOut(BaseModel):
+    id: str
+    handle: str
+    display_name: Optional[str] = None
+    is_superadmin: bool
+    is_active: bool
+    created_at: datetime
+    last_seen_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class LoginRequest(BaseModel):
+    handle: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    user: UserOut
+
+
 # ── Health ────────────────────────────────────────────────────────────────
 
 class HealthResponse(BaseModel):

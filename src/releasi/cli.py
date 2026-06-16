@@ -46,8 +46,10 @@ app = typer.Typer(name="linauto", help="LinkedIn Automation Tool", no_args_is_he
 # Sub-command groups
 account_app = typer.Typer(help="Manage LinkedIn accounts")
 campaign_app = typer.Typer(help="Manage campaigns")
+user_app = typer.Typer(help="Manage dashboard users")
 app.add_typer(account_app, name="account")
 app.add_typer(campaign_app, name="campaign")
+app.add_typer(user_app, name="user")
 
 
 def _run(coro):
@@ -212,6 +214,119 @@ def account_update_cookie(
         await _cleanup(session)
 
     _run(_update())
+
+
+# ── User commands ──────────────────────────────────────────────────────────
+
+@user_app.command("add")
+def user_add(
+    handle: str = typer.Option(..., "--handle", "-h", help="Login handle (lowercase, no spaces)"),
+    password: str = typer.Option(..., "--password", "-p", prompt=True, hide_input=True, confirmation_prompt=True),
+    display_name: str = typer.Option(None, "--display-name", "-d", help="Shown in UI (defaults to handle)"),
+    superadmin: bool = typer.Option(False, "--superadmin", help="Grant admin panel access"),
+):
+    """Create a dashboard user."""
+    async def _add():
+        from releasi.auth.passwords import hash_password
+        repo, session = await _get_repo()
+        if await repo.get_user_by_handle(handle):
+            console.print(f"[red]User '{handle}' already exists.[/red]")
+            raise typer.Exit(1)
+        user = await repo.create_user(
+            handle=handle,
+            password_hash=hash_password(password),
+            display_name=display_name or handle,
+            is_superadmin=superadmin,
+        )
+        role = "superadmin" if user.is_superadmin else "user"
+        console.print(f"[green]Created {role} '{user.handle}' (id: {user.id[:8]}...)[/green]")
+        await _cleanup(session)
+
+    _run(_add())
+
+
+@user_app.command("list")
+def user_list():
+    """List dashboard users."""
+    async def _list():
+        repo, session = await _get_repo()
+        users = await repo.list_users()
+        if not users:
+            console.print("[dim]No users. Run 'releasi user add --handle <name> --superadmin'.[/dim]")
+            return
+
+        table = Table(title="Dashboard Users")
+        table.add_column("Handle", style="cyan")
+        table.add_column("Display name")
+        table.add_column("Role")
+        table.add_column("Active")
+        table.add_column("Last seen")
+
+        for u in users:
+            role = "superadmin" if u.is_superadmin else "user"
+            active = "[green]yes[/green]" if u.is_active else "[red]no[/red]"
+            last_seen = u.last_seen_at.strftime("%Y-%m-%d %H:%M") if u.last_seen_at else "-"
+            table.add_row(u.handle, u.display_name or "-", role, active, last_seen)
+        console.print(table)
+        await _cleanup(session)
+
+    _run(_list())
+
+
+@user_app.command("set-password")
+def user_set_password(
+    handle: str = typer.Option(..., "--handle", "-h", help="User handle"),
+    password: str = typer.Option(..., "--password", "-p", prompt=True, hide_input=True, confirmation_prompt=True),
+):
+    """Reset a user's password (superadmin-equivalent operation — CLI access required)."""
+    async def _set():
+        from releasi.auth.passwords import hash_password
+        repo, session = await _get_repo()
+        user = await repo.get_user_by_handle(handle)
+        if not user:
+            console.print(f"[red]User '{handle}' not found.[/red]")
+            raise typer.Exit(1)
+        await repo.update_user(user, password_hash=hash_password(password))
+        console.print(f"[green]Password updated for '{handle}'.[/green]")
+        await _cleanup(session)
+
+    _run(_set())
+
+
+@user_app.command("deactivate")
+def user_deactivate(
+    handle: str = typer.Option(..., "--handle", "-h", help="User handle"),
+):
+    """Disable a user's login without deleting their attribution history."""
+    async def _deact():
+        repo, session = await _get_repo()
+        user = await repo.get_user_by_handle(handle)
+        if not user:
+            console.print(f"[red]User '{handle}' not found.[/red]")
+            raise typer.Exit(1)
+        await repo.update_user(user, is_active=False)
+        console.print(f"[yellow]User '{handle}' deactivated.[/yellow]")
+        await _cleanup(session)
+
+    _run(_deact())
+
+
+@user_app.command("activate")
+def user_activate(
+    handle: str = typer.Option(..., "--handle", "-h", help="User handle"),
+):
+    """Re-enable a deactivated user."""
+    async def _act():
+        repo, session = await _get_repo()
+        user = await repo.get_user_by_handle(handle)
+        if not user:
+            console.print(f"[red]User '{handle}' not found.[/red]")
+            raise typer.Exit(1)
+        await repo.update_user(user, is_active=True)
+        console.print(f"[green]User '{handle}' activated.[/green]")
+        await _cleanup(session)
+
+    _run(_act())
 
 
 # ── Campaign commands ──────────────────────────────────────────────────────
