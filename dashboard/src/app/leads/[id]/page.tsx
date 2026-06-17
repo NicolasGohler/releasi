@@ -905,7 +905,7 @@ export default function LeadDetailPage() {
 
       {/* Body */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left: editable profile */}
+        {/* Left (main): editable profile + notes & activity */}
         <div className="lg:col-span-2 space-y-4">
 
           {/* Profile card */}
@@ -972,6 +972,20 @@ export default function LeadDetailPage() {
             </div>
           </div>
 
+          {/* Campaign status + Notes & Activity (merged) */}
+          <ActivityFeed
+            lead={lead}
+            notes={notes}
+            notesLoading={notesLoading}
+            activity={activity}
+            activityLoading={activityLoading}
+          />
+
+        </div>
+
+        {/* Right: social & links + additional data */}
+        <div className="space-y-4">
+
           {/* Social card */}
           <div className="rounded-xl border bg-card p-4 space-y-1">
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Social & Links</h2>
@@ -1017,20 +1031,6 @@ export default function LeadDetailPage() {
               }}
             />
           </div>
-
-        </div>
-
-        {/* Right: status + additional data + notes/activity */}
-        <div className="space-y-4">
-
-          {/* Campaign status + Notes & Activity (merged) */}
-          <ActivityFeed
-            lead={lead}
-            notes={notes}
-            notesLoading={notesLoading}
-            activity={activity}
-            activityLoading={activityLoading}
-          />
 
           {/* Extra data if any */}
           {lead.extra_data && Object.keys(lead.extra_data).length > 0 && (
