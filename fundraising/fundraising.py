@@ -1998,6 +1998,24 @@ def gather_all():
     print(f" Total people collected: {len(all_people)}")
     print("="*60 + "\n")
 
+    # ── Dedup all_people by LinkedIn URL BEFORE Phase 4 ──────────────────────
+    # Apollo charges a credit per record submitted to bulk_match — if the same
+    # person shows up twice (e.g. CryptoRank team scrape + Apollo's company-name
+    # supplement both find them), deduping after enrichment is too late, we've
+    # already paid twice for one person. Dedup first instead.
+    seen_linkedin: set[str] = set()
+    deduped_people: list[dict] = []
+    for p in all_people:
+        url = (p.get('linkedin_url') or '').strip()
+        if url:
+            if url in seen_linkedin:
+                continue
+            seen_linkedin.add(url)
+        deduped_people.append(p)
+    if len(deduped_people) < len(all_people):
+        print(f" Deduped {len(all_people) - len(deduped_people)} duplicate people (by LinkedIn URL) before enrichment", flush=True)
+    all_people = deduped_people
+
     # ── Phase 4: Email enrichment (Apollo bulk, costs credits) ───────────────
     # Skip anyone who already has an email — either scraped directly, or filled by
     # Phase 2's credit cache. Then check the credit cache again for the remainder
@@ -2033,20 +2051,6 @@ def gather_all():
                     person['email'] = email
                     enriched_count += 1
         print(f"\n Enrichment complete: Added emails to {enriched_count} people")
-
-    # ── Dedup all_people by LinkedIn URL before Telegram (Apollo batches produce duplicates) ──
-    seen_linkedin: set[str] = set()
-    deduped_people: list[dict] = []
-    for p in all_people:
-        url = (p.get('linkedin_url') or '').strip()
-        if url:
-            if url in seen_linkedin:
-                continue
-            seen_linkedin.add(url)
-        deduped_people.append(p)
-    if len(deduped_people) < len(all_people):
-        print(f" Deduped {len(all_people) - len(deduped_people)} duplicate people (by LinkedIn URL) before Telegram phase", flush=True)
-    all_people = deduped_people
 
     # ── Phase 5: Telegram resolution — DISABLED ──────────────────────────────
     # Inline resolution here was 900s/person sequential (Telethon flood-wait avoidance),
