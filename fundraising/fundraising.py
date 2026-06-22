@@ -35,6 +35,25 @@ APOLLO_API_KEY = _SETTINGS.get('apollo_api_key') or os.getenv("APOLLO_API_KEY")
 APOLLO_API_URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
 APOLLO_BULK_ENRICHMENT_URL = "https://api.apollo.io/api/v1/people/bulk_match"
 
+# Set the first time any Apollo call reports "insufficient credits" — once True,
+# all subsequent Apollo calls in this run are skipped instead of repeating the failure
+# across every remaining project (Apollo credits don't refill mid-run).
+_apollo_credits_exhausted = False
+
+
+def _mark_apollo_credits_exhausted():
+    global _apollo_credits_exhausted
+    if not _apollo_credits_exhausted:
+        _apollo_credits_exhausted = True
+        try:
+            send_error_to_slack(
+                "⚠️ Apollo API credits exhausted mid-run — remaining projects will skip "
+                "Apollo enrichment (CryptoRank team scraping still runs).\n"
+                "Upgrade plan or wait for next billing cycle: https://app.apollo.io/#/settings/plans/upgrade"
+            )
+        except Exception:
+            pass
+
 # Checkpoint — survives mid-run crashes so scraping doesn't repeat on retry
 CHECKPOINT_FILE = "fundraising_checkpoint.json"
 
@@ -906,6 +925,10 @@ def fetch_team_from_apollo(company_name, company_website=None):
     1. Search with mixed_people/api_search to get person IDs (returns obfuscated data)
     2. Enrich with people/bulk_match using IDs to get full profiles (names, LinkedIn, etc.)
     """
+    if _apollo_credits_exhausted:
+        print(f"\n ℹ Apollo credits exhausted earlier this run — skipping Apollo for {company_name}")
+        return []
+
     print(f"\n{'='*60}")
     print(f" APOLLO: Searching for {company_name} team on Apollo.io")
     print(f"{'='*60}")
@@ -1027,7 +1050,7 @@ def fetch_team_from_apollo(company_name, company_website=None):
                 batch_ids = person_ids[i:i+10]
                 details = [{"id": pid} for pid in batch_ids]
 
-                enrich_payload = {"details": details}
+                enrich_payload = {"details": details, "reveal_personal_emails": True}
 
                 try:
                     enrich_response = requests.post(
@@ -1093,7 +1116,12 @@ def fetch_team_from_apollo(company_name, company_website=None):
                         print(f"  Rate limit reached during enrichment, returning partial results")
                         break
                     else:
-                        print(f"  Enrichment batch failed with status {enrich_response.status_code}")
+                        body = enrich_response.text[:300] if enrich_response.text else ""
+                        print(f"  Enrichment batch failed with status {enrich_response.status_code}: {body}")
+                        if "insufficient credits" in body.lower():
+                            print(f"  Apollo credits exhausted — stopping enrichment for this run")
+                            _mark_apollo_credits_exhausted()
+                            break
 
                 except requests.exceptions.Timeout:
                     print(f"  Enrichment request timed out")
@@ -1107,11 +1135,15 @@ def fetch_team_from_apollo(company_name, company_website=None):
         elif response.status_code == 401:
             print(f" Apollo API authentication failed - check API key")
         else:
-            print(f"  Apollo API returned status {response.status_code}")
+            body = ""
             try:
-                print(f" Response: {response.text[:300]}")
-            except:
+                body = response.text[:300]
+                print(f"  Apollo API returned status {response.status_code}")
+                print(f" Response: {body}")
+            except Exception:
                 pass
+            if "insufficient credits" in body.lower():
+                _mark_apollo_credits_exhausted()
 
     except requests.exceptions.Timeout:
         print(f"  Apollo API request timed out")
@@ -1130,6 +1162,10 @@ def enrich_people_with_emails(people_with_linkedin):
     if not people_with_linkedin:
         return {}
     
+    if _apollo_credits_exhausted:
+        print(f"\n ℹ Apollo credits exhausted earlier this run — skipping bulk email enrichment")
+        return {}
+
     print(f"\n{'='*60}")
     print(f" APOLLO BULK ENRICHMENT: Enriching {len(people_with_linkedin)} people with emails")
     print(f"{'='*60}")
@@ -1311,8 +1347,13 @@ def enrich_people_with_emails(people_with_linkedin):
                 print(f" Apollo API authentication failed - check API key")
                 break
             else:
-                print(f"  Apollo API returned status {response.status_code}: {response.text[:200]}")
-            
+                body = response.text[:300] if response.text else ""
+                print(f"  Apollo API returned status {response.status_code}: {body}")
+                if "insufficient credits" in body.lower():
+                    print(f"  Apollo credits exhausted — stopping bulk enrichment for this run")
+                    _mark_apollo_credits_exhausted()
+                    break
+
             # Add delay between batches to respect rate limits
             if i + batch_size < len(people_with_linkedin):
                 time.sleep(2)
