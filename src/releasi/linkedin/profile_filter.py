@@ -88,25 +88,29 @@ class ProfileFilter:
         the number from its parent's text. CSS selectors are tried as a
         fallback for any older LinkedIn layouts still in the wild.
         """
-        # Primary: JS content-based search (robust against obfuscated classes)
+        # Primary: JS content-based search (robust against obfuscated classes).
+        #
+        # CRITICAL: the count must come from the actual "<N>+ connections" label,
+        # NOT the mutual-connections line ("Matt, Frank and 45 other mutual
+        # connections"). LinkedIn renders the real count as a single element
+        # whose text is exactly "500+ connections" — the number and the word
+        # are no longer in separate child nodes, so matching an exact
+        # "connections" label and reading the parent no longer works.
+        #
+        # We scan every element and match the anchored pattern
+        # ^<digits>+? connections$ against its OWN text. The anchor guarantees
+        # the text starts with the number, so the mutual line (which starts
+        # with names) can never match. We additionally skip anything containing
+        # "mutual" as a belt-and-suspenders guard.
         try:
-            result = await page.evaluate("""
+            result = await page.evaluate(r"""
                 () => {
-                    // Find any <p> or <span> whose trimmed text is exactly
-                    // "connections" or "connection", then read the count from
-                    // the parent element's full text (LinkedIn renders the
-                    // number as a bare text node alongside the label child).
-                    const labels = document.querySelectorAll('p, span');
-                    for (const el of labels) {
-                        const t = (el.innerText || el.textContent || '').trim().toLowerCase();
-                        if (t !== 'connections' && t !== 'connection') continue;
-                        let cur = el.parentElement;
-                        for (let i = 0; i < 3 && cur; i++) {
-                            const full = (cur.innerText || cur.textContent || '').trim();
-                            const m = full.match(/^([\d,]+)\+?\s*connections?$/i);
-                            if (m) return m[1].replace(/,/g, '');
-                            cur = cur.parentElement;
-                        }
+                    const els = document.querySelectorAll('a, span, p, li');
+                    for (const el of els) {
+                        const t = (el.innerText || el.textContent || '').trim();
+                        if (/mutual/i.test(t)) continue;
+                        const m = t.match(/^([\d,]+)\+?\s*connections?$/i);
+                        if (m) return m[1].replace(/,/g, '');
                     }
                     return null;
                 }
@@ -118,15 +122,19 @@ class ProfileFilter:
         except Exception:
             pass
 
-        # Fallback: CSS selectors (may work on older/cached LinkedIn layouts)
+        # Fallback: CSS selectors (may work on older/cached LinkedIn layouts).
+        # Guard against the mutual-connections line: the substring-matching
+        # `span:has-text("connections")` selector also matches "... mutual
+        # connections", so we require the text to anchor on the count and
+        # reject anything mentioning "mutual" before parsing.
         for sel in selectors.PROFILE_CONNECTION_COUNT:
             try:
-                locator = page.locator(sel).first
-                if await locator.count() == 0:
-                    continue
-                text = (await locator.text_content() or "").strip()
-                if text:
-                    return self._parse_count(text)
+                for locator in await page.locator(sel).all():
+                    text = (await locator.text_content() or "").strip()
+                    if not text or "mutual" in text.lower():
+                        continue
+                    if re.match(r"^[\d,]+\+?\s*connections?$", text, re.I):
+                        return self._parse_count(text)
             except Exception:
                 continue
         return None

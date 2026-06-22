@@ -1040,7 +1040,7 @@ export default function LeadDetailPage() {
                 {Object.entries(lead.extra_data).map(([k, v]) => (
                   <div key={k} className="flex gap-2 text-sm">
                     <span className="text-muted-foreground min-w-[120px] capitalize">{k.replace(/_/g, " ")}</span>
-                    <span className="text-foreground break-all">{String(v)}</span>
+                    <ExtraDataValue value={String(v)} />
                   </div>
                 ))}
               </div>
@@ -1049,5 +1049,30 @@ export default function LeadDetailPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Renders an Additional Data value, collapsing long strings (e.g. the
+ *  "keywords" list) behind a Show more/less toggle. */
+function ExtraDataValue({ value }: { value: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const LIMIT = 140;
+  const isLong = value.length > LIMIT;
+
+  if (!isLong) {
+    return <span className="text-foreground break-all">{value}</span>;
+  }
+
+  return (
+    <span className="text-foreground break-all">
+      {expanded ? value : value.slice(0, LIMIT) + "…"}{" "}
+      <button
+        type="button"
+        onClick={() => setExpanded((e) => !e)}
+        className="text-primary hover:underline whitespace-nowrap text-xs font-medium"
+      >
+        {expanded ? "Show less" : "Show more"}
+      </button>
+    </span>
   );
 }
