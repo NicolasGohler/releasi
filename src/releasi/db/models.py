@@ -196,6 +196,7 @@ class Lead(Base):
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     phone: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    apollo_person_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
     twitter_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     telegram_username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     telegram_alternatives: Mapped[Optional[List]] = mapped_column(JSON, nullable=True)

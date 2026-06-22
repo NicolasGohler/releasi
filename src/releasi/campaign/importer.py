@@ -124,12 +124,17 @@ _COLUMN_MAP = {
     "state": "_state",
     "country": "_country",
     "region": "_state",
+    # apollo_person_id — lets future imports skip paying Apollo credits again
+    # for a person already enriched (see fundraising.py's credit cache)
+    "apollo_person_id": "apollo_person_id",
+    "apollo_id": "apollo_person_id",
 }
 
 # Standard fields that map directly to Lead model columns
 _STANDARD_FIELDS = {
     "first_name", "last_name", "company", "title",
     "email", "phone", "twitter_url", "telegram_username", "location",
+    "apollo_person_id",
 }
 
 
@@ -362,6 +367,7 @@ def parse_csv(
             twitter_url = None
             telegram_username = None
             location = None
+            apollo_person_id = None
             _city = None
             _state = None
             _country = None
@@ -393,6 +399,8 @@ def parse_csv(
                     telegram_username = normalize_telegram_username(value)
                 elif mapped_field == "location":
                     location = value
+                elif mapped_field == "apollo_person_id":
+                    apollo_person_id = value
                 elif mapped_field == "_city":
                     _city = value
                 elif mapped_field == "_state":
@@ -418,6 +426,7 @@ def parse_csv(
                 twitter_url=twitter_url,
                 telegram_username=telegram_username,
                 location=location,
+                apollo_person_id=apollo_person_id,
                 extra_data=extra_data if extra_data else None,
             )
             if campaign_id:

@@ -25,7 +25,7 @@ def _load_fundraising_settings() -> dict:
 _SETTINGS = _load_fundraising_settings()
 
 # Path to the shared Linauto SQLite DB (host path, outside Docker)
-LINAUTO_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'linauto.db')
+LINAUTO_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'releasi.db')
 
 # Configuration
 MAX_PROJECTS = 30 # Maximum projects to collect from each source
@@ -923,12 +923,15 @@ def extract_company_website(project_url, context):
     page.close()
     return result
 
-def fetch_team_from_apollo(company_name, company_website=None):
+def fetch_team_from_apollo(company_name, company_website=None, credit_cache=None):
     """Apollo.io API fallback for team members
 
     Uses a two-step workflow:
     1. Search with mixed_people/api_search to get person IDs (returns obfuscated data)
     2. Enrich with people/bulk_match using IDs to get full profiles (names, LinkedIn, etc.)
+
+    credit_cache (from _build_apollo_credit_cache): person IDs already found here
+    skip step 2's paid API call entirely and reuse the stored data instead.
     """
     if _apollo_credits_exhausted:
         print(f"\n ℹ Apollo credits exhausted earlier this run — skipping Apollo for {company_name}")
@@ -1047,9 +1050,29 @@ def fetch_team_from_apollo(company_name, company_website=None):
 
             print(f" {len(person_ids)} people eligible for enrichment (after excluding CTOs)")
 
-            # Step 2: Enrich in batches of 10 (Apollo limit)
-            print(f" Step 2: Enriching profiles to get full data...")
+            # Step 2: Enrich in batches of 10 (Apollo limit) — but first pull out
+            # anyone we've already paid Apollo for in a past run (credit_cache).
             enriched_count = 0
+            uncached_ids = person_ids
+            if credit_cache:
+                uncached_ids = []
+                for pid in person_ids:
+                    cached = _apollo_cache_lookup(credit_cache, apollo_person_id=pid)
+                    if cached:
+                        members.append(dict(cached))
+                        enriched_count += 1
+                        print(f" {enriched_count}. {cached.get('name', 'Unknown')} - reused from leads DB (no credit charged)")
+                    else:
+                        uncached_ids.append(pid)
+                if len(uncached_ids) < len(person_ids):
+                    print(f" ℹ Reused {len(person_ids) - len(uncached_ids)} already-enriched people from the leads DB — no credits charged")
+            person_ids = uncached_ids
+
+            if not person_ids:
+                print(f" ✓ All {enriched_count} people were already cached — Apollo enrichment skipped entirely")
+                return members
+
+            print(f" Step 2: Enriching {len(person_ids)} remaining profiles to get full data...")
 
             for i in range(0, len(person_ids), 10):
                 batch_ids = person_ids[i:i+10]
@@ -1372,6 +1395,65 @@ def enrich_people_with_emails(people_with_linkedin):
     
     print(f"\n Bulk enrichment complete: {len(enrichment_results)} people enriched with emails")
     return enrichment_results
+
+def _build_apollo_credit_cache() -> dict:
+    """Build a lookup of previously-Apollo-enriched people from the live leads DB.
+
+    Apollo charges a credit every time you call people/match or bulk_match,
+    even for a person you've already paid to enrich. Scanning the ENTIRE
+    leads table (not just fundraising-sourced leads) means any person already
+    enriched in the past — via this script or any other campaign import —
+    is reused for free instead of paying Apollo again for data we already have.
+
+    Keyed by apollo_person_id and by normalized LinkedIn URL. Only includes
+    leads with something worth reusing (an email or Twitter handle); a lead
+    with neither is not a useful cache hit.
+    """
+    cache = {"by_id": {}, "by_linkedin": {}}
+    try:
+        conn = sqlite3.connect(f"file:{LINAUTO_DB}?mode=ro", uri=True)
+        rows = conn.execute(
+            "SELECT apollo_person_id, linkedin_url, first_name, last_name, "
+            "title, email, twitter_url FROM leads "
+            "WHERE apollo_person_id IS NOT NULL OR linkedin_url IS NOT NULL"
+        ).fetchall()
+        conn.close()
+        for apollo_id, linkedin_url, first_name, last_name, title, email, twitter_url in rows:
+            if not (email or twitter_url):
+                continue
+            name = " ".join(p for p in [first_name, last_name] if p) or None
+            entry = {
+                "name": name,
+                "role": title,
+                "linkedin_url": linkedin_url,
+                "twitter_url": twitter_url,
+                "email": email,
+                "apollo_person_id": apollo_id,
+                "source": "apollo_credit_cache",
+            }
+            if apollo_id:
+                cache["by_id"][apollo_id] = entry
+            if linkedin_url:
+                cache["by_linkedin"][linkedin_url.strip().lower().rstrip('/')] = entry
+        print(
+            f" ℹ Apollo credit cache loaded: {len(cache['by_id'])} person IDs + "
+            f"{len(cache['by_linkedin'])} LinkedIn URLs with reusable data from existing leads"
+        )
+    except Exception as e:
+        print(f"  Could not build Apollo credit cache: {e}")
+    return cache
+
+
+def _apollo_cache_lookup(cache: dict, apollo_person_id: str = None, linkedin_url: str = None) -> dict | None:
+    """Return a cached enrichment entry if we've already paid Apollo for this person."""
+    if apollo_person_id and apollo_person_id in cache.get("by_id", {}):
+        return cache["by_id"][apollo_person_id]
+    if linkedin_url:
+        key = linkedin_url.strip().lower().rstrip('/')
+        if key in cache.get("by_linkedin", {}):
+            return cache["by_linkedin"][key]
+    return None
+
 
 def _load_cryptorank_cookies():
     """Load CryptoRank cookies from the scraper_cookies DB table.
@@ -1752,10 +1834,10 @@ def _merge_apollo_into_team(team: list, apollo_team: list) -> list:
     return team
 
 
-def _apollo_worker(project_name: str, website_info: dict | None) -> list:
+def _apollo_worker(project_name: str, website_info: dict | None, credit_cache: dict | None = None) -> list:
     """Thin wrapper for fetch_team_from_apollo used by the thread pool."""
     try:
-        return fetch_team_from_apollo(project_name, website_info)
+        return fetch_team_from_apollo(project_name, website_info, credit_cache=credit_cache)
     except Exception as e:
         print(f" Apollo worker error for {project_name}: {e}")
         return []
@@ -1845,6 +1927,7 @@ def gather_all():
     print(f" APOLLO PHASE: enriching {len(scraped_data)} projects concurrently (max 3 threads)")
     print(f"{'='*60}\n")
 
+    apollo_credit_cache = _build_apollo_credit_cache()
     apollo_results: dict[str, list] = {}
 
     with ThreadPoolExecutor(max_workers=3) as executor:
@@ -1853,6 +1936,7 @@ def gather_all():
                 _apollo_worker,
                 data['project']['name'],
                 data['website_info'],
+                apollo_credit_cache,
             ): url
             for url, data in scraped_data.items()
             if not data.get('_skipped')
@@ -1915,7 +1999,29 @@ def gather_all():
     print("="*60 + "\n")
 
     # ── Phase 4: Email enrichment (Apollo bulk, costs credits) ───────────────
-    people_to_enrich = [p for p in all_people if p.get('apollo_person_id') or p.get('linkedin_url')]
+    # Skip anyone who already has an email — either scraped directly, or filled by
+    # Phase 2's credit cache. Then check the credit cache again for the remainder
+    # before paying Apollo a second time for people not caught in Phase 2 (e.g.
+    # RootData-sourced people, who skip fetch_team_from_apollo entirely).
+    cache_hits = 0
+    for person in all_people:
+        if person.get('email'):
+            continue
+        cached = _apollo_cache_lookup(
+            apollo_credit_cache,
+            apollo_person_id=person.get('apollo_person_id'),
+            linkedin_url=person.get('linkedin_url'),
+        )
+        if cached and cached.get('email'):
+            person['email'] = cached['email']
+            cache_hits += 1
+    if cache_hits:
+        print(f" ℹ Reused {cache_hits} emails from the leads DB before Phase 4 — no credits charged")
+
+    people_to_enrich = [
+        p for p in all_people
+        if not p.get('email') and (p.get('apollo_person_id') or p.get('linkedin_url'))
+    ]
     if people_to_enrich:
         enrichment_results = enrich_people_with_emails(people_to_enrich)
         enriched_count = 0
