@@ -35,6 +35,11 @@ APOLLO_API_KEY = _SETTINGS.get('apollo_api_key') or os.getenv("APOLLO_API_KEY")
 APOLLO_API_URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
 APOLLO_BULK_ENRICHMENT_URL = "https://api.apollo.io/api/v1/people/bulk_match"
 
+# Inline per-person Telegram resolution (900s/person, see resolve_telegram_via_api) duplicates
+# the always-on background sweeper (releasi tg_enrichment_sweep, every 20 min) and was adding
+# 5-10+ hours to every weekly run. Keep this False; the sweeper resolves these leads instead.
+ENABLE_INLINE_TELEGRAM_RESOLUTION = False
+
 # Set the first time any Apollo call reports "insufficient credits" — once True,
 # all subsequent Apollo calls in this run are skipped instead of repeating the failure
 # across every remaining project (Apollo credits don't refill mid-run).
@@ -1937,19 +1942,30 @@ def gather_all():
         print(f" Deduped {len(all_people) - len(deduped_people)} duplicate people (by LinkedIn URL) before Telegram phase", flush=True)
     all_people = deduped_people
 
-    # ── Phase 5: Telegram resolution ─────────────────────────────────────────
-    people_with_names = [p for p in all_people if p.get('name')]
-    if people_with_names:
-        twitter_count = sum(1 for p in all_people if p.get('twitter_url'))
-        print(f"\n{'='*60}", flush=True)
-        print(f" TELEGRAM PHASE: {twitter_count} Twitter handles + {len(people_with_names)} name-based lookups", flush=True)
-        print(f"{'='*60}\n", flush=True)
-        try:
-            resolve_telegram_via_api(all_people)
-        except Exception as e:
-            print(f" Telegram resolution error: {e} — continuing with partial results", flush=True)
+    # ── Phase 5: Telegram resolution — DISABLED ──────────────────────────────
+    # Inline resolution here was 900s/person sequential (Telethon flood-wait avoidance),
+    # adding 5-10+ hours to every run and risking the systemd TimeoutStartSec ceiling.
+    # The releasi background sweeper (tg_enrichment_sweep, every 20 min, see
+    # src/releasi/scheduler/runner.py) already resolves Telegram for every lead in a
+    # tg_enrich_enabled list — which defaults to True for lists this script creates.
+    # So every person pushed to Linauto gets resolved there instead, with no extra
+    # wiring needed. Leave this disabled; resolve_telegram_via_api() is kept for
+    # one-off manual runs (releasi CLI / ad-hoc scripts), just not called here.
+    if ENABLE_INLINE_TELEGRAM_RESOLUTION:
+        people_with_names = [p for p in all_people if p.get('name')]
+        if people_with_names:
+            twitter_count = sum(1 for p in all_people if p.get('twitter_url'))
+            print(f"\n{'='*60}", flush=True)
+            print(f" TELEGRAM PHASE: {twitter_count} Twitter handles + {len(people_with_names)} name-based lookups", flush=True)
+            print(f"{'='*60}\n", flush=True)
+            try:
+                resolve_telegram_via_api(all_people)
+            except Exception as e:
+                print(f" Telegram resolution error: {e} — continuing with partial results", flush=True)
+        else:
+            print(f"\n No people to check on Telegram")
     else:
-        print(f"\n No people to check on Telegram")
+        print(f"\n ℹ Inline Telegram resolution disabled — background sweeper will resolve these leads", flush=True)
 
     # ── Clean up checkpoint on successful completion ──────────────────────────
     _clear_checkpoint()
