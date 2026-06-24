@@ -194,6 +194,7 @@ class CampaignExecutor:
                                        lead_status=lead.status, target="CONNECTED")
                     await self.repo.update_lead(
                         lead,
+                        campaign_id_override=campaign.id,
                         status=LeadStatus.CONNECTED,
                         connection_accepted_at=datetime.utcnow(),
                     )
