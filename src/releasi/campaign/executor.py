@@ -198,12 +198,17 @@ class CampaignExecutor:
                         status=LeadStatus.CONNECTED,
                         connection_accepted_at=datetime.utcnow(),
                     )
+                    # Log as SKIPPED, not SUCCESS: no invitation was sent — the
+                    # lead was already a 1st-degree connection. Logging it as
+                    # SUCCESS inflated the activity feed and campaign total_sent
+                    # (which count SUCCESS CONNECTION_REQUEST rows) by treating a
+                    # pre-existing connection as a freshly sent request.
                     await self.repo.log_action(
                         account_id=account.id,
                         campaign_id=campaign.id,
                         lead_id=lead.id,
                         action_type=ActionType.CONNECTION_REQUEST,
-                        status=ActionLogStatus.SUCCESS,
+                        status=ActionLogStatus.SKIPPED,
                         details={"reason": "already_connected"},
                     )
                 else:
@@ -249,6 +254,7 @@ class CampaignExecutor:
                     validate_transition(lead.status, LeadStatus.ERROR)
                     await self.repo.update_lead(
                         lead,
+                        campaign_id_override=campaign.id,
                         status=LeadStatus.ERROR,
                         retry_count=lead.retry_count + 1,
                         error_message=reason,
@@ -281,6 +287,7 @@ class CampaignExecutor:
                 try:
                     await self.repo.update_lead(
                         lead,
+                        campaign_id_override=campaign.id,
                         status=LeadStatus.ERROR,
                         retry_count=lead.retry_count + 1,
                         error_message=err_str[:500],
@@ -550,6 +557,7 @@ class CampaignExecutor:
                     validate_transition(lead.status, LeadStatus.CONNECTION_REQUESTED)
                     await self.repo.update_lead(
                         lead,
+                        campaign_id_override=campaign.id,
                         status=LeadStatus.CONNECTION_REQUESTED,
                         connection_requested_at=datetime.utcnow(),
                     )
@@ -570,6 +578,7 @@ class CampaignExecutor:
                     validate_transition(lead.status, LeadStatus.SKIPPED)
                     await self.repo.update_lead(
                         lead,
+                        campaign_id_override=campaign.id,
                         status=LeadStatus.SKIPPED,
                         error_message=result.reason,
                     )
@@ -616,6 +625,7 @@ class CampaignExecutor:
                     validate_transition(lead.status, new_status)
                     await self.repo.update_lead(
                         lead,
+                        campaign_id_override=campaign.id,
                         status=new_status,
                         retry_count=new_retry,
                         error_message=result.reason,
