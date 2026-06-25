@@ -1785,6 +1785,10 @@ class Repository:
             )
             .values(status="removed")
         )
+        # Also flip the legacy Lead.status. The lead detail page and the global
+        # leads library read Lead.status (not the assignment), so without this
+        # the "deleted" lead keeps showing as active everywhere.
+        lead.status = LeadStatus.REMOVED
         await self.session.commit()
         await self.session.refresh(lead)
         return lead
@@ -1813,6 +1817,8 @@ class Repository:
                 scheduled_at=None,
             )
         )
+        # Mirror the restore on the legacy Lead.status (see remove_lead).
+        lead.status = LeadStatus.PENDING
         await self.session.commit()
         await self.session.refresh(lead)
         return lead
@@ -1912,7 +1918,9 @@ class Repository:
     async def bulk_remove_leads(self, lead_ids: list) -> int:
         """Soft-delete multiple leads. Returns count updated.
 
-        Phase 3b: writes only to CampaignLeadAssignment.
+        Writes the removed status to both the CampaignLeadAssignment and the
+        legacy Lead.status — the lead detail page and global library read
+        Lead.status, so updating only the assignment leaves them looking active.
         """
         result = await self.session.execute(
             update(CampaignLeadAssignment)
@@ -1921,6 +1929,11 @@ class Repository:
                 CampaignLeadAssignment.status != LeadStatus.REMOVED.value,
             )
             .values(status=LeadStatus.REMOVED.value)
+        )
+        await self.session.execute(
+            update(Lead)
+            .where(Lead.id.in_(lead_ids))
+            .values(status=LeadStatus.REMOVED)
         )
         await self.session.commit()
         return result.rowcount
