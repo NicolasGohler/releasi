@@ -3,7 +3,8 @@
 import { useState, useEffect } from "react";
 import {
   Send, MessageSquare, UserCheck, AlertCircle, Zap, Search,
-  RefreshCw, ChevronLeft, ChevronRight, Filter, X
+  RefreshCw, ChevronLeft, ChevronRight, Filter, X,
+  StickyNote, AtSign, CheckCircle2, UserX
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAccounts, useCampaigns } from "@/hooks/use-queries";
@@ -24,8 +25,12 @@ const EVENT_GROUPS: Record<string, { label: string; types: string[] }> = {
   },
   enrichment: {
     label: "Enrichment",
-    types: ["tg_sweep_searched", "telegram_found", "telegram_saved",
-            "telegram_removed", "tg_contacted", "tg_contacted_cleared"],
+    types: ["tg_sweep_searched", "telegram_found", "phone_enriched"],
+  },
+  manual: {
+    label: "Manual",
+    types: ["note_added", "tg_contacted", "tg_contacted_cleared",
+            "telegram_saved", "telegram_removed"],
   },
   system: {
     label: "System",
@@ -44,8 +49,15 @@ const EVENT_META: Record<string, EventMeta> = {
   cooldown_ended:           { label: "Cooldown ended",        Icon: RefreshCw,      color: "text-green-400" },
   tg_sweep_searched:        { label: "TG sweep",              Icon: Search,         color: "text-violet-400" },
   telegram_found:           { label: "Telegram found",        Icon: Zap,            color: "text-violet-500" },
+  phone_enriched:           { label: "Phone enriched",        Icon: Zap,            color: "text-violet-500" },
   fundraising_import:       { label: "Fundraising import",    Icon: RefreshCw,      color: "text-cyan-400" },
   error:                    { label: "Error",                 Icon: AlertCircle,    color: "text-red-400" },
+  // Manual (human) actions
+  note_added:               { label: "Note",                  Icon: StickyNote,     color: "text-amber-400" },
+  tg_contacted:             { label: "Telegram outreach",     Icon: CheckCircle2,   color: "text-emerald-400" },
+  tg_contacted_cleared:     { label: "Outreach cleared",      Icon: UserX,          color: "text-muted-foreground" },
+  telegram_saved:           { label: "Telegram handle set",   Icon: AtSign,         color: "text-emerald-400" },
+  telegram_removed:         { label: "Telegram handle removed", Icon: AtSign,       color: "text-muted-foreground" },
 };
 
 function getEventMeta(type: string): EventMeta {
@@ -81,6 +93,10 @@ function statusColor(status?: string | null): string {
 function ActivityRow({ item }: { item: ActivityItem }) {
   const [expanded, setExpanded] = useState(false);
   const { label, Icon, color } = getEventMeta(item.event_type);
+  const noteBody =
+    item.event_type === "note_added" && item.details && typeof item.details.body === "string"
+      ? (item.details.body as string)
+      : null;
 
   return (
     <div
@@ -116,7 +132,13 @@ function ActivityRow({ item }: { item: ActivityItem }) {
           )}
         </div>
 
-        {expanded && item.details && (
+        {noteBody && (
+          <p className={`text-xs text-muted-foreground ${expanded ? "" : "line-clamp-2"}`}>
+            {noteBody}
+          </p>
+        )}
+
+        {expanded && item.details && !noteBody && (
           <pre className="text-xs text-muted-foreground bg-black/30 rounded p-2 overflow-x-auto whitespace-pre-wrap mt-1">
             {JSON.stringify(item.details, null, 2)}
           </pre>

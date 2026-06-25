@@ -2341,10 +2341,26 @@ class Repository:
         converted to ActivityItem. Resolution of account/campaign/lead names is
         done here to avoid N+1 queries in the route.
         """
-        from releasi.db.models import Campaign
+        from releasi.db.models import Campaign, LeadNote
 
         include_action_log  = not sources or "action_log" in sources
         include_lead_events = not sources or "lead_events" in sources
+        include_notes       = not sources or "lead_notes" in sources
+
+        # Manual events (lead_events + notes) are not account/campaign-scoped —
+        # they carry no account_id. When the feed is filtered by account or
+        # campaign, the user wants that scope's LinkedIn actions only, so the
+        # unscoped manual events are excluded. Otherwise e.g. Telegram outreach
+        # leaks into every account's filtered view — including access-only
+        # accounts like Ibrahim, making it look mis-attributed.
+        if account_id or campaign_id:
+            include_lead_events = False
+            include_notes = False
+
+        # Notes surface as a synthetic "note_added" event_type, so honour an
+        # explicit event_types filter that doesn't ask for them.
+        if include_notes and event_types and "note_added" not in event_types:
+            include_notes = False
 
         items: list[dict] = []
 
@@ -2447,6 +2463,47 @@ class Repository:
                     "lead_name": le_lead_names.get(r.lead_id),
                     "status": None,
                     "details": r.details,
+                })
+
+        # ── lead_notes (manual notes) ─────────────────────────────────────────
+        # Surfaced as synthetic "note_added" events so manually-left notes show
+        # up in the feed alongside Telegram outreach. Uses updated_at when the
+        # note was edited after creation so edits float to the top.
+        if include_notes:
+            nstmt = select(LeadNote).order_by(LeadNote.created_at.desc())
+            if since:
+                nstmt = nstmt.where(LeadNote.created_at >= since)
+            if until:
+                nstmt = nstmt.where(LeadNote.created_at <= until)
+            nstmt = nstmt.limit(per_page * page * 2)
+            nrows = (await self.session.execute(nstmt)).scalars().all()
+
+            n_lead_ids = {r.lead_id for r in nrows}
+            n_lead_names: dict[str, str] = {}
+            if n_lead_ids:
+                n_lead_rows = (await self.session.execute(
+                    select(Lead.id, Lead.first_name, Lead.last_name).where(Lead.id.in_(n_lead_ids))
+                )).all()
+                n_lead_names = {
+                    r.id: f"{r.first_name or ''} {r.last_name or ''}".strip()
+                    for r in n_lead_rows
+                }
+
+            for r in nrows:
+                edited = bool(r.updated_at and r.updated_at != r.created_at)
+                items.append({
+                    "id": r.id,
+                    "source": "lead_note",
+                    "event_type": "note_added",
+                    "created_at": r.updated_at if edited else r.created_at,
+                    "account_id": None,
+                    "account_name": None,
+                    "campaign_id": None,
+                    "campaign_name": None,
+                    "lead_id": r.lead_id,
+                    "lead_name": n_lead_names.get(r.lead_id),
+                    "status": "edited" if edited else None,
+                    "details": {"body": r.body, "edited": edited},
                 })
 
         # Sort merged results, paginate, return total
