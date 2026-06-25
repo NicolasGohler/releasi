@@ -79,12 +79,11 @@ The dashboard (Vercel, Next.js) and backend API (FastAPI on `REDACTED:8000`) are
 
 4. **Vercel Deployment Protection** (manual toggle on Vercel project → Settings → Deployment Protection) is the outer gate. Without it, anyone with the URL reaches the Next.js app — which can't leak the key directly, but can still drive the proxy. Keep it enabled.
 
-5. **Dashboard password layer** (`dashboard/src/middleware.ts`). A second auth layer sits inside the Next.js app: every request checks for a signed `releasi_session` cookie. Sessions expire after **1 week**. Required Vercel env vars (server-only):
-   - `DASHBOARD_SECRET` — random string used to sign session cookies (generate with `openssl rand -hex 32`)
-   - `DASHBOARD_PASSWORD` — the password shown at `/login`
-   If either is unset, the password gate is disabled (safe for local dev). To force logout, rotate `DASHBOARD_SECRET`.
+5. **Per-user login layer** (`dashboard/src/middleware.ts` + `users` table, migration 032). Every dashboard request must carry a signed `releasi_session` cookie (HMAC-signed with `DASHBOARD_SECRET`, carrying the user's UUID, **1-week** expiry). Login is **handle + password per user** validated against the backend `users` table (bcrypt hashes) via `POST /api/v1/auth/login` — there is **no shared `DASHBOARD_PASSWORD`** anymore (that was the old single-password model; do not reintroduce it). Required Vercel env var: `DASHBOARD_SECRET` (server-only). If unset, the gate is disabled (safe for local dev). To force logout everywhere, rotate `DASHBOARD_SECRET`. Provision users on the server: `releasi user add --handle <name> [--superadmin] --password <pw>`.
 
-6. **Adding a new API call in `lib/api.ts`**: use the existing `apiFetch` helper or fetch to `/api/v1/...` (same-origin). Never build absolute URLs to `REDACTED:8000` — that bypasses the proxy and would require re-exposing the key.
+6. **User-identity forwarding for attribution.** The Next proxy verifies the signed session cookie **server-side** and forwards the resolved user id to the backend as `X-Releasi-User-Id` (it strips any inbound copy first, so the browser can't spoof it). The backend `get_current_user_id` dependency (`api/deps.py`) reads that header; API-key-only callers and the scheduler don't set it → `None` → attributed to "System". This is how manual actions get stamped — see "Manual-Action Attribution" below. Do **not** trust a client-supplied `X-Releasi-User-Id`.
+
+7. **Adding a new API call in `lib/api.ts`**: use the existing `apiFetch` helper or fetch to `/api/v1/...` (same-origin). Never build absolute URLs to `REDACTED:8000` — that bypasses the proxy and would require re-exposing the key.
 
 ## Testing & Diagnostics on LinkedIn (CRITICAL)
 
@@ -325,9 +324,17 @@ The `leads` table has social/outreach columns enriched outside the main LinkedIn
 
 Lightweight event log for lead-level actions that don't require an `account_id` (unlike `action_log`). Used by the lead detail activity feed alongside `action_log` rows.
 
-Current `event_type` values: `telegram_found`, `telegram_saved`, `telegram_removed`, `tg_contacted`, `tg_contacted_cleared`.
+Current `event_type` values: `telegram_found`, `telegram_saved`, `telegram_removed`, `tg_contacted`, `tg_contacted_cleared`, `phone_enriched`, `tg_sweep_searched`.
 
-Add via `repo.log_lead_event(lead_id, event_type, details_dict)`.
+Add via `repo.log_lead_event(lead_id, event_type, details_dict, actor_user_id=...)`. Pass `actor_user_id` for human-driven actions (None = automated/system). See "Manual-Action Attribution".
+
+## Manual-Action Attribution (migration 034)
+
+Human-driven actions are attributed to the logged-in dashboard user. `lead_events` and `lead_notes` both have an `actor_user_id` column (nullable FK to `users.id`; NULL = automated/system, e.g. the TG enrichment sweep or scheduler, or legacy pre-2026-06 rows that can't be backfilled).
+
+**Flow:** dashboard login (handle+password) → signed `releasi_session` cookie carrying the user UUID → Next proxy verifies it server-side and forwards `X-Releasi-User-Id` → backend `get_current_user_id` dep (`api/deps.py`) → passed into `log_lead_event` / `add_lead_note`. Routes that stamp the actor: `PATCH /leads/{id}` (tg_contacted/cleared, telegram_saved/removed) and `POST /leads/{id}/notes`.
+
+**Activity feed** (`GET /api/v1/activity`): resolves `actor_user_id` → display name (`actor_name`), shown as a "by <name>" chip. Filter to one person with `?user_id=<id>` (this excludes `action_log`, which has no human actor). The dashboard Activity page has a **Manual** group chip (notes + tg_contacted/cleared + telegram_saved/removed) and a person dropdown (`GET /api/v1/users`). Manual events (lead_events + notes) are **unscoped** — they carry no account/campaign — so the feed excludes them when an `account_id`/`campaign_id` filter is active (otherwise they leak into every account's view).
 
 ## Find Telegram (per-lead background task)
 

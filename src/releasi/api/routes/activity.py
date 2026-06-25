@@ -25,6 +25,7 @@ async def list_activity(
     event_types: Optional[str] = Query(None, description="Comma-separated event type names"),
     account_id: Optional[str] = Query(None),
     campaign_id: Optional[str] = Query(None),
+    user_id: Optional[str] = Query(None, description="Filter to manual actions by this dashboard user"),
     repo: Repository = Depends(get_repo),
 ) -> ActivityPage:
     """Unified activity feed across all sources, newest first.
@@ -65,6 +66,7 @@ async def list_activity(
         event_types=types_list,
         account_id=account_id,
         campaign_id=campaign_id,
+        actor_user_id=user_id,
     )
 
     items = [ActivityItem(**item) for item in items_raw]

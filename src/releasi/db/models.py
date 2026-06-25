@@ -435,6 +435,10 @@ class LeadNote(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, onupdate=_utcnow
     )
+    # Dashboard user who wrote the note; NULL for legacy/pre-attribution notes.
+    actor_user_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True, index=True
+    )
 
 
 class LeadEvent(Base):
@@ -455,6 +459,12 @@ class LeadEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     details: Mapped[Optional[Dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    # Dashboard user who performed the action; NULL for automated/system events
+    # (TG enrichment sweep, scheduler). Stamped from the verified session via
+    # the X-Releasi-User-Id header the dashboard proxy forwards.
+    actor_user_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True, index=True
+    )
 
 
 class User(Base):

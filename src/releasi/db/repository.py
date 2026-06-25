@@ -2149,9 +2149,19 @@ class Repository:
         lead_id: str,
         event_type: str,
         details: Optional[dict] = None,
+        actor_user_id: Optional[str] = None,
     ) -> LeadEvent:
-        """Write a lightweight event to lead_events (no account_id required)."""
-        event = LeadEvent(lead_id=lead_id, event_type=event_type, details=details)
+        """Write a lightweight event to lead_events (no account_id required).
+
+        ``actor_user_id`` attributes a human-driven action to a dashboard user;
+        leave None for automated/system events (TG sweep, scheduler).
+        """
+        event = LeadEvent(
+            lead_id=lead_id,
+            event_type=event_type,
+            details=details,
+            actor_user_id=actor_user_id,
+        )
         self.session.add(event)
         await self.session.flush()
         return event
@@ -2169,11 +2179,13 @@ class Repository:
         )
         return list(result.scalars().all())
 
-    async def add_lead_note(self, lead_id: str, body: str) -> "LeadNote":
-        """Create a new note for a lead."""
+    async def add_lead_note(
+        self, lead_id: str, body: str, actor_user_id: Optional[str] = None
+    ) -> "LeadNote":
+        """Create a new note for a lead, attributed to ``actor_user_id`` if known."""
         from releasi.db.models import LeadNote
 
-        note = LeadNote(lead_id=lead_id, body=body)
+        note = LeadNote(lead_id=lead_id, body=body, actor_user_id=actor_user_id)
         self.session.add(note)
         await self.session.flush()
         return note
@@ -2334,18 +2346,27 @@ class Repository:
         event_types: Optional[list] = None,
         account_id: Optional[str] = None,
         campaign_id: Optional[str] = None,
+        actor_user_id: Optional[str] = None,
     ) -> tuple[list[dict], int]:
         """Return a merged, time-sorted activity feed from action_log + lead_events.
 
         Returns (items, total_count). Each item is a plain dict ready to be
         converted to ActivityItem. Resolution of account/campaign/lead names is
         done here to avoid N+1 queries in the route.
+
+        ``actor_user_id`` filters to manual actions performed by one dashboard
+        user (lead_events + notes only — action_log has no human actor).
         """
-        from releasi.db.models import Campaign, LeadNote
+        from releasi.db.models import Campaign, LeadNote, User
 
         include_action_log  = not sources or "action_log" in sources
         include_lead_events = not sources or "lead_events" in sources
         include_notes       = not sources or "lead_notes" in sources
+
+        # Filtering by a person only makes sense for human-attributed rows;
+        # action_log entries are account/scheduler actions, not user actions.
+        if actor_user_id:
+            include_action_log = False
 
         # Manual events (lead_events + notes) are not account/campaign-scoped —
         # they carry no account_id. When the feed is filtered by account or
@@ -2425,6 +2446,16 @@ class Repository:
                     "details": r.details,
                 })
 
+        # Resolve dashboard-user display names for manual-action attribution.
+        async def _actor_names(ids: set) -> dict:
+            ids = {i for i in ids if i}
+            if not ids:
+                return {}
+            urows = (await self.session.execute(
+                select(User.id, User.display_name, User.handle).where(User.id.in_(ids))
+            )).all()
+            return {u.id: (u.display_name or u.handle) for u in urows}
+
         # ── lead_events ───────────────────────────────────────────────────────
         if include_lead_events:
             stmt2 = select(LeadEvent).order_by(LeadEvent.created_at.desc())
@@ -2434,6 +2465,8 @@ class Repository:
                 stmt2 = stmt2.where(LeadEvent.created_at <= until)
             if event_types:
                 stmt2 = stmt2.where(LeadEvent.event_type.in_(event_types))
+            if actor_user_id:
+                stmt2 = stmt2.where(LeadEvent.actor_user_id == actor_user_id)
             # account_id / campaign_id filters don't apply to lead_events
             stmt2 = stmt2.limit(per_page * page * 2)
             rows2 = (await self.session.execute(stmt2)).scalars().all()
@@ -2448,6 +2481,7 @@ class Repository:
                     r.id: f"{r.first_name or ''} {r.last_name or ''}".strip()
                     for r in le_lead_rows
                 }
+            le_actor_names = await _actor_names({r.actor_user_id for r in rows2})
 
             for r in rows2:
                 items.append({
@@ -2463,6 +2497,8 @@ class Repository:
                     "lead_name": le_lead_names.get(r.lead_id),
                     "status": None,
                     "details": r.details,
+                    "actor_user_id": r.actor_user_id,
+                    "actor_name": le_actor_names.get(r.actor_user_id),
                 })
 
         # ── lead_notes (manual notes) ─────────────────────────────────────────
@@ -2475,6 +2511,8 @@ class Repository:
                 nstmt = nstmt.where(LeadNote.created_at >= since)
             if until:
                 nstmt = nstmt.where(LeadNote.created_at <= until)
+            if actor_user_id:
+                nstmt = nstmt.where(LeadNote.actor_user_id == actor_user_id)
             nstmt = nstmt.limit(per_page * page * 2)
             nrows = (await self.session.execute(nstmt)).scalars().all()
 
@@ -2488,6 +2526,7 @@ class Repository:
                     r.id: f"{r.first_name or ''} {r.last_name or ''}".strip()
                     for r in n_lead_rows
                 }
+            n_actor_names = await _actor_names({r.actor_user_id for r in nrows})
 
             for r in nrows:
                 edited = bool(r.updated_at and r.updated_at != r.created_at)
@@ -2504,6 +2543,8 @@ class Repository:
                     "lead_name": n_lead_names.get(r.lead_id),
                     "status": "edited" if edited else None,
                     "details": {"body": r.body, "edited": edited},
+                    "actor_user_id": r.actor_user_id,
+                    "actor_name": n_actor_names.get(r.actor_user_id),
                 })
 
         # Sort merged results, paginate, return total

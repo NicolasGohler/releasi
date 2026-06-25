@@ -8,8 +8,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAccounts, useCampaigns } from "@/hooks/use-queries";
-import { fetchActivity } from "@/lib/api";
-import type { ActivityItem, ActivityPage } from "@/lib/types";
+import { fetchActivity, fetchUsers } from "@/lib/api";
+import type { ActivityItem, ActivityPage, DashboardUser } from "@/lib/types";
 
 // ── Event type metadata ───────────────────────────────────────────────────
 
@@ -125,6 +125,11 @@ function ActivityRow({ item }: { item: ActivityItem }) {
               {item.account_name}
             </span>
           )}
+          {item.actor_name && (
+            <span className="text-xs bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded truncate max-w-[120px]">
+              by {item.actor_name}
+            </span>
+          )}
           {item.campaign_name && (
             <span className="text-xs bg-violet-500/10 text-violet-400 px-1.5 py-0.5 rounded truncate max-w-[120px]">
               {item.campaign_name}
@@ -168,6 +173,7 @@ type Filters = {
   groups: string[];           // selected group keys
   account_id: string;
   campaign_id: string;
+  user_id: string;
 };
 
 // ── Page ──────────────────────────────────────────────────────────────────
@@ -175,6 +181,7 @@ type Filters = {
 export default function ActivityPage() {
   const { data: accounts } = useAccounts();
   const { data: campaigns } = useCampaigns();
+  const [users, setUsers] = useState<DashboardUser[]>([]);
 
   const [data, setData] = useState<ActivityPage | null>(null);
   const [loading, setLoading] = useState(true);
@@ -184,7 +191,12 @@ export default function ActivityPage() {
     groups: [],
     account_id: "",
     campaign_id: "",
+    user_id: "",
   });
+
+  useEffect(() => {
+    fetchUsers().then(setUsers).catch(() => {});
+  }, []);
 
   const fetchData = async (pg: number, f: Filters) => {
     setLoading(true);
@@ -204,6 +216,7 @@ export default function ActivityPage() {
         event_types: selectedTypes?.join(","),
         account_id: f.account_id || undefined,
         campaign_id: f.campaign_id || undefined,
+        user_id: f.user_id || undefined,
       });
       setData(result);
     } catch {
@@ -232,7 +245,7 @@ export default function ActivityPage() {
     );
   };
 
-  const hasFilters = filters.groups.length > 0 || filters.account_id || filters.campaign_id || filters.datePreset !== 168;
+  const hasFilters = filters.groups.length > 0 || filters.account_id || filters.campaign_id || filters.user_id || filters.datePreset !== 168;
 
   return (
     <div className="space-y-4">
@@ -326,10 +339,25 @@ export default function ActivityPage() {
           </select>
         )}
 
+        {/* Person filter (manual actions) */}
+        {users.length > 0 && (
+          <select
+            value={filters.user_id}
+            onChange={(e) => setFilter("user_id", e.target.value)}
+            className="h-8 rounded-md border border-border bg-background px-2 text-xs text-muted-foreground"
+            title="Filter manual actions by person"
+          >
+            <option value="">Anyone</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>{u.display_name || u.handle}</option>
+            ))}
+          </select>
+        )}
+
         {/* Clear filters */}
         {hasFilters && (
           <button
-            onClick={() => { setPage(1); setFilters({ datePreset: 168, groups: [], account_id: "", campaign_id: "" }); }}
+            onClick={() => { setPage(1); setFilters({ datePreset: 168, groups: [], account_id: "", campaign_id: "", user_id: "" }); }}
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
             <X className="h-3.5 w-3.5" /> Reset

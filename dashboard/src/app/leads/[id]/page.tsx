@@ -509,6 +509,9 @@ function ActivityItem({ entry }: { entry: LeadActivity }) {
         {details?.phone && (
           <p className="text-xs text-muted-foreground mt-0.5">{details.phone}{details.source ? ` · via ${details.source}` : ""}</p>
         )}
+        {entry.actor_name && (
+          <p className="text-xs text-emerald-400/80 mt-0.5">by {entry.actor_name}</p>
+        )}
         {entry.account_name && (
           <p className="text-xs text-muted-foreground/60 mt-0.5">via {entry.account_name}</p>
         )}

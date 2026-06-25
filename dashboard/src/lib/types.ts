@@ -95,7 +95,7 @@ export interface LeadList {
 
 export interface ActivityItem {
   id: string;
-  source: "action_log" | "lead_event";
+  source: "action_log" | "lead_event" | "lead_note";
   event_type: string;
   created_at: string;
   account_id?: string | null;
@@ -106,6 +106,16 @@ export interface ActivityItem {
   lead_name?: string | null;
   status?: string | null;
   details?: Record<string, unknown> | null;
+  actor_user_id?: string | null;
+  actor_name?: string | null;
+}
+
+export interface DashboardUser {
+  id: string;
+  handle: string;
+  display_name?: string | null;
+  is_superadmin: boolean;
+  is_active: boolean;
 }
 
 export interface ActivityPage {
@@ -199,6 +209,7 @@ export interface LeadActivity {
   details: Record<string, unknown> | null;
   created_at: string;
   account_name: string | null;
+  actor_name?: string | null;
   source: "action_log" | "lead_event";
 }
 

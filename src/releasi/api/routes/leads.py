@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile, File
 
 from releasi.api.auth import require_api_key
-from releasi.api.deps import get_repo
+from releasi.api.deps import get_repo, get_current_user_id
 from releasi.api.schemas import (
     LeadOut, LeadPage, ImportResponse,
     BulkLeadRequest, BulkLeadResponse,
@@ -554,6 +554,7 @@ async def update_lead_profile(
     lead_id: str,
     body: LeadUpdateRequest,
     repo: Repository = Depends(get_repo),
+    actor_user_id: Optional[str] = Depends(get_current_user_id),
 ):
     """Update editable profile fields on a lead (name, social handles, etc.).
 
@@ -584,11 +585,11 @@ async def update_lead_profile(
         # Clear alternatives when user explicitly saves a username (choice made).
         updates["telegram_alternatives"] = None
         if normalized:
-            await repo.log_lead_event(lead_id, "telegram_saved", {"username": normalized})
+            await repo.log_lead_event(lead_id, "telegram_saved", {"username": normalized}, actor_user_id=actor_user_id)
             await repo.session.commit()
         elif old_username:
             # User explicitly cleared a previously-set username
-            await repo.log_lead_event(lead_id, "telegram_removed", {"username": old_username})
+            await repo.log_lead_event(lead_id, "telegram_removed", {"username": old_username}, actor_user_id=actor_user_id)
             await repo.session.commit()
 
     if "tg_contacted" in body.model_fields_set:
@@ -596,11 +597,11 @@ async def update_lead_profile(
         if body.tg_contacted:
             now = _dt.utcnow()
             updates["tg_contacted_at"] = now
-            await repo.log_lead_event(lead_id, "tg_contacted", {"at": now.isoformat()})
+            await repo.log_lead_event(lead_id, "tg_contacted", {"at": now.isoformat()}, actor_user_id=actor_user_id)
             await repo.session.commit()
         else:
             updates["tg_contacted_at"] = None
-            await repo.log_lead_event(lead_id, "tg_contacted_cleared", {})
+            await repo.log_lead_event(lead_id, "tg_contacted_cleared", {}, actor_user_id=actor_user_id)
             await repo.session.commit()
 
     if updates:
@@ -618,7 +619,7 @@ async def get_lead_activity(
 ):
     """Return activity for a lead: ActionLog entries + LeadEvent entries, newest first."""
     from sqlalchemy import select, desc
-    from releasi.db.models import ActionLog, Account, LeadEvent
+    from releasi.db.models import ActionLog, Account, LeadEvent, User
 
     lead = await repo.get_lead_by_id(lead_id)
     if not lead:
@@ -650,6 +651,15 @@ async def get_lead_activity(
     )
     lead_events = le_result.scalars().all()
 
+    # Resolve dashboard-user display names for manually-attributed events.
+    actor_ids = {e.actor_user_id for e in lead_events if e.actor_user_id}
+    actor_names: dict[str, str] = {}
+    if actor_ids:
+        urows = (await repo.session.execute(
+            select(User.id, User.display_name, User.handle).where(User.id.in_(actor_ids))
+        )).all()
+        actor_names = {u.id: (u.display_name or u.handle) for u in urows}
+
     # Merge and sort newest-first, cap at limit
     items: list[LeadActivityOut] = []
     for l in action_logs:
@@ -670,6 +680,7 @@ async def get_lead_activity(
             details=e.details,
             created_at=e.created_at,
             account_name=None,
+            actor_name=actor_names.get(e.actor_user_id) if e.actor_user_id else None,
             source="lead_event",
         ))
 
@@ -693,6 +704,7 @@ async def create_lead_note(
     lead_id: str,
     body: LeadNoteCreate,
     repo: Repository = Depends(get_repo),
+    actor_user_id: Optional[str] = Depends(get_current_user_id),
 ):
     """Create a new timestamped note on a lead."""
     lead = await repo.get_lead_by_id(lead_id)
@@ -701,7 +713,7 @@ async def create_lead_note(
     text = (body.body or "").strip()
     if not text:
         raise HTTPException(status_code=422, detail="Note body cannot be empty")
-    note = await repo.add_lead_note(lead_id, text)
+    note = await repo.add_lead_note(lead_id, text, actor_user_id=actor_user_id)
     await repo.session.commit()
     return note
 

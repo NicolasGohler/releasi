@@ -10,6 +10,8 @@ provides the per-user identity — see ``X-User-Id`` plumbing in slice 2.
 """
 from __future__ import annotations
 
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from releasi.api.auth import require_api_key
@@ -38,6 +40,13 @@ async def login(payload: LoginRequest, repo: Repository = Depends(get_repo)):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     await repo.touch_user_last_seen(user.id)
     return LoginResponse(user=UserOut.model_validate(user))
+
+
+@router.get("/users", response_model=List[UserOut])
+async def list_users(repo: Repository = Depends(get_repo)):
+    """List all users — used by the Activity feed's "by person" filter."""
+    users = await repo.list_users()
+    return [UserOut.model_validate(u) for u in users]
 
 
 @router.get("/users/me", response_model=UserOut)

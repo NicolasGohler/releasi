@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { COOKIE_NAME, verifySessionToken } from "@/lib/session";
 
 // Server-side proxy from the dashboard (Vercel) to the Linauto backend.
 // Keeps BACKEND_API_KEY out of the browser — the key is only ever attached
@@ -10,6 +11,7 @@ export const dynamic = "force-dynamic";
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://REDACTED:8000";
 const BACKEND_API_KEY = process.env.BACKEND_API_KEY || "";
+const DASHBOARD_SECRET = process.env.DASHBOARD_SECRET || "";
 
 // Headers we never want to forward upstream (hop-by-hop or problematic).
 const STRIP_REQUEST_HEADERS = new Set([
@@ -24,6 +26,7 @@ const STRIP_REQUEST_HEADERS = new Set([
   "upgrade",
   "content-length", // Node fetch sets this itself for streamed bodies
   "authorization", // replaced with server-side key below
+  "x-releasi-user-id", // identity is derived from the signed cookie, never trusted from the client
 ]);
 
 // Headers to strip from the upstream response.
@@ -55,6 +58,19 @@ async function proxy(
     }
   });
   forwardHeaders.set("authorization", `Bearer ${BACKEND_API_KEY}`);
+
+  // Attribute human-driven actions: verify the signed session cookie here
+  // (server-side) and forward the resolved user id to the backend so it can
+  // stamp lead_events / notes. The inbound header was already stripped above,
+  // so the browser can't spoof this. No valid session → no header → backend
+  // attributes the action to "System".
+  if (DASHBOARD_SECRET) {
+    const token = req.cookies.get(COOKIE_NAME)?.value;
+    const claims = token ? await verifySessionToken(token, DASHBOARD_SECRET) : null;
+    if (claims?.userId) {
+      forwardHeaders.set("x-releasi-user-id", claims.userId);
+    }
+  }
 
   // Forward the real client IP so backend rate limiting sees per-user keys,
   // not Vercel's egress IP.

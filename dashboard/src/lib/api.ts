@@ -574,6 +574,7 @@ export const fetchActivity = (params: {
   event_types?: string;
   account_id?: string;
   campaign_id?: string;
+  user_id?: string;
 }) => {
   const qs = new URLSearchParams();
   if (params.page)        qs.set("page",        String(params.page));
@@ -584,8 +585,12 @@ export const fetchActivity = (params: {
   if (params.event_types) qs.set("event_types",  params.event_types);
   if (params.account_id)  qs.set("account_id",   params.account_id);
   if (params.campaign_id) qs.set("campaign_id",  params.campaign_id);
+  if (params.user_id)     qs.set("user_id",      params.user_id);
   return apiFetch<import("./types").ActivityPage>(`/activity?${qs.toString()}`);
 };
+
+export const fetchUsers = () =>
+  apiFetch<import("./types").DashboardUser[]>(`/users`);
 
 export const fetchFundraisingRunStatus = () =>
   apiFetch<{ running: boolean; started_at?: string; finished_at?: string; exit?: string }>(

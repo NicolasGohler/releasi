@@ -238,6 +238,7 @@ class LeadActivityOut(BaseModel):
     details: Optional[Dict[str, Any]] = None
     created_at: datetime
     account_name: Optional[str] = None
+    actor_name: Optional[str] = None  # dashboard user who performed a manual action
     source: str = "action_log"  # "action_log" | "lead_event"
 
     class Config:
@@ -485,7 +486,7 @@ class CloneCampaignRequest(BaseModel):
 
 class ActivityItem(BaseModel):
     id: str
-    source: str                      # "action_log" | "lead_event"
+    source: str                      # "action_log" | "lead_event" | "lead_note"
     event_type: str
     created_at: datetime
     account_id: Optional[str] = None
@@ -496,6 +497,8 @@ class ActivityItem(BaseModel):
     lead_name: Optional[str] = None
     status: Optional[str] = None    # action_log only
     details: Optional[Dict] = None
+    actor_user_id: Optional[str] = None   # dashboard user who did it (manual actions)
+    actor_name: Optional[str] = None      # resolved display name, e.g. "Ibrahim"
 
 
 class ActivityPage(BaseModel):
