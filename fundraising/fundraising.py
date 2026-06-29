@@ -2149,7 +2149,7 @@ def _log_fundraising_run(campaign_id: str, list_name: str, list_id: str, import_
         })
         conn.execute(
             """INSERT INTO action_log (id, account_id, campaign_id, action_type, status, details, created_at)
-               VALUES (?, ?, ?, 'fundraising_import', 'success', ?, datetime('now'))""",
+               VALUES (?, ?, ?, 'FUNDRAISING_IMPORT', 'SUCCESS', ?, datetime('now'))""",
             (entry_id, account_id, campaign_id, details),
         )
         conn.commit()

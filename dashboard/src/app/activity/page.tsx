@@ -184,6 +184,7 @@ export default function ActivityPage() {
   const [users, setUsers] = useState<DashboardUser[]>([]);
 
   const [data, setData] = useState<ActivityPage | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [filters, setFilters] = useState<Filters>({
@@ -200,6 +201,7 @@ export default function ActivityPage() {
 
   const fetchData = async (pg: number, f: Filters) => {
     setLoading(true);
+    setError(null);
     try {
       const since = f.datePreset
         ? new Date(Date.now() - f.datePreset * 3600 * 1000).toISOString()
@@ -219,8 +221,9 @@ export default function ActivityPage() {
         user_id: f.user_id || undefined,
       });
       setData(result);
-    } catch {
-      // silently ignore network errors
+    } catch (err) {
+      setData(null);
+      setError(err instanceof Error ? err.message : "Failed to load activity");
     } finally {
       setLoading(false);
     }
@@ -370,6 +373,11 @@ export default function ActivityPage() {
         {loading ? (
           <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
             <RefreshCw className="h-4 w-4 animate-spin mr-2" /> Loading…
+          </div>
+        ) : error ? (
+          <div className="flex flex-col items-center justify-center py-16 text-sm text-red-400">
+            <AlertCircle className="h-5 w-5 mb-2" />
+            Failed to load activity: {error}
           </div>
         ) : !data || data.items.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-sm text-muted-foreground">
