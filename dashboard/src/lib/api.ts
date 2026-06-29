@@ -356,7 +356,10 @@ export const reorderCampaignLists = (campaignId: string, orderedListIds: string[
 
 export const fetchGlobalLeads = (params?: {
   page?: number; per_page?: number;
+  // lead_list_id accepts a comma-separated list of IDs, plus the "__unassigned__" sentinel
+  // (mixable with real IDs, e.g. "abc,__unassigned__,def") to filter by multiple lists at once.
   lead_list_id?: string; campaign_id?: string;
+  // status accepts a comma-separated list of status values for multi-select filtering.
   status?: string; search?: string;
   sort_by?: string; sort_dir?: "asc" | "desc";
   requested_after?: string; requested_before?: string;
@@ -369,11 +372,11 @@ export const fetchGlobalLeads = (params?: {
   const sp = new URLSearchParams();
   if (params?.page) sp.set("page", String(params.page));
   if (params?.per_page) sp.set("per_page", String(params.per_page));
-  // "__unassigned__" is a sentinel value from the filter dropdowns — translate to boolean flags
-  if (params?.lead_list_id === "__unassigned__") {
-    sp.set("unassigned_list", "true");
-  } else if (params?.lead_list_id) {
-    sp.set("lead_list_id", params.lead_list_id);
+  if (params?.lead_list_id) {
+    const parts = params.lead_list_id.split(",").filter(Boolean);
+    const realIds = parts.filter((p) => p !== "__unassigned__");
+    if (parts.includes("__unassigned__")) sp.set("unassigned_list", "true");
+    if (realIds.length) sp.set("lead_list_id", realIds.join(","));
   }
   if (params?.campaign_id === "__unassigned__") {
     sp.set("unassigned_campaign", "true");

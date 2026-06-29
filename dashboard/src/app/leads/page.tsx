@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   useGlobalLeads,
   useLeadLists,
@@ -19,6 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { MultiSelectFilter } from "@/components/leads/multi-select-filter";
 import { toast } from "sonner";
 import {
   Tooltip,
@@ -36,6 +37,16 @@ type SortKey = "name" | "company" | "status" | "requested_at" | "created_at";
 const STATUS_LABELS: Record<string, string> = {
   connection_requested: "requested",
 };
+
+const ALL_STATUSES = ["pending", "scheduled", "connection_requested", "connected", "completed", "skipped", "error", "removed"];
+// "removed" leads are noise in the default view — start with them unchecked.
+const DEFAULT_STATUSES = new Set(ALL_STATUSES.filter((s) => s !== "removed"));
+
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
 
 const ERROR_LABELS: Record<string, string> = {
   skipped_manually: "Skipped manually",
@@ -173,8 +184,8 @@ export default function GlobalLeadsPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, 300);
-  const [statusFilter, setStatusFilter] = useState<string | undefined>();
-  const [listFilter, setListFilter] = useState<string | undefined>();
+  const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set(DEFAULT_STATUSES));
+  const [listFilter, setListFilter] = useState<Set<string>>(new Set());
   const [campaignFilter, setCampaignFilter] = useState<string | undefined>();
   const [skipReasonFilter, setSkipReasonFilter] = useState<string>("");
   const [requestedAfter, setRequestedAfter] = useState<string>("");
@@ -191,11 +202,32 @@ export default function GlobalLeadsPage() {
 
   useEffect(() => { setPage(1); }, [debouncedSearch]);
 
+  const { data: lists } = useLeadLists();
+  const { data: campaigns } = useCampaigns();
+
+  const listOptions = useMemo(
+    () => [
+      { value: "__unassigned__", label: "— Unassigned —" },
+      ...(lists?.map((ll) => ({ value: ll.id, label: ll.name })) ?? []),
+    ],
+    [lists]
+  );
+
+  // Sets convert to comma-joined query params. Empty status selection has to be sent as
+  // a sentinel that matches no real status (rather than omitted, which would mean "no filter").
+  const statusParam =
+    statusFilter.size === ALL_STATUSES.length
+      ? undefined
+      : statusFilter.size === 0
+      ? "__none__"
+      : Array.from(statusFilter).join(",");
+  const listParam = listFilter.size === 0 ? undefined : Array.from(listFilter).join(",");
+
   const { data: leadsData, isLoading } = useGlobalLeads({
     page, per_page: 50,
     search: debouncedSearch || undefined,
-    status: statusFilter,
-    lead_list_id: listFilter,
+    status: statusParam,
+    lead_list_id: listParam,
     campaign_id: campaignFilter,
     sort_by: sortBy ?? undefined,
     sort_dir: sortDir,
@@ -207,8 +239,6 @@ export default function GlobalLeadsPage() {
     has_email: hasEmail,
     tg_contacted: tgContacted,
   });
-  const { data: lists } = useLeadLists();
-  const { data: campaigns } = useCampaigns();
   const deleteLead = useDeleteLead();
   const restoreLead = useRestoreLead();
   const skipLead = useSkipLead();
@@ -218,7 +248,6 @@ export default function GlobalLeadsPage() {
   const bulkRequeue = useBulkRequeueLeads();
 
   const totalPages = leadsData ? Math.ceil(leadsData.total / leadsData.per_page) : 1;
-  const statuses = ["pending", "scheduled", "connection_requested", "connected", "completed", "skipped", "error", "removed"];
 
   function toggleSort(col: SortKey) {
     if (sortBy === col) {
@@ -230,10 +259,10 @@ export default function GlobalLeadsPage() {
     setPage(1);
   }
 
-  const hasActiveFilters = debouncedSearch || statusFilter || listFilter || campaignFilter || skipReasonFilter || requestedAfter || requestedBefore || sortBy || hasTelegram !== undefined || hasTwitter !== undefined || hasEmail !== undefined || tgContacted !== undefined;
+  const hasActiveFilters = Boolean(debouncedSearch) || !setsEqual(statusFilter, DEFAULT_STATUSES) || listFilter.size > 0 || campaignFilter || skipReasonFilter || requestedAfter || requestedBefore || sortBy || hasTelegram !== undefined || hasTwitter !== undefined || hasEmail !== undefined || tgContacted !== undefined;
 
   function resetFilters() {
-    setSearch(""); setStatusFilter(undefined); setListFilter(undefined); setCampaignFilter(undefined);
+    setSearch(""); setStatusFilter(new Set(DEFAULT_STATUSES)); setListFilter(new Set()); setCampaignFilter(undefined);
     setSkipReasonFilter(""); setRequestedAfter(""); setRequestedBefore(""); setSortBy(null); setSortDir("desc"); setPage(1);
     setSelected(new Set());
     setHasTelegram(undefined); setHasTwitter(undefined); setHasEmail(undefined); setTgContacted(undefined);
@@ -274,25 +303,21 @@ export default function GlobalLeadsPage() {
           onChange={(e) => setSearch(e.target.value)}
           className="max-w-xs"
         />
-        <select
-          className="rounded-md border border-border bg-background px-3 py-2 text-sm"
-          value={statusFilter ?? ""}
-          onChange={(e) => { setStatusFilter(e.target.value || undefined); setPage(1); }}
-        >
-          <option value="">All statuses</option>
-          {statuses.map((s) => (
-            <option key={s} value={s}>{STATUS_LABELS[s] ?? s.replace(/_/g, " ")}</option>
-          ))}
-        </select>
-        <select
-          className="rounded-md border border-border bg-background px-3 py-2 text-sm"
-          value={listFilter ?? ""}
-          onChange={(e) => { setListFilter(e.target.value || undefined); setPage(1); }}
-        >
-          <option value="">All lists</option>
-          <option value="__unassigned__">— Unassigned —</option>
-          {lists?.map((ll) => <option key={ll.id} value={ll.id}>{ll.name}</option>)}
-        </select>
+        <MultiSelectFilter
+          label="Status"
+          options={ALL_STATUSES.map((s) => ({ value: s, label: STATUS_LABELS[s] ?? s.replace(/_/g, " ") }))}
+          selected={statusFilter}
+          onChange={(next) => { setStatusFilter(next); setPage(1); }}
+        />
+        <MultiSelectFilter
+          label="Lists"
+          searchable
+          emptyMeansAll
+          options={listOptions}
+          selected={listFilter}
+          onChange={(next) => { setListFilter(next); setPage(1); }}
+          renderTriggerLabel={(count, total) => (count === 0 || count === total ? "All lists" : `Lists (${count})`)}
+        />
         <select
           className="rounded-md border border-border bg-background px-3 py-2 text-sm"
           value={campaignFilter ?? ""}

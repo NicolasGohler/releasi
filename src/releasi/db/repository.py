@@ -1984,9 +1984,7 @@ class Repository:
         stmt = select(Lead)
         count_stmt = select(func.count()).select_from(Lead)
 
-        if lead_list_id:
-            stmt = stmt.where(Lead.lead_list_id == lead_list_id)
-            count_stmt = count_stmt.where(Lead.lead_list_id == lead_list_id)
+        list_ids = [s.strip() for s in lead_list_id.split(",") if s.strip()] if lead_list_id else []
 
         if campaign_id:
             # Phase 3b: join via CampaignLeadAssignment since Lead.campaign_id is NULL
@@ -2000,8 +1998,10 @@ class Repository:
             )
 
         if status_filter:
-            stmt = stmt.where(Lead.status == status_filter)
-            count_stmt = count_stmt.where(Lead.status == status_filter)
+            statuses = [s.strip() for s in status_filter.split(",") if s.strip()]
+            if statuses:
+                stmt = stmt.where(Lead.status.in_(statuses))
+                count_stmt = count_stmt.where(Lead.status.in_(statuses))
 
         if search:
             pattern = f"%{search}%"
@@ -2037,14 +2037,20 @@ class Repository:
             stmt = stmt.where(no_cla)
             count_stmt = count_stmt.where(no_cla)
 
-        if unassigned_list:
+        if list_ids or unassigned_list:
             no_mem = not_(exists(
                 select(LeadListMembership.lead_id).where(
                     LeadListMembership.lead_id == Lead.id
                 )
             ))
-            stmt = stmt.where(no_mem)
-            count_stmt = count_stmt.where(no_mem)
+            if list_ids and unassigned_list:
+                list_cond = or_(Lead.lead_list_id.in_(list_ids), no_mem)
+            elif list_ids:
+                list_cond = Lead.lead_list_id.in_(list_ids)
+            else:
+                list_cond = no_mem
+            stmt = stmt.where(list_cond)
+            count_stmt = count_stmt.where(list_cond)
 
         # ── Social / enrichment filters ───────────────────────────────────
         if has_telegram is True:

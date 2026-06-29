@@ -440,9 +440,9 @@ async def trigger_telegram_enrichment(
 async def list_leads_global(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
-    lead_list_id: Optional[str] = Query(None),
+    lead_list_id: Optional[str] = Query(None, description="Comma-separated list IDs"),
     campaign_id: Optional[str] = Query(None),
-    status: Optional[str] = Query(None),
+    status: Optional[str] = Query(None, description="Comma-separated status values"),
     search: Optional[str] = Query(None),
     sort_by: Optional[str] = Query(None),
     sort_dir: str = Query("desc"),
