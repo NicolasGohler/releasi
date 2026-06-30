@@ -1614,20 +1614,28 @@ class Repository:
     async def get_list_leads(
         self, lead_list_id: str, page: int = 1, per_page: int = 50
     ) -> tuple:
-        """Return (leads, total_count) for a lead list."""
-        stmt = select(Lead).where(Lead.lead_list_id == lead_list_id)
-        count_stmt = select(func.count()).select_from(Lead).where(
-            Lead.lead_list_id == lead_list_id
+        """Return (leads, total_count) for a lead list via LeadListMembership."""
+        member_ids = select(LeadListMembership.lead_id).where(
+            LeadListMembership.lead_list_id == lead_list_id
         )
+        count_stmt = select(func.count()).select_from(Lead).where(Lead.id.in_(member_ids))
         total = (await self.session.execute(count_stmt)).scalar_one()
-        stmt = stmt.order_by(Lead.created_at).offset((page - 1) * per_page).limit(per_page)
+        stmt = (
+            select(Lead)
+            .where(Lead.id.in_(member_ids))
+            .order_by(Lead.created_at)
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+        )
         result = await self.session.execute(stmt)
         return result.scalars().all(), total
 
     async def get_list_lead_urls(self, lead_list_id: str) -> set:
-        """Get all linkedin_urls in a lead list (for dedup)."""
+        """Get all linkedin_urls in a lead list (for dedup), via LeadListMembership."""
         result = await self.session.execute(
-            select(Lead.linkedin_url).where(Lead.lead_list_id == lead_list_id)
+            select(Lead.linkedin_url)
+            .join(LeadListMembership, LeadListMembership.lead_id == Lead.id)
+            .where(LeadListMembership.lead_list_id == lead_list_id)
         )
         return {r[0] for r in result.all()}
 
