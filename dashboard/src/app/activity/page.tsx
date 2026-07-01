@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import {
   Send, MessageSquare, UserCheck, AlertCircle, Zap, Search,
   RefreshCw, ChevronLeft, ChevronRight, Filter, X,
@@ -116,9 +117,19 @@ function ActivityRow({ item }: { item: ActivityItem }) {
             </span>
           )}
           {item.lead_name && (
-            <span className="text-xs bg-muted px-1.5 py-0.5 rounded text-muted-foreground truncate max-w-[160px]">
-              {item.lead_name}
-            </span>
+            item.lead_id ? (
+              <Link
+                href={`/leads/${item.lead_id}`}
+                onClick={(e) => e.stopPropagation()}
+                className="text-xs bg-muted px-1.5 py-0.5 rounded text-muted-foreground hover:text-foreground truncate max-w-[160px] transition-colors"
+              >
+                {item.lead_name}
+              </Link>
+            ) : (
+              <span className="text-xs bg-muted px-1.5 py-0.5 rounded text-muted-foreground truncate max-w-[160px]">
+                {item.lead_name}
+              </span>
+            )
           )}
           {item.account_name && (
             <span className="text-xs bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded truncate max-w-[120px]">
