@@ -11,7 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, U
 from pydantic import BaseModel
 
 from releasi.api.auth import require_api_key
-from releasi.api.deps import get_repo
+from releasi.api.deps import get_repo, get_current_user_id
 from releasi.api.schemas import (
     LeadListOut,
     LeadListCreate,
@@ -303,20 +303,40 @@ async def update_lead_list(
 
 
 @router.post("/lead-lists/{lead_list_id}/archive", response_model=LeadListOut)
-async def archive_lead_list(lead_list_id: str, repo: Repository = Depends(get_repo)):
+async def archive_lead_list(
+    lead_list_id: str,
+    repo: Repository = Depends(get_repo),
+    actor_user_id: Optional[str] = Depends(get_current_user_id),
+):
     ll = await repo.get_lead_list(lead_list_id)
     if not ll:
         raise HTTPException(status_code=404, detail="Lead list not found")
     ll = await repo.update_lead_list(ll, archived=True)
+    logger.info(
+        "lead_list_archived",
+        list_id=lead_list_id,
+        list_name=ll.name,
+        actor_user_id=actor_user_id or "system",
+    )
     return await _enrich_lead_list(repo, ll)
 
 
 @router.post("/lead-lists/{lead_list_id}/unarchive", response_model=LeadListOut)
-async def unarchive_lead_list(lead_list_id: str, repo: Repository = Depends(get_repo)):
+async def unarchive_lead_list(
+    lead_list_id: str,
+    repo: Repository = Depends(get_repo),
+    actor_user_id: Optional[str] = Depends(get_current_user_id),
+):
     ll = await repo.get_lead_list(lead_list_id)
     if not ll:
         raise HTTPException(status_code=404, detail="Lead list not found")
     ll = await repo.update_lead_list(ll, archived=False)
+    logger.info(
+        "lead_list_unarchived",
+        list_id=lead_list_id,
+        list_name=ll.name,
+        actor_user_id=actor_user_id or "system",
+    )
     return await _enrich_lead_list(repo, ll)
 
 
@@ -454,6 +474,7 @@ async def unassign_list_from_campaign(
     lead_list_id: str,
     body: AssignListRequest,
     repo: Repository = Depends(get_repo),
+    actor_user_id: Optional[str] = Depends(get_current_user_id),
 ):
     ll = await repo.get_lead_list(lead_list_id)
     if not ll:
@@ -465,4 +486,13 @@ async def unassign_list_from_campaign(
 
     count = await repo.unassign_list_from_campaign(lead_list_id, body.campaign_id)
     await repo.update_campaign(campaign, total_leads=max(0, campaign.total_leads - count))
+    logger.info(
+        "lead_list_unassigned",
+        list_id=lead_list_id,
+        list_name=ll.name,
+        campaign_id=body.campaign_id,
+        campaign_name=campaign.name,
+        leads_removed=count,
+        actor_user_id=actor_user_id or "system",
+    )
     return {"leads_removed": count}
