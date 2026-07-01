@@ -799,8 +799,7 @@ def _fetch_cryptorank_combined(project_url, context):
                     globals()["_cryptorank_cookie_warning_sent"] = True
                     try:
                         send_error_to_slack(
-                            "⚠️ CryptoRank cookies expired — fundraising agent is getting Cloudflare error pages.
-"
+                            "⚠️ CryptoRank cookies expired — fundraising agent is getting Cloudflare error pages. "
                             "Refresh the CryptoRank cookie via the dashboard Scrapers page."
                         )
                     except Exception:
