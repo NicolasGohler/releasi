@@ -24,6 +24,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useDropzone } from "react-dropzone";
 import { exportLeadListCSV } from "@/lib/api";
+import Link from "next/link";
 
 function EmailCopyButton({ email }: { email: string }) {
   const [copied, setCopied] = useState(false);
@@ -250,7 +251,7 @@ export default function LeadListDetailPage({
                   key={c.id}
                   className="flex items-center justify-between rounded-md bg-muted px-3 py-2"
                 >
-                  <span className="text-sm">{c.name}</span>
+                  <Link href={`/campaigns/${c.id}`} className="text-sm hover:underline">{c.name}</Link>
                   <Button
                     size="sm"
                     variant="outline"
@@ -335,7 +336,9 @@ export default function LeadListDetailPage({
                       <tr key={lead.id} className="border-b last:border-0">
                         <td className="py-2">
                           <div className="flex items-center gap-0.5">
-                            {[lead.first_name, lead.last_name].filter(Boolean).join(" ") || "—"}
+                            <Link href={`/leads/${lead.id}`} className="hover:underline">
+                              {[lead.first_name, lead.last_name].filter(Boolean).join(" ") || "—"}
+                            </Link>
                             {lead.email && <EmailCopyButton email={lead.email} />}
                           </div>
                         </td>

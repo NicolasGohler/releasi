@@ -3,6 +3,24 @@
 import { use, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { GripVertical } from "lucide-react";
 import { CampaignActivityChart } from "@/components/stats/campaign-chart";
 import {
   useCampaign,
@@ -37,6 +55,104 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchAccountActivity, replanAccount } from "@/lib/api";
 import { ResumeCampaignDialog, shouldOfferCatchup } from "@/components/resume-campaign-dialog";
 
+type AssignedList = {
+  id: string;
+  name: string;
+  total_leads: number;
+  status_counts?: Record<string, number> | null;
+};
+
+function SortableListRow({
+  ll,
+  idx,
+  total,
+  listsCount,
+  onUnassign,
+  isUnassigning,
+}: {
+  ll: AssignedList;
+  idx: number;
+  total: number;
+  listsCount: number;
+  onUnassign: () => void;
+  isUnassigning: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: ll.id });
+
+  const counts = ll.status_counts ?? {};
+  const accepted = (counts["connected"] ?? 0) + (counts["followup_scheduled"] ?? 0) + (counts["followup_sent"] ?? 0) + (counts["completed"] ?? 0);
+  const sent = counts["connection_requested"] ?? 0;
+  const other = total - (counts["pending"] ?? 0) - (counts["scheduled"] ?? 0) - accepted - sent;
+  const acceptedPct = total > 0 ? Math.round((accepted / total) * 100) : 0;
+  const sentPct = total > 0 ? Math.round((sent / total) * 100) : 0;
+  const otherPct = total > 0 ? Math.round((other / total) * 100) : 0;
+  const processedPct = acceptedPct + sentPct + otherPct;
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={`rounded-md bg-muted px-3 py-2 space-y-2 ${isDragging ? "opacity-50 shadow-lg" : ""}`}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {listsCount > 1 && (
+            <button
+              type="button"
+              className="cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground touch-none"
+              {...attributes}
+              {...listeners}
+            >
+              <GripVertical className="h-4 w-4" />
+            </button>
+          )}
+          <div>
+            <Link
+              href={`/lead-lists/${ll.id}`}
+              className="text-sm font-medium hover:underline"
+            >
+              {ll.name}
+            </Link>
+            {idx === 0 && listsCount > 1 && (
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-600 ml-2">
+                Priority
+              </span>
+            )}
+            <span className="text-xs text-muted-foreground ml-2">{ll.total_leads} leads</span>
+          </div>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={isUnassigning}
+          onClick={onUnassign}
+        >
+          Unassign
+        </Button>
+      </div>
+      {total > 0 && (
+        <div className="space-y-1">
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>{accepted + sent + other} / {total} processed</span>
+            <span>{processedPct}%</span>
+          </div>
+          <div className="flex h-1.5 w-full rounded-full bg-background overflow-hidden">
+            {acceptedPct > 0 && (
+              <div className="h-full bg-emerald-500 transition-all" style={{ width: `${acceptedPct}%` }} />
+            )}
+            {sentPct > 0 && (
+              <div className="h-full bg-blue-500 transition-all" style={{ width: `${sentPct}%` }} />
+            )}
+            {otherPct > 0 && (
+              <div className="h-full bg-zinc-500 transition-all" style={{ width: `${otherPct}%` }} />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CampaignDetailPage({
   params,
 }: {
@@ -62,6 +178,22 @@ export default function CampaignDetailPage({
   const unassign = useUnassignListFromCampaign();
   const reorderLists = useReorderCampaignLists();
   const { data: leadSample } = useLeads(id, { per_page: 200 });
+  const dndSensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+  const handleListDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const lists = campaign?.assigned_lists ?? [];
+    const oldIndex = lists.findIndex((l) => l.id === active.id);
+    const newIndex = lists.findIndex((l) => l.id === over.id);
+    const reordered = arrayMove(lists, oldIndex, newIndex);
+    reorderLists.mutate(
+      { campaignId: id, orderedListIds: reordered.map((l) => l.id) },
+      { onError: (err) => toast.error(err.message) }
+    );
+  };
 
   // Clone dialog state
   const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
@@ -506,80 +638,30 @@ export default function CampaignDetailPage({
                 <CardTitle>Assigned Lists</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                {(campaign.assigned_lists ?? []).length === 0 ? (
+                {(campaign.assigned_lists ?? []).length === 0 && (
                   <p className="text-sm text-muted-foreground">No lists assigned to this campaign.</p>
-                ) : (
+                )}
+                {(campaign.assigned_lists ?? []).length > 0 && (
                   <div className="space-y-2">
                     {(campaign.assigned_lists ?? []).length > 1 && (
                       <p className="text-xs text-muted-foreground">
-                        Leads are dispatched top-to-bottom — the list at the top is worked through first.
+                        Leads are dispatched top-to-bottom — drag to reorder.
                       </p>
                     )}
-                    {(campaign.assigned_lists ?? []).map((ll, idx) => {
-                      const lists = campaign.assigned_lists ?? [];
-                      const move = (from: number, to: number) => {
-                        const ids = lists.map((l) => l.id);
-                        const [moved] = ids.splice(from, 1);
-                        ids.splice(to, 0, moved);
-                        reorderLists.mutate(
-                          { campaignId: id, orderedListIds: ids },
-                          { onError: (err) => toast.error(err.message) }
-                        );
-                      };
-                      const counts = ll.status_counts ?? {};
-                      const total = Object.values(counts).reduce((a: number, b: number) => a + b, 0);
-                      const accepted = (counts["connected"] ?? 0) + (counts["followup_scheduled"] ?? 0) + (counts["followup_sent"] ?? 0) + (counts["completed"] ?? 0);
-                      const sent = counts["connection_requested"] ?? 0;
-                      const pending = (counts["pending"] ?? 0) + (counts["scheduled"] ?? 0);
-                      const other = total - pending - sent - accepted;
-                      const acceptedPct = total > 0 ? Math.round((accepted / total) * 100) : 0;
-                      const sentPct = total > 0 ? Math.round((sent / total) * 100) : 0;
-                      const otherPct = total > 0 ? Math.round((other / total) * 100) : 0;
-                      const processedPct = acceptedPct + sentPct + otherPct;
-                      return (
-                        <div
-                          key={ll.id}
-                          className="rounded-md bg-muted px-3 py-2 space-y-2"
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              {lists.length > 1 && (
-                                <div className="flex flex-col -my-1">
-                                  <button
-                                    type="button"
-                                    aria-label="Move up"
-                                    disabled={idx === 0 || reorderLists.isPending}
-                                    onClick={() => move(idx, idx - 1)}
-                                    className="text-muted-foreground hover:text-foreground disabled:opacity-30 leading-none"
-                                  >
-                                    ▲
-                                  </button>
-                                  <button
-                                    type="button"
-                                    aria-label="Move down"
-                                    disabled={idx === lists.length - 1 || reorderLists.isPending}
-                                    onClick={() => move(idx, idx + 1)}
-                                    className="text-muted-foreground hover:text-foreground disabled:opacity-30 leading-none"
-                                  >
-                                    ▼
-                                  </button>
-                                </div>
-                              )}
-                              <div>
-                                <span className="text-sm font-medium">{ll.name}</span>
-                                {idx === 0 && lists.length > 1 && (
-                                  <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-600 ml-2">
-                                    Priority
-                                  </span>
-                                )}
-                                <span className="text-xs text-muted-foreground ml-2">{ll.total_leads} leads</span>
-                              </div>
-                            </div>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={unassign.isPending}
-                              onClick={() =>
+                    <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleListDragEnd}>
+                      <SortableContext items={(campaign.assigned_lists ?? []).map((l) => l.id)} strategy={verticalListSortingStrategy}>
+                        {(campaign.assigned_lists ?? []).map((ll, idx) => {
+                          const counts = ll.status_counts ?? {};
+                          const total = Object.values(counts).reduce((a: number, b: number) => a + b, 0);
+                          return (
+                            <SortableListRow
+                              key={ll.id}
+                              ll={ll}
+                              idx={idx}
+                              total={total}
+                              listsCount={(campaign.assigned_lists ?? []).length}
+                              isUnassigning={unassign.isPending}
+                              onUnassign={() =>
                                 unassign.mutate(
                                   { listId: ll.id, campaignId: id },
                                   {
@@ -589,32 +671,11 @@ export default function CampaignDetailPage({
                                   }
                                 )
                               }
-                            >
-                              Unassign
-                            </Button>
-                          </div>
-                          {total > 0 && (
-                            <div className="space-y-1">
-                              <div className="flex justify-between text-xs text-muted-foreground">
-                                <span>{accepted + sent + other} / {total} processed</span>
-                                <span>{processedPct}%</span>
-                              </div>
-                              <div className="flex h-1.5 w-full rounded-full bg-background overflow-hidden">
-                                {acceptedPct > 0 && (
-                                  <div className="h-full bg-emerald-500 transition-all" style={{ width: `${acceptedPct}%` }} />
-                                )}
-                                {sentPct > 0 && (
-                                  <div className="h-full bg-blue-500 transition-all" style={{ width: `${sentPct}%` }} />
-                                )}
-                                {otherPct > 0 && (
-                                  <div className="h-full bg-zinc-500 transition-all" style={{ width: `${otherPct}%` }} />
-                                )}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                            />
+                          );
+                        })}
+                      </SortableContext>
+                    </DndContext>
                   </div>
                 )}
 
