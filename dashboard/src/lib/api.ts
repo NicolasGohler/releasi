@@ -605,5 +605,8 @@ export const fetchFundraisingRunLog = (tail = 200) =>
     `/scrapers/fundraising-run/log?tail=${tail}`
   );
 
+export const triggerFundraisingRun = () =>
+  apiFetch<{ success: boolean }>("/scrapers/fundraising-run/trigger", { method: "POST" });
+
 export const fetchTgSweepStatus = () =>
   apiFetch<import("./types").TgSweepStatus>("/scrapers/tg-sweep/status");

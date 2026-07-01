@@ -672,6 +672,13 @@ def _parse_team_from_cryptorank_soup(soup, team_url):
     return members
 
 
+# Domains that are never valid company websites — CDN/error pages, major social platforms
+_BLOCKED_DOMAINS = {
+    'cloudflare.com', 'cloudflare.net', 'cloudflare-dns.com',
+    'twitter.com', 'x.com', 'linkedin.com', 'facebook.com',
+    'web.archive.org', 'archive.org',
+}
+
 def _build_website_info_from_url(website):
     """Convert a raw website URL string to the {website, domain} dict used
     elsewhere in the pipeline.  Returns None if the URL is invalid or Telegram."""
@@ -688,6 +695,9 @@ def _build_website_info_from_url(website):
             domain = domain[4:]
         if 't.me' in domain.lower() or 'telegram' in domain.lower():
             print(f" Domain appears to be telegram: {domain} — skipping")
+            return None
+        if any(domain == bd or domain.endswith('.' + bd) for bd in _BLOCKED_DOMAINS):
+            print(f" Blocked domain detected: {domain} (likely a CDN/error page) — skipping")
             return None
         print(f" Successfully found website: {website} (domain: {domain})")
         return {"website": website, "domain": domain}
@@ -781,7 +791,24 @@ def _fetch_cryptorank_combined(project_url, context):
             print(" Main project page loaded")
             _sleep(2)
 
-            # Mid-run Cloudflare check
+            # Redirect-to-error-page check (expired cookie → Cloudflare 5xx landing)
+            final_netloc = urlparse(page.url).netloc.lower().lstrip('www.')
+            if any(final_netloc == bd or final_netloc.endswith('.' + bd) for bd in _BLOCKED_DOMAINS):
+                print(f" ⚠ Redirected to error/CDN page ({page.url}) — CryptoRank cookies likely expired")
+                if not _cryptorank_cookie_warning_sent:
+                    globals()["_cryptorank_cookie_warning_sent"] = True
+                    try:
+                        send_error_to_slack(
+                            "⚠️ CryptoRank cookies expired — fundraising agent is getting Cloudflare error pages.
+"
+                            "Refresh the CryptoRank cookie via the dashboard Scrapers page."
+                        )
+                    except Exception:
+                        pass
+                page.close()
+                return None, [], [], False
+
+            # Mid-run Cloudflare challenge check
             if _is_cloudflare_blocked(page):
                 print(" Cloudflare challenge on project page — skipping this project")
                 page.close()

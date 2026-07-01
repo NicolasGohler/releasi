@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Globe, RefreshCw, CheckCircle2, AlertCircle, Clock, Terminal, Search, Minus } from "lucide-react";
+import { Globe, RefreshCw, CheckCircle2, AlertCircle, Clock, Terminal, Search, Minus, Play } from "lucide-react";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -215,6 +215,7 @@ function FundraisingRunPanel() {
   const [lines, setLines] = useState<string[]>([]);
   const [totalLines, setTotalLines] = useState(0);
   const [logOpen, setLogOpen] = useState(false);
+  const [triggering, setTriggering] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -232,6 +233,23 @@ function FundraisingRunPanel() {
     }
   };
 
+  const livelyRunning = !!(status?.running && !isStale(status));
+
+  const handleTrigger = async () => {
+    if (triggering || livelyRunning) return;
+    setTriggering(true);
+    try {
+      await api.triggerFundraisingRun();
+      toast.success("Run triggered — agent will start within a minute");
+      await fetchData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(msg.includes("409") ? "Agent is already running" : `Failed to trigger: ${msg}`);
+    } finally {
+      setTriggering(false);
+    }
+  };
+
   // Auto-scroll to bottom when log is open and new lines arrive
   useEffect(() => {
     if (logOpen) {
@@ -239,8 +257,6 @@ function FundraisingRunPanel() {
       if (el) el.scrollTop = el.scrollHeight;
     }
   }, [lines, logOpen]);
-
-  const livelyRunning = !!(status?.running && !isStale(status));
 
   useEffect(() => {
     fetchData();
@@ -296,9 +312,24 @@ function FundraisingRunPanel() {
             <p className="text-xs text-muted-foreground mt-0.5">Weekly — Monday 09:00 UTC · CryptoRank + RootData + Apollo</p>
           </div>
         </div>
-        <button onClick={fetchData} className="text-xs text-muted-foreground hover:text-foreground transition-colors" title="Refresh">
-          <RefreshCw className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleTrigger}
+            disabled={triggering || livelyRunning}
+            title={livelyRunning ? "Already running" : "Run now"}
+            className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {triggering ? (
+              <RefreshCw className="h-3 w-3 animate-spin" />
+            ) : (
+              <Play className="h-3 w-3" />
+            )}
+            Run now
+          </button>
+          <button onClick={fetchData} className="text-xs text-muted-foreground hover:text-foreground transition-colors" title="Refresh">
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
 
       {/* Status badge + last-run timestamps */}

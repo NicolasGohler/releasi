@@ -17,6 +17,7 @@ from typing import Optional
 
 FUNDRAISING_LOG_PATH = "/app/data/fundraising_run.log"
 FUNDRAISING_STATUS_PATH = "/app/data/fundraising_run_status.json"
+FUNDRAISING_TRIGGER_PATH = "/app/data/fundraising_trigger"
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
@@ -246,6 +247,27 @@ class ScraperSessionManager:
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
+
+@router.post("/scrapers/fundraising-run/trigger")
+async def trigger_fundraising_run():
+    """Write a trigger file that the host-side systemd path unit picks up to start the fundraising agent."""
+    if os.path.exists(FUNDRAISING_STATUS_PATH):
+        try:
+            with open(FUNDRAISING_STATUS_PATH) as f:
+                status = json.load(f)
+            if status.get("running"):
+                raise HTTPException(status_code=409, detail="Fundraising agent is already running")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    try:
+        with open(FUNDRAISING_TRIGGER_PATH, "w") as f:
+            json.dump({"triggered_at": datetime.utcnow().isoformat(), "source": "dashboard"}, f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not write trigger file: {e}")
+    return {"success": True}
+
 
 @router.get("/scrapers/fundraising-run/status")
 async def get_fundraising_run_status():
