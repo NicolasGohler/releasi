@@ -143,16 +143,32 @@ async def scrape_event_attendees(
         url = _build_page_url(search_url, page_num)
         logger.info("scraper.loading_page", page=page_num, url=url)
 
-        try:
-            await asyncio.wait_for(
-                page.goto(url, wait_until="domcontentloaded", timeout=15000),
-                timeout=30.0,  # asyncio-level safety net if Playwright's browser freezes
-            )
-        except asyncio.TimeoutError:
-            logger.error("scraper.page_frozen", page=page_num)
-            break
-        except Exception as e:
-            logger.error("scraper.navigation_failed", page=page_num, error=str(e))
+        # Single retry on freeze/error with a long backoff — if LinkedIn rate-limited
+        # this page, hammering it immediately would be worse. We try once more after
+        # 20s; if it freezes again we stop rather than risk the account.
+        nav_ok = False
+        for attempt in range(2):
+            try:
+                await asyncio.wait_for(
+                    page.goto(url, wait_until="domcontentloaded", timeout=15000),
+                    timeout=30.0,
+                )
+                nav_ok = True
+                break
+            except asyncio.TimeoutError:
+                if attempt == 0:
+                    logger.warning("scraper.page_frozen_retrying", page=page_num)
+                    await asyncio.sleep(20.0)
+                else:
+                    logger.error("scraper.page_frozen_giving_up", page=page_num)
+            except Exception as e:
+                if attempt == 0:
+                    logger.warning("scraper.navigation_failed_retrying", page=page_num, error=str(e))
+                    await asyncio.sleep(20.0)
+                else:
+                    logger.error("scraper.navigation_failed_giving_up", page=page_num, error=str(e))
+
+        if not nav_ok:
             break
 
         # Session check — redirect to /login means expired cookie
