@@ -297,6 +297,8 @@ class LeadListOut(BaseModel):
     campaign_count: int = 0
     archived: bool = False
     tg_enrich_enabled: bool = True
+    source_url: Optional[str] = None
+    scrape_account_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

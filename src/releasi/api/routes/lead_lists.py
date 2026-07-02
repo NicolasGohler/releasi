@@ -246,7 +246,39 @@ async def event_import_list(
     """Create a lead list and start scraping LinkedIn event attendees in the background."""
     name = body.list_name or f"Event Attendees - {datetime.utcnow().strftime('%m/%d')}"
     ll = await repo.create_lead_list(name=name, csv_filename="scraping...")
+    ll = await repo.update_lead_list(ll, source_url=body.url, scrape_account_id=body.account_id)
     background_tasks.add_task(_run_event_scrape, ll.id, body.account_id, body.url, body.limit)
+    return await _enrich_lead_list(repo, ll)
+
+
+class ReScrapeRequest(BaseModel):
+    account_id: Optional[str] = None
+    limit: Optional[int] = None
+
+
+@router.post("/lead-lists/{lead_list_id}/re-scrape", response_model=LeadListOut)
+async def re_scrape_list(
+    lead_list_id: str,
+    body: ReScrapeRequest,
+    background_tasks: BackgroundTasks,
+    repo: Repository = Depends(get_repo),
+):
+    """Re-run the LinkedIn event scrape on an existing list, skipping already-imported leads."""
+    ll = await repo.get_lead_list(lead_list_id)
+    if not ll:
+        raise HTTPException(status_code=404, detail="Lead list not found")
+    if not ll.source_url:
+        raise HTTPException(status_code=400, detail="No source URL stored for this list — cannot re-scrape")
+
+    account_id = body.account_id or ll.scrape_account_id
+    if not account_id:
+        raise HTTPException(status_code=400, detail="No account ID provided and none stored on this list")
+
+    # Update stored account if caller explicitly overrode it
+    if body.account_id and body.account_id != ll.scrape_account_id:
+        ll = await repo.update_lead_list(ll, scrape_account_id=body.account_id)
+
+    background_tasks.add_task(_run_event_scrape, ll.id, account_id, ll.source_url, body.limit)
     return await _enrich_lead_list(repo, ll)
 
 

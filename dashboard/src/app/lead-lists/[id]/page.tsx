@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState, useCallback, useTransition } from "react";
-import { Mail, Check } from "lucide-react";
+import { Mail, Check, RefreshCw } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -16,6 +16,8 @@ import {
   useAssignListToCampaign,
   useUnassignListFromCampaign,
   useUpdateLeadList,
+  useReScrapeList,
+  useScrapeStatus,
 } from "@/hooks/use-queries";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
@@ -64,6 +66,9 @@ export default function LeadListDetailPage({
   const assign = useAssignListToCampaign();
   const unassign = useUnassignListFromCampaign();
   const updateList = useUpdateLeadList(id);
+  const reScrape = useReScrapeList(id);
+  const [scrapingListId, setScrapingListId] = useState<string | null>(null);
+  const { data: scrapeStatus } = useScrapeStatus(scrapingListId);
   const [selectedCampaign, setSelectedCampaign] = useState("");
   const [isExporting, startExport] = useTransition();
 
@@ -117,6 +122,32 @@ export default function LeadListDetailPage({
         <span className="text-sm text-muted-foreground">
           {list.total_leads} leads · Last imported {lastImportedLabel}
         </span>
+        {list.source_url && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={reScrape.isPending || scrapeStatus?.status === "running" || scrapeStatus?.status === "enriching" as string}
+            onClick={() => {
+              reScrape.mutate(
+                {},
+                {
+                  onSuccess: (updated) => {
+                    toast.success("Re-scrape started — collecting new attendees...");
+                    setScrapingListId(updated.id);
+                  },
+                  onError: (err) => toast.error(`Re-scrape failed: ${err.message}`),
+                }
+              );
+            }}
+          >
+            <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${reScrape.isPending || scrapeStatus?.status === "running" ? "animate-spin" : ""}`} />
+            {scrapeStatus?.status === "running"
+              ? `Scraping… ${scrapeStatus.collected}`
+              : scrapeStatus?.status === "done"
+              ? `Done — ${scrapeStatus.collected} found`
+              : "Re-scrape"}
+          </Button>
+        )}
         <Button
           variant="outline"
           size="sm"

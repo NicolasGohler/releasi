@@ -529,6 +529,12 @@ export const startEventImport = (data: {
 export const fetchScrapeStatus = (listId: string) =>
   apiFetch<ScrapeStatus>(`/lead-lists/${listId}/scrape-status`);
 
+export const reScrapeList = (listId: string, opts: { account_id?: string; limit?: number } = {}) =>
+  apiFetch<LeadList>(`/lead-lists/${listId}/re-scrape`, {
+    method: "POST",
+    body: JSON.stringify(opts),
+  });
+
 // ── Archive ──────────────────────────────────────────────────────────────
 
 export const archiveAccount = (id: string) =>

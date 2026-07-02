@@ -89,6 +89,8 @@ export interface LeadList {
   campaign_count: number;
   archived: boolean;
   tg_enrich_enabled: boolean;
+  source_url: string | null;
+  scrape_account_id: string | null;
   created_at: string;
   updated_at: string;
 }

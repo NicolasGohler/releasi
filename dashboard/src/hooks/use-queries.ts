@@ -281,6 +281,18 @@ export function useScrapeStatus(listId: string | null) {
   });
 }
 
+export function useReScrapeList(listId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (opts: { account_id?: string; limit?: number } = {}) =>
+      api.reScrapeList(listId, opts),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["lead-lists", listId] });
+      qc.invalidateQueries({ queryKey: ["lead-lists"] });
+    },
+  });
+}
+
 export function useImportCSVToList(listId: string) {
   const qc = useQueryClient();
   return useMutation({

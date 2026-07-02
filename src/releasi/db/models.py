@@ -280,6 +280,8 @@ class LeadList(Base):
     total_leads: Mapped[int] = mapped_column(Integer, default=0)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     tg_enrich_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    scrape_account_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, onupdate=_utcnow
