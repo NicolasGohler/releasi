@@ -1525,10 +1525,21 @@ class LinkedInActions:
 
             anchor = self.page.locator(selectors.INVITATION_WITHDRAW_ANCHOR).nth(i)
             try:
-                await anchor.scroll_into_view_if_needed(timeout=10000)
+                await anchor.scroll_into_view_if_needed(timeout=8000)
             except Exception:
-                logger.warning("action.withdraw_scroll_failed", index=i)
-                break
+                # The absolute last card can sit at the page's scroll limit and refuse to
+                # scroll into view. Try the one above it; if that also fails, stop.
+                if order == "oldest" and cur_total >= 2:
+                    i -= 1
+                    anchor = self.page.locator(selectors.INVITATION_WITHDRAW_ANCHOR).nth(i)
+                    try:
+                        await anchor.scroll_into_view_if_needed(timeout=8000)
+                    except Exception:
+                        logger.warning("action.withdraw_scroll_failed", index=i)
+                        break
+                else:
+                    logger.warning("action.withdraw_scroll_failed", index=i)
+                    break
             await self.delay.micro_delay(0.3, 0.8)
 
             # Extract the profile URL from the ancestor card container
