@@ -57,7 +57,38 @@ class ProfileFilter:
 
     async def _has_photo(self, page: Page) -> bool:
         """Check whether the profile has a real photo (not a placeholder)."""
-        # First check for ghost/placeholder indicators (definitive no-photo)
+        # Primary: JS-based CDN URL check — immune to CSS class name churn.
+        # Real profile photos are served from media.licdn.com/dms/image.
+        # Ghost/default avatars use static.licdn.com or have no meaningful src.
+        try:
+            result = await page.evaluate("""
+                () => {
+                    // Candidates: profile picture images in the top card area.
+                    const imgs = document.querySelectorAll(
+                        'img[class*="profile-picture"], img[class*="pv-top-card"], ' +
+                        '.pv-top-card__non-self-photo-wrapper img, ' +
+                        'main img[alt*="photo" i], main img[alt*="profile" i]'
+                    );
+                    for (const img of imgs) {
+                        const src = img.src || img.getAttribute('src') || '';
+                        if (!src) continue;
+                        if (src.includes('media.licdn.com/dms/image')) return true;
+                        if (src.includes('static.licdn.com') ||
+                            src.includes('/ghost/') ||
+                            src.includes('default-avatar')) return false;
+                    }
+                    return null;
+                }
+            """)
+            if result is True:
+                return True
+            if result is False:
+                return False
+            # null = no candidates found — fall through to CSS selectors
+        except Exception:
+            pass
+
+        # Fallback: CSS class-based selectors (may break when LinkedIn ships new classes)
         for sel in selectors.PROFILE_NO_PHOTO:
             try:
                 if await page.locator(sel).count() > 0:
@@ -65,7 +96,6 @@ class ProfileFilter:
             except Exception:
                 continue
 
-        # Then check for real photo element
         for sel in selectors.PROFILE_PHOTO:
             try:
                 if await page.locator(sel).count() > 0:

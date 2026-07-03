@@ -1041,7 +1041,12 @@ async def start_withdrawal(
         from releasi.linkedin.pool import get_browser_pool
         from releasi.linkedin.actions import LinkedInActions
         import re as re_
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
 
+        urls: list = []
+        db_updated = 0
+        error_msg = None
         try:
             pool = get_browser_pool()
             pool_context = await pool.acquire(acct)
@@ -1056,7 +1061,6 @@ async def start_withdrawal(
                 await pool.release_idle(acct.id)
 
             # Sync withdrawn URLs to DB leads
-            db_updated = 0
             for url in urls:
                 m = re_.search(r'/in/([^/?#\s]+)', url)
                 if not m:
@@ -1066,19 +1070,16 @@ async def start_withdrawal(
                 if updated:
                     db_updated += 1
 
-            _withdrawal_tasks[tid] = {
-                "status": "done",
-                "withdrawn": urls,
-                "db_updated": db_updated,
-                "error": None,
-            }
         except Exception as e:
-            _withdrawal_tasks[tid] = {
-                "status": "error",
-                "withdrawn": [],
-                "db_updated": 0,
-                "error": str(e),
-            }
+            _log.error("withdrawal_task.error tid=%s error=%s", tid, e, exc_info=True)
+            error_msg = str(e)
+
+        _withdrawal_tasks[tid] = {
+            "status": "error" if error_msg else "done",
+            "withdrawn": urls,
+            "db_updated": db_updated,
+            "error": error_msg,
+        }
 
     background_tasks.add_task(_run, task_id, account, count, order)
     return {"task_id": task_id}

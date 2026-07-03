@@ -1507,18 +1507,28 @@ class LinkedInActions:
 
         withdrawn_urls = []
 
-        # Build iteration indices
-        if order == "oldest":
-            indices = range(total - 1, max(total - 1 - count, -1), -1)
-        else:
-            indices = range(0, min(count, total))
-
-        for i in indices:
+        for _ in range(count):
             if len(withdrawn_urls) >= count:
                 break
 
+            cur_total = await self.page.locator(selectors.INVITATION_WITHDRAW_ANCHOR).count()
+            if cur_total == 0:
+                break
+
+            # Always pick dynamically: oldest = current last (bottom), newest = current first (top).
+            # Re-querying cur_total each iteration handles virtual-scroll DOM evictions
+            # (LinkedIn unloads out-of-viewport cards) without index-out-of-bounds timeouts.
+            if order == "oldest":
+                i = cur_total - 1
+            else:
+                i = 0
+
             anchor = self.page.locator(selectors.INVITATION_WITHDRAW_ANCHOR).nth(i)
-            await anchor.scroll_into_view_if_needed()
+            try:
+                await anchor.scroll_into_view_if_needed(timeout=10000)
+            except Exception:
+                logger.warning("action.withdraw_scroll_failed", index=i)
+                break
             await self.delay.micro_delay(0.3, 0.8)
 
             # Extract the profile URL from the ancestor card container
