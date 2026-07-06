@@ -24,7 +24,7 @@ import argparse
 import json
 
 
-async def main(account_name: str, send: bool) -> None:
+async def main(account_name: str, send: bool, url) -> None:
     from releasi.db.engine import get_session_factory
     from releasi.db.repository import Repository
     from releasi.linkedin.browser import LinkedInBrowser
@@ -37,20 +37,20 @@ async def main(account_name: str, send: bool) -> None:
             print(f"[ERROR] Account '{account_name}' not found")
             return
 
-        # Grab the first PENDING lead with a LinkedIn URL
-        leads, _ = await repo.list_leads_global(
-            status_filter="PENDING",
-            per_page=5,
-        )
-        # Filter to leads that have a URL
-        leads = [l for l in leads if l.linkedin_url]
+        if url:
+            profile_url = url.rstrip("/")
+        else:
+            # Grab the first PENDING lead with a LinkedIn URL
+            leads, _ = await repo.list_leads_global(
+                status_filter="PENDING",
+                per_page=5,
+            )
+            leads = [l for l in leads if l.linkedin_url]
+            if not leads:
+                print("[ERROR] No PENDING leads with LinkedIn URL found. Pass --url <profile_url> to specify one.")
+                return
+            profile_url = leads[0].linkedin_url.rstrip("/")
 
-    if not leads:
-        print("[ERROR] No PENDING leads with LinkedIn URL found")
-        return
-
-    target_lead = leads[0]
-    profile_url = target_lead.linkedin_url.rstrip("/")
     print(f"Account   : {account.name}")
     print(f"Target    : {profile_url}")
     print(f"Send mode : {'YES — will click Send' if send else 'NO — will Escape after modal opens'}")
@@ -228,5 +228,11 @@ if __name__ == "__main__":
         help="Actually click Send in the modal to capture the full connection request payload. "
              "Without this flag, the modal is dismissed with Escape (no connection sent).",
     )
+    parser.add_argument(
+        "--url",
+        default=None,
+        help="LinkedIn profile URL to test with (e.g. https://www.linkedin.com/in/some-person/). "
+             "If not set, uses the first PENDING lead for this account.",
+    )
     args = parser.parse_args()
-    asyncio.run(main(args.account, args.send))
+    asyncio.run(main(args.account, args.send, args.url))
