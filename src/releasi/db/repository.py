@@ -1621,19 +1621,21 @@ class Repository:
         lead_list = await self.get_lead_list(lead_list_id)
         if not lead_list:
             return False
-        # Remove campaign links
-        await self.session.execute(
-            select(CampaignLeadList).where(
-                CampaignLeadList.lead_list_id == lead_list_id
-            )
-        )
         from sqlalchemy import delete as sa_delete
+        # Remove campaign links
         await self.session.execute(
             sa_delete(CampaignLeadList).where(
                 CampaignLeadList.lead_list_id == lead_list_id
             )
         )
-        # Null out lead_list_id on leads
+        # Remove list memberships (these gate TG enrichment eligibility — must be
+        # cleaned up or deleted leads' leads become permanently invisible to the sweep)
+        await self.session.execute(
+            sa_delete(LeadListMembership).where(
+                LeadListMembership.lead_list_id == lead_list_id
+            )
+        )
+        # Null out legacy lead_list_id FK on leads
         await self.session.execute(
             update(Lead)
             .where(Lead.lead_list_id == lead_list_id)
