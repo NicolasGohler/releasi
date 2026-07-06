@@ -989,6 +989,8 @@ async def get_invitation_count(
     from releasi.linkedin.actions import LinkedInActions
 
     pool = get_browser_pool()
+    if pool.is_busy(account.id):
+        raise HTTPException(status_code=409, detail="Account browser is busy (dispatcher running)")
     try:
         pool_context = await pool.acquire(account)
     except Exception as e:
@@ -1033,6 +1035,10 @@ async def start_withdrawal(
         raise HTTPException(status_code=422, detail="count must be between 1 and 100")
     if order not in ("oldest", "newest"):
         raise HTTPException(status_code=422, detail="order must be 'oldest' or 'newest'")
+
+    from releasi.linkedin.pool import get_browser_pool as _get_pool
+    if _get_pool().is_busy(account.id):
+        raise HTTPException(status_code=409, detail="Account browser is busy (dispatcher running)")
 
     task_id = f"wd-{_uuid.uuid4().hex[:8]}"
     _withdrawal_tasks[task_id] = {"status": "running", "withdrawn": [], "db_updated": 0, "error": None}

@@ -304,6 +304,10 @@ class CampaignExecutor:
                 else:
                     result["fatal"] = True
         finally:
+            try:
+                await page.goto("about:blank", wait_until="domcontentloaded", timeout=2000)
+            except Exception:
+                pass
             await page.close()
             if browser:
                 await browser.close()
@@ -495,6 +499,10 @@ class CampaignExecutor:
             else:
                 result["fatal"] = True
         finally:
+            try:
+                await page.goto("about:blank", wait_until="domcontentloaded", timeout=2000)
+            except Exception:
+                pass
             await page.close()
             if browser:
                 await browser.close()
