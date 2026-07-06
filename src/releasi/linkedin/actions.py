@@ -1579,7 +1579,10 @@ class LinkedInActions:
                 status=pag_result.get("status"),
                 error=pag_result.get("error"),
             )
-            return []
+            # SDUI endpoint unavailable — fall back to DOM-scroll approach.
+            # Cap at 20 to avoid OOM on large invitation lists.
+            logger.info("action.withdraw_sdui_fallback_dom", count=count)
+            return await self._withdraw_invitations_dom(min(count, 20), order=order)
 
         rsc_body = pag_result.get("body", "")
 
@@ -1679,6 +1682,113 @@ class LinkedInActions:
                 )
 
             await self.delay.micro_delay(1.5, 2.5)
+
+        return withdrawn_urls
+
+    async def _withdraw_invitations_dom(
+        self,
+        count: int,
+        order: str = "oldest",
+    ) -> list:
+        """
+        DOM-scroll fallback for withdraw_invitations. Used only when the SDUI
+        pagination endpoint is unavailable. IMPORTANT: never call with count > 20
+        — loading all invitation cards into the DOM can OOM the 3 GB host.
+
+        Assumes the caller has already navigated to the invitation manager page.
+        """
+        # For oldest order, scroll to load cards so the oldest (bottom) are visible.
+        if order == "oldest":
+            prev_count = 0
+            for _ in range(60):
+                await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await self.delay.micro_delay(1.0, 2.0)
+                cur_count = await self.page.locator(selectors.INVITATION_WITHDRAW_ANCHOR).count()
+                await self.page.evaluate("""
+                () => {
+                    const btn = Array.from(document.querySelectorAll('button'))
+                        .find(b => b.textContent.includes('Show more') || b.textContent.includes('Load more'));
+                    if (btn) btn.click();
+                }
+                """)
+                if cur_count == prev_count:
+                    logger.debug("action.withdraw_dom_scroll_stale", count=cur_count, scrolls=_)
+                    break
+                prev_count = cur_count
+
+        total = await self.page.locator(selectors.INVITATION_WITHDRAW_ANCHOR).count()
+        if total == 0:
+            logger.warning("action.withdraw_dom_no_anchors")
+            return []
+
+        withdrawn_urls: list[str] = []
+
+        for _ in range(count):
+            if len(withdrawn_urls) >= count:
+                break
+
+            cur_total = await self.page.locator(selectors.INVITATION_WITHDRAW_ANCHOR).count()
+            if cur_total == 0:
+                break
+
+            i = cur_total - 1 if order == "oldest" else 0
+
+            anchor = self.page.locator(selectors.INVITATION_WITHDRAW_ANCHOR).nth(i)
+            try:
+                await anchor.scroll_into_view_if_needed(timeout=8000)
+            except Exception:
+                if order == "oldest" and cur_total >= 2:
+                    i -= 1
+                    anchor = self.page.locator(selectors.INVITATION_WITHDRAW_ANCHOR).nth(i)
+                    try:
+                        await anchor.scroll_into_view_if_needed(timeout=8000)
+                    except Exception:
+                        logger.warning("action.withdraw_dom_scroll_failed", index=i)
+                        break
+                else:
+                    logger.warning("action.withdraw_dom_scroll_failed", index=i)
+                    break
+            await self.delay.micro_delay(0.3, 0.8)
+
+            href = await self.page.evaluate("""
+            (idx) => {
+                const anchors = Array.from(document.querySelectorAll('a[aria-label^="Withdraw invitation"]'));
+                if (idx >= anchors.length) return null;
+                let el = anchors[idx];
+                for (let j = 0; j < 10; j++) {
+                    el = el.parentElement;
+                    if (!el) break;
+                    const link = el.querySelector('a[href*="/in/"]');
+                    if (link) return link.href;
+                }
+                return null;
+            }
+            """, i)
+
+            try:
+                await anchor.click(timeout=5000)
+            except Exception as e:
+                logger.warning("action.withdraw_dom_anchor_click_failed", index=i, error=str(e))
+                continue
+
+            await self.delay.micro_delay(1.0, 1.5)
+
+            confirmed = await self.page.evaluate("""
+            () => {
+                const btn = Array.from(document.querySelectorAll('button'))
+                    .find(b => b.innerText.trim() === 'Withdraw' && b.offsetParent !== null);
+                if (btn) { btn.click(); return true; }
+                return false;
+            }
+            """)
+
+            if confirmed:
+                await self.delay.micro_delay(1.0, 2.0)
+                if href:
+                    withdrawn_urls.append(href)
+                logger.info("action.withdraw_dom_withdrawn", url=href, order=order, index=i)
+            else:
+                logger.warning("action.withdraw_dom_confirm_not_found", index=i, href=href)
 
         return withdrawn_urls
 
