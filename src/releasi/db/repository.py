@@ -1167,7 +1167,7 @@ class Repository:
             count_stmt = count_stmt.where(Lead.lead_list_id == lead_list_id)
 
         if search:
-            pattern = f"%{search}%"
+            pattern = f"%{search.rstrip('/')}%"
             full_name = func.coalesce(Lead.first_name, "") + " " + func.coalesce(Lead.last_name, "")
             search_filter = or_(
                 Lead.first_name.ilike(pattern),
@@ -1305,7 +1305,7 @@ class Repository:
             )
 
         if search:
-            pattern = f"%{search}%"
+            pattern = f"%{search.rstrip('/')}%"
             full_name = func.coalesce(Lead.first_name, "") + " " + func.coalesce(Lead.last_name, "")
             search_filter = or_(
                 Lead.first_name.ilike(pattern),
@@ -2049,7 +2049,7 @@ class Repository:
                 count_stmt = count_stmt.where(Lead.status.in_(statuses))
 
         if search:
-            pattern = f"%{search}%"
+            pattern = f"%{search.rstrip('/')}%"
             full_name = func.coalesce(Lead.first_name, "") + " " + func.coalesce(Lead.last_name, "")
             search_filter = or_(
                 Lead.first_name.ilike(pattern),
