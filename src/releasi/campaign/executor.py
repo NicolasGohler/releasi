@@ -62,6 +62,11 @@ class CampaignExecutor:
             "session_expired": False,
         }
 
+        if not lead.linkedin_url:
+            result["skipped"] = True
+            result["reason"] = "no_linkedin_url"
+            return result
+
         # Pool mode: use shared context, only manage pages
         browser: Optional[LinkedInBrowser] = None
         if self._shared_context:

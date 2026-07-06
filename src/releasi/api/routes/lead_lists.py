@@ -421,6 +421,7 @@ async def import_csv_to_list(
         imported=result.imported,
         duplicates_skipped=result.duplicates_skipped,
         no_url_skipped=result.no_url_skipped,
+        no_url_imported=result.no_url_imported,
         errors=result.errors,
     )
 

@@ -176,7 +176,7 @@ class LeadOut(BaseModel):
     id: str
     campaign_id: Optional[str] = None
     lead_list_id: Optional[str] = None
-    linkedin_url: str
+    linkedin_url: Optional[str] = None
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     company: Optional[str] = None
@@ -276,6 +276,7 @@ class ImportResponse(BaseModel):
     imported: int
     duplicates_skipped: int
     no_url_skipped: int
+    no_url_imported: int = 0
     errors: List[str]
 
 
@@ -409,7 +410,7 @@ class ScheduleSlotOut(BaseModel):
     lead_id: str
     first_name: Optional[str] = None
     last_name: Optional[str] = None
-    linkedin_url: str
+    linkedin_url: Optional[str] = None
     campaign_name: str
     scheduled_at: Optional[str] = None
     status: str  # "scheduled" or "sent"

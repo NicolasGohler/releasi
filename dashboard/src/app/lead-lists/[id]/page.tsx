@@ -380,14 +380,18 @@ export default function LeadListDetailPage({
                           <span className="block truncate" title={lead.title ?? undefined}>{lead.title ?? "—"}</span>
                         </td>
                         <td className="py-2">
-                          <a
-                            href={lead.linkedin_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-500 hover:underline truncate block max-w-[200px] text-xs"
-                          >
-                            {lead.linkedin_url.replace("https://www.linkedin.com/in/", "")}
-                          </a>
+                          {lead.linkedin_url ? (
+                            <a
+                              href={lead.linkedin_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-500 hover:underline truncate block max-w-[200px] text-xs"
+                            >
+                              {lead.linkedin_url.replace("https://www.linkedin.com/in/", "")}
+                            </a>
+                          ) : (
+                            <span className="text-muted-foreground text-xs">—</span>
+                          )}
                         </td>
                       </tr>
                     ))}

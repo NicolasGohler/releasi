@@ -260,22 +260,61 @@ class Repository:
         if not leads:
             return 0
 
-        # Build URL → incoming lead map (last one wins for dupes in same CSV)
+        # Split into URL-keyed leads (deduped by linkedin_url) and no-URL leads
         url_to_incoming: dict[str, Lead] = {}
+        no_url_leads: list[Lead] = []
         for lead in leads:
-            url_to_incoming[lead.linkedin_url] = lead
+            if lead.linkedin_url:
+                url_to_incoming[lead.linkedin_url] = lead  # last one wins for dupes in same CSV
+            else:
+                no_url_leads.append(lead)
 
-        # Look up any existing canonical leads for these URLs
-        urls = list(url_to_incoming.keys())
-        existing_result = await self.session.execute(
-            select(Lead).where(Lead.linkedin_url.in_(urls))
-        )
-        existing_by_url: dict[str, Lead] = {
-            l.linkedin_url: l for l in existing_result.scalars().all()
-        }
+        # Look up any existing canonical leads for URL-keyed leads
+        existing_by_url: dict[str, Lead] = {}
+        if url_to_incoming:
+            urls = list(url_to_incoming.keys())
+            existing_result = await self.session.execute(
+                select(Lead).where(Lead.linkedin_url.in_(urls))
+            )
+            existing_by_url = {
+                l.linkedin_url: l for l in existing_result.scalars().all()
+            }
 
         assignments_added = 0
         memberships_added = 0
+
+        async def _attach_lead(canonical: Lead, incoming: Lead) -> None:
+            nonlocal assignments_added, memberships_added
+            if incoming.campaign_id:
+                existing_asgn = await self.session.execute(
+                    select(CampaignLeadAssignment).where(
+                        CampaignLeadAssignment.lead_id == canonical.id,
+                        CampaignLeadAssignment.campaign_id == incoming.campaign_id,
+                    )
+                )
+                if existing_asgn.scalar_one_or_none() is None:
+                    self.session.add(CampaignLeadAssignment(
+                        lead_id=canonical.id,
+                        campaign_id=incoming.campaign_id,
+                        lead_list_id=incoming.lead_list_id,
+                        status=LeadStatus.PENDING.value,
+                    ))
+                    assignments_added += 1
+            if incoming.lead_list_id:
+                existing_mem = await self.session.execute(
+                    select(LeadListMembership).where(
+                        LeadListMembership.lead_id == canonical.id,
+                        LeadListMembership.lead_list_id == incoming.lead_list_id,
+                    )
+                )
+                if existing_mem.scalar_one_or_none() is None:
+                    self.session.add(LeadListMembership(
+                        lead_id=canonical.id,
+                        lead_list_id=incoming.lead_list_id,
+                    ))
+                    memberships_added += 1
+
+        # ── URL-keyed leads (dedup by linkedin_url) ─────────────────────────
         for url, incoming in url_to_incoming.items():
             canonical = existing_by_url.get(url)
 
@@ -297,37 +336,28 @@ class Repository:
                 await self.session.flush()  # populate new_lead.id
                 canonical = new_lead
 
-            # Create assignment if not already present
-            if incoming.campaign_id:
-                existing_asgn = await self.session.execute(
-                    select(CampaignLeadAssignment).where(
-                        CampaignLeadAssignment.lead_id == canonical.id,
-                        CampaignLeadAssignment.campaign_id == incoming.campaign_id,
-                    )
-                )
-                if existing_asgn.scalar_one_or_none() is None:
-                    self.session.add(CampaignLeadAssignment(
-                        lead_id=canonical.id,
-                        campaign_id=incoming.campaign_id,
-                        lead_list_id=incoming.lead_list_id,
-                        status=LeadStatus.PENDING.value,
-                    ))
-                    assignments_added += 1
+            await _attach_lead(canonical, incoming)
 
-            # Create membership if not already present
-            if incoming.lead_list_id:
-                existing_mem = await self.session.execute(
-                    select(LeadListMembership).where(
-                        LeadListMembership.lead_id == canonical.id,
-                        LeadListMembership.lead_list_id == incoming.lead_list_id,
-                    )
-                )
-                if existing_mem.scalar_one_or_none() is None:
-                    self.session.add(LeadListMembership(
-                        lead_id=canonical.id,
-                        lead_list_id=incoming.lead_list_id,
-                    ))
-                    memberships_added += 1
+        # ── No-URL leads (no global dedup — each row becomes its own lead) ──
+        for incoming in no_url_leads:
+            new_lead = Lead(
+                linkedin_url=None,
+                lead_list_id=incoming.lead_list_id,
+                first_name=incoming.first_name,
+                last_name=incoming.last_name,
+                company=incoming.company,
+                title=incoming.title,
+                email=getattr(incoming, "email", None),
+                phone=getattr(incoming, "phone", None),
+                twitter_url=getattr(incoming, "twitter_url", None),
+                telegram_username=getattr(incoming, "telegram_username", None),
+                location=getattr(incoming, "location", None),
+                apollo_person_id=getattr(incoming, "apollo_person_id", None),
+                extra_data=incoming.extra_data,
+            )
+            self.session.add(new_lead)
+            await self.session.flush()
+            await _attach_lead(new_lead, incoming)
 
         await self.session.commit()
         # For campaign imports, return assignments_added (how many were added to the campaign).
@@ -381,6 +411,7 @@ class Repository:
                 CampaignLeadAssignment.campaign_id == campaign_id,
                 CampaignLeadAssignment.status == LeadStatus.SCHEDULED.value,
                 CampaignLeadAssignment.scheduled_at <= before,
+                Lead.linkedin_url.isnot(None),
             )
             .order_by(CampaignLeadAssignment.scheduled_at)
         )
@@ -521,6 +552,7 @@ class Repository:
             .where(
                 CampaignLeadAssignment.campaign_id == campaign_id,
                 CampaignLeadAssignment.status == status_str,
+                Lead.linkedin_url.isnot(None),
             )
             .order_by(priority_col.desc(), Lead.created_at)
         )
@@ -1635,7 +1667,10 @@ class Repository:
         result = await self.session.execute(
             select(Lead.linkedin_url)
             .join(LeadListMembership, LeadListMembership.lead_id == Lead.id)
-            .where(LeadListMembership.lead_list_id == lead_list_id)
+            .where(
+                LeadListMembership.lead_list_id == lead_list_id,
+                Lead.linkedin_url.isnot(None),
+            )
         )
         return {r[0] for r in result.all()}
 

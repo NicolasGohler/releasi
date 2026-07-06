@@ -410,14 +410,20 @@ export default function AccountDetailPage({
                                 : "—"}
                             </td>
                             <td className="py-2">
-                              <a
-                                href={slot.linkedin_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="font-medium hover:underline"
-                              >
-                                {[slot.first_name, slot.last_name].filter(Boolean).join(" ") || "Unknown"}
-                              </a>
+                              {slot.linkedin_url ? (
+                                <a
+                                  href={slot.linkedin_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="font-medium hover:underline"
+                                >
+                                  {[slot.first_name, slot.last_name].filter(Boolean).join(" ") || "Unknown"}
+                                </a>
+                              ) : (
+                                <span className="font-medium">
+                                  {[slot.first_name, slot.last_name].filter(Boolean).join(" ") || "Unknown"}
+                                </span>
+                              )}
                             </td>
                             <td className="py-2 text-muted-foreground">{slot.campaign_name}</td>
                             <td className="py-2 text-right">

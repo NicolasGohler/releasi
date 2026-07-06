@@ -143,7 +143,8 @@ class ImportResult:
     total_rows: int = 0
     imported: int = 0
     duplicates_skipped: int = 0
-    no_url_skipped: int = 0
+    no_url_skipped: int = 0      # truly empty rows (no name, no email, nothing usable)
+    no_url_imported: int = 0     # leads imported without a LinkedIn URL
     no_url_rows: list = field(default_factory=list)
     column_mapping: dict = field(default_factory=dict)
     extra_columns: list = field(default_factory=list)
@@ -341,21 +342,45 @@ def parse_csv(
         if url_column and url_column in result.extra_columns:
             result.extra_columns.remove(url_column)
 
+        # Track seen emails within this CSV for non-URL dedup
+        seen_emails: set = set()
+
         # Process each row
         for row_idx, row in enumerate(rows, start=2):  # Start at 2 (header is row 1)
             linkedin_url = _extract_linkedin_url(row, url_column)
 
-            if not linkedin_url:
-                result.no_url_skipped += 1
-                result.no_url_rows.append(row_idx)
-                continue
+            if linkedin_url:
+                # URL-based dedup
+                if linkedin_url in existing_urls:
+                    result.duplicates_skipped += 1
+                    continue
+                existing_urls.add(linkedin_url)
+            else:
+                # No LinkedIn URL — check if the row has any usable identity field
+                # (email or at minimum a name). Completely empty rows are skipped.
+                row_email = None
+                row_has_name = False
+                for header, val in row.items():
+                    v = (val or "").strip()
+                    if not v:
+                        continue
+                    norm = header.lower().strip()
+                    if norm in _COLUMN_MAP and _COLUMN_MAP[norm] == "email":
+                        row_email = v.lower()
+                    if norm in _FULL_NAME_COLUMNS or _COLUMN_MAP.get(norm) in ("first_name", "last_name"):
+                        row_has_name = True
 
-            # Dedup check
-            if linkedin_url in existing_urls:
-                result.duplicates_skipped += 1
-                continue
+                if not row_email and not row_has_name:
+                    result.no_url_skipped += 1
+                    result.no_url_rows.append(row_idx)
+                    continue
 
-            existing_urls.add(linkedin_url)
+                # Email-based dedup within this CSV batch
+                if row_email and row_email in seen_emails:
+                    result.duplicates_skipped += 1
+                    continue
+                if row_email:
+                    seen_emails.add(row_email)
 
             # Extract standard fields
             first_name = None
@@ -436,5 +461,7 @@ def parse_csv(
             lead = Lead(**lead_kwargs)
             leads.append(lead)
             result.imported += 1
+            if not linkedin_url:
+                result.no_url_imported += 1
 
     return leads, result

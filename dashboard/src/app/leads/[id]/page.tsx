@@ -841,6 +841,7 @@ export default function LeadDetailPage() {
 
         {/* Quick links */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
+          {lead.linkedin_url && (
           <a
             href={lead.linkedin_url}
             target="_blank"
@@ -850,6 +851,7 @@ export default function LeadDetailPage() {
           >
             <Link2 className="h-4 w-4" />
           </a>
+          )}
           {lead.twitter_url && (
             <a
               href={lead.twitter_url}
@@ -997,16 +999,22 @@ export default function LeadDetailPage() {
             <div className="flex flex-col gap-0.5 py-1.5">
               <span className="text-xs font-medium text-muted-foreground">LinkedIn</span>
               <div className="flex items-center gap-2">
-                <a
-                  href={lead.linkedin_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-primary hover:underline flex items-center gap-1 truncate"
-                >
-                  {lead.linkedin_url.replace("https://www.", "")}
-                  <ExternalLink className="h-3 w-3 flex-shrink-0" />
-                </a>
-                <CopyButton text={lead.linkedin_url} label="Copy LinkedIn URL" />
+                {lead.linkedin_url ? (
+                  <>
+                    <a
+                      href={lead.linkedin_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm text-primary hover:underline flex items-center gap-1 truncate"
+                    >
+                      {lead.linkedin_url.replace("https://www.", "")}
+                      <ExternalLink className="h-3 w-3 flex-shrink-0" />
+                    </a>
+                    <CopyButton text={lead.linkedin_url} label="Copy LinkedIn URL" />
+                  </>
+                ) : (
+                  <span className="text-sm text-muted-foreground">—</span>
+                )}
               </div>
             </div>
 

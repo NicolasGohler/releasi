@@ -189,7 +189,7 @@ class Lead(Base):
     lead_list_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("lead_lists.id"), nullable=True, index=True
     )
-    linkedin_url: Mapped[str] = mapped_column(Text)
+    linkedin_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     first_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     last_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     company: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

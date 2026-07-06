@@ -146,7 +146,7 @@ export interface Lead {
   id: string;
   campaign_id: string | null;
   lead_list_id: string | null;
-  linkedin_url: string;
+  linkedin_url: string | null;
   first_name: string | null;
   last_name: string | null;
   company: string | null;
@@ -248,7 +248,7 @@ export interface ScheduleSlot {
   lead_id: string;
   first_name: string | null;
   last_name: string | null;
-  linkedin_url: string;
+  linkedin_url: string | null;
   campaign_name: string;
   scheduled_at: string | null;
   status: string; // "scheduled" or "sent"
