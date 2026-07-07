@@ -5,7 +5,7 @@ import time
 import random
 import requests
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote as url_quote
 import json
 import os
 import sqlite3
@@ -402,16 +402,230 @@ def get_projects_from_rootdata(context):
     page.close()
     return projects
 
-def get_all_projects(context):
+def _fetch_defillama_protocols() -> dict:
+    """Fetch the full DefiLlama protocol list and build an in-memory lookup.
+
+    Returns {'names': {norm_name: entry}, 'slugs': {slug: entry}} where each
+    entry is {'url': ..., 'twitter': ...}.  Single HTTP call (~8 MB), called
+    once per run.  Silently returns empty dicts on failure.
+    """
+    try:
+        resp = requests.get("https://api.llama.fi/protocols", timeout=30)
+        resp.raise_for_status()
+        protocols = resp.json()
+        names: dict = {}
+        slugs: dict = {}
+        for p in protocols:
+            name = (p.get('name') or '').strip()
+            slug = (p.get('slug') or '').strip()
+            twitter_raw = (p.get('twitter') or '').strip()
+            if twitter_raw and not twitter_raw.startswith('http'):
+                twitter_raw = f"https://x.com/{twitter_raw.lstrip('@')}"
+            entry = {'url': p.get('url') or None, 'twitter': twitter_raw or None}
+            if name:
+                key = re.sub(r'[^a-z0-9]', '', name.lower())
+                if key and key not in names:
+                    names[key] = entry
+            if slug and slug not in slugs:
+                slugs[slug] = entry
+        print(f"  ✓ DefiLlama protocols list: {len(names)} names, {len(slugs)} slugs loaded")
+        return {'names': names, 'slugs': slugs}
+    except Exception as e:
+        print(f"  ⚠ Could not fetch DefiLlama protocols list: {e} — website fallback disabled")
+        return {'names': {}, 'slugs': {}}
+
+
+def _protocols_website_lookup(project_name: str, protocols_lookup: dict) -> tuple:
+    """Look up website + twitter for project_name in the pre-fetched protocols dict.
+
+    Returns (website_or_None, twitter_url_or_None).
+    """
+    key = re.sub(r'[^a-z0-9]', '', project_name.lower())
+    match = protocols_lookup.get('names', {}).get(key)
+    if match:
+        return match.get('url'), match.get('twitter')
+    return None, None
+
+
+def _make_no_website_entry(project: dict) -> dict:
+    """Distil a project dict into the shape stored in the no-website list."""
+    return {
+        'name': project['name'],
+        'source': project.get('source', ''),
+        'source_url': project.get('source_url', ''),
+        'stage': project.get('stage', ''),
+        'amount': project.get('amount'),
+        'category': project.get('category'),
+        'description': project.get('description'),
+        'lead_investors': project.get('lead_investors') or [],
+        'other_investors': project.get('other_investors') or [],
+        'chains': project.get('chains') or [],
+    }
+
+
+def get_projects_from_defillama(context, protocols_lookup: dict):
+    """Fetch recently-funded crypto projects from DefiLlama's raises page.
+
+    Reads the raises dataset from the __NEXT_DATA__ SSR JSON embedded in the
+    page — no paid API key required.  Filters to raises from the last 7 days.
+    Uses the pre-fetched *protocols_lookup* dict for website/twitter resolution
+    (no per-project API calls).  Projects without a resolved website are still
+    included — gather_all() routes them to the manual-research CSV.
+    """
+    print(f"\n{'='*60}")
+    print(f" SOURCE 3: Fetching projects from DefiLlama")
+    print(f"{'='*60}")
+
+    cutoff = time.time() - 7 * 86400
+    skip_stages = {'post_ipo', 'post-ipo', 'post ipo'}
+    slugs_lookup = protocols_lookup.get('slugs', {})
+    names_lookup = protocols_lookup.get('names', {})
+
+    page = _new_stealth_page(context)
+    try:
+        print(" Loading defillama.com/raises ...")
+        for attempt in range(3):
+            try:
+                page.goto("https://defillama.com/raises", wait_until="domcontentloaded", timeout=30000)
+                print(" Page loaded")
+                break
+            except Exception as e:
+                if attempt < 2:
+                    print(f" Attempt {attempt + 1} failed: {e} — retrying in {(attempt+1)*5}s")
+                    time.sleep((attempt + 1) * 5)
+                else:
+                    print(f" All 3 attempts failed: {e}")
+                    page.close()
+                    return []
+
+        _sleep(3)
+
+        # All raises are baked into the Next.js SSR payload — no scrolling needed.
+        raw_json = page.evaluate("""() => {
+            const el = document.getElementById('__NEXT_DATA__');
+            return el ? el.textContent : null;
+        }""")
+
+        if not raw_json:
+            print(" ⚠ __NEXT_DATA__ not found — page structure may have changed")
+            page.close()
+            return []
+
+        payload = json.loads(raw_json)
+        raises = payload.get('props', {}).get('pageProps', {}).get('raises', [])
+        print(f" SSR payload contains {len(raises)} total raises")
+
+    except Exception as e:
+        print(f" DefiLlama scraping failed: {e}")
+        print(" ℹ Continuing with other data sources...")
+        page.close()
+        return []
+    finally:
+        page.close()
+
+    recent = [r for r in raises if isinstance(r, dict) and r.get('date', 0) >= cutoff]
+    print(f" {len(recent)} raises in the last 7 days")
+
+    projects = []
+    seen_names = set()
+
+    for raise_data in recent:
+        if len(projects) >= MAX_PROJECTS:
+            print(f"  Collected {MAX_PROJECTS} projects, stopping")
+            break
+
+        name = (raise_data.get('name') or '').strip()
+        if not name or len(name) < 2:
+            continue
+
+        stage = (raise_data.get('round') or '').lower()
+        if any(s in stage for s in skip_stages):
+            print(f"  Skipping Post-IPO: {name}")
+            continue
+
+        name_key = name.lower()
+        if name_key in seen_names:
+            continue
+        seen_names.add(name_key)
+
+        # Resolve website + twitter. Three-tier fallback:
+        # 1. Bulk slug lookup via defillamaId (fast, in-memory)
+        # 2. Bulk name lookup (fast, in-memory)
+        # 3. Per-project protocol API call (handles name/slug mismatches in bulk list)
+        website = twitter_url = None
+
+        defi_id = (raise_data.get('defillamaId') or '').strip()
+        if defi_id.startswith('parent#'):
+            match = slugs_lookup.get(defi_id[7:])
+            if match:
+                website = match.get('url')
+                twitter_url = match.get('twitter')
+
+        if not website:
+            norm_key = re.sub(r'[^a-z0-9]', '', name.lower())
+            match = names_lookup.get(norm_key)
+            if match:
+                website = match.get('url')
+                twitter_url = match.get('twitter')
+
+        if not website:
+            # Derived slug from name (e.g. "Extended" → "extended")
+            slug = re.sub(r'[^a-z0-9\-]', '', re.sub(r'[\s_]+', '-', name.lower()))
+            try:
+                resp = requests.get(f"https://api.llama.fi/protocol/{slug}", timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    website = data.get('url') or None
+                    tw = (data.get('twitter') or '').strip()
+                    if tw and not tw.startswith('http'):
+                        tw = f"https://x.com/{tw.lstrip('@')}"
+                    twitter_url = tw or None
+            except Exception:
+                pass
+
+        if website:
+            print(f"  {name}: website={website}")
+        else:
+            print(f"  {name}: no protocol match — will go to manual-research list")
+
+        projects.append({
+            'name': name,
+            'url': f"https://defillama.com/raises#{url_quote(name)}",
+            'stage': stage or None,
+            'source': 'defillama_raises',
+            'source_url': 'https://defillama.com/raises',
+            'source_type': 'funding_platform',
+            'website': website,
+            'twitter': twitter_url,
+            # Extra fields for the no-website manual-research CSV
+            'amount': raise_data.get('amount'),
+            'category': raise_data.get('category') or raise_data.get('categoryGroup'),
+            'description': raise_data.get('sector') or None,
+            'lead_investors': raise_data.get('leadInvestors') or [],
+            'other_investors': raise_data.get('otherInvestors') or [],
+            'chains': raise_data.get('chains') or [],
+        })
+
+    print(f"\n{'='*60}")
+    print(f" Total DefiLlama projects found: {len(projects)}")
+    print(f"{'='*60}\n")
+    return projects
+
+
+def get_all_projects(context, protocols_lookup: dict):
     """Fetch and merge projects from all sources using the shared browser context."""
     cryptorank_projects = get_projects_from_cryptorank(context)
     rootdata_projects = get_projects_from_rootdata(context)
-    
+    defillama_projects = get_projects_from_defillama(context, protocols_lookup)
+
     # Merge projects, avoiding duplicates by name (case-insensitive)
     all_projects = []
     seen_names = set()
-    
-    for project in cryptorank_projects + rootdata_projects:
+
+    extra_fields = ('website', 'twitter', 'amount', 'category', 'description',
+                    'lead_investors', 'other_investors', 'chains')
+
+    for project in cryptorank_projects + rootdata_projects + defillama_projects:
         clean_name = re.sub(r'\n.*', '', project['name']).strip()
         clean_name = re.sub(r'\$.*', '', clean_name).strip()
         name_key = clean_name.lower()
@@ -428,21 +642,25 @@ def get_all_projects(context):
 
         if not is_duplicate:
             seen_names.add(name_key)
-            all_projects.append({
+            entry = {
                 "name": clean_name,
                 "url": project['url'],
                 "source": project.get('source', 'cryptorank_funding_rounds'),
                 "source_url": project.get('source_url', 'https://cryptorank.io/funding-rounds'),
-                "source_type": project.get('source_type', 'funding_platform')
-            })
-    
+                "source_type": project.get('source_type', 'funding_platform'),
+            }
+            for f in extra_fields:
+                entry[f] = project.get(f)
+            all_projects.append(entry)
+
     print(f"\n{'='*60}")
     print(f" MERGED PROJECTS FROM ALL SOURCES")
     print(f" CryptoRank: {len(cryptorank_projects)} projects")
     print(f" RootData: {len(rootdata_projects)} projects")
+    print(f" DefiLlama: {len(defillama_projects)} projects")
     print(f" Total unique: {len(all_projects)} projects")
     print(f"{'='*60}\n")
-    
+
     return all_projects
 
 def _parse_cryptorank_website_from_soup(soup):
@@ -1881,25 +2099,30 @@ def gather_all():
         skipped = len(checkpoint)
         print(f" ✓ Checkpoint found — {skipped} project(s) already scraped, will skip them")
 
+    # ── Pre-fetch DefiLlama protocol list (used for website fallback on all sources) ──
+    print("\n Fetching DefiLlama protocols list for website resolution...")
+    protocols_lookup = _fetch_defillama_protocols()
+
     # ── Phase 1: Browser scraping (sequential, single Chromium session) ──────
     # scraped_data maps project_url → {project, website_info, team}
     scraped_data: dict[str, dict] = dict(checkpoint)  # pre-populate from checkpoint
+    no_website_projects: list[dict] = []
 
     with sync_playwright() as p:
         browser, context = _create_browser_context(p)
         print(" ✓ Browser launched (single session for entire run)")
 
         try:
-            projects = get_all_projects(context)
+            projects = get_all_projects(context, protocols_lookup)
         except Exception as e:
             print(f" ERROR fetching projects: {e}")
             browser.close()
-            return []
+            return [], []
 
         if not projects:
             print("\n ERROR: No projects found! Cannot continue.")
             browser.close()
-            return []
+            return [], []
 
         print(f"\n Processing all {len(projects)} projects\n")
 
@@ -1929,15 +2152,43 @@ def gather_all():
                     _save_checkpoint(scraped_data)
                     continue
                 print(f" ✓ Crypto project confirmed — categories: {categories or 'untagged (keyword match)'}")
+            elif project['source'] == 'defillama_raises':
+                print(" ℹ DefiLlama project — website from protocols list, team from Apollo")
+                project_website = project.get('website')
+                if project_website:
+                    website_info = _build_website_info_from_url(project_website)
+                    if website_info:
+                        print(f" Website from protocols list: {website_info['website']}")
+                    else:
+                        print("  Website URL from protocols list was invalid")
+                        website_info = None
+                else:
+                    website_info = None
+                team = []
             else:
                 print(" ℹ RootData project - skipping team page, will use Apollo")
                 website_info = extract_company_website(url, context)
                 team = []
 
+            # ── Protocols list fallback for any source that still has no website ──
+            if not (website_info and website_info.get('domain')):
+                fb_url, fb_twitter = _protocols_website_lookup(project['name'], protocols_lookup)
+                if fb_url:
+                    website_info = _build_website_info_from_url(fb_url)
+                    if website_info and website_info.get('domain'):
+                        print(f"  ✓ Website via DefiLlama protocols fallback: {website_info['website']}")
+                        if fb_twitter and not project.get('twitter'):
+                            project['twitter'] = fb_twitter
+
             if website_info and website_info.get('domain'):
                 print(f" Website found: {website_info['website']} (domain: {website_info['domain']})")
             else:
-                print("  No website found")
+                print(f"  No website found — routing to manual-research list")
+                no_website_projects.append(_make_no_website_entry(project))
+                # Still checkpoint so a retry doesn't re-scrape; _no_website skips Apollo
+                scraped_data[url] = {'project': project, 'website_info': None, 'team': team, '_no_website': True}
+                _save_checkpoint(scraped_data)
+                continue
 
             entry = {'project': project, 'website_info': website_info, 'team': team}
             scraped_data[url] = entry
@@ -1949,8 +2200,12 @@ def gather_all():
         print(" ✓ Browser closed")
 
     # ── Phase 2: Apollo enrichment (concurrent HTTP — no browser needed) ─────
+    enrichable = {url: data for url, data in scraped_data.items()
+                  if not data.get('_skipped') and not data.get('_no_website')}
     print(f"\n{'='*60}")
-    print(f" APOLLO PHASE: enriching {len(scraped_data)} projects concurrently (max 3 threads)")
+    print(f" APOLLO PHASE: enriching {len(enrichable)} projects concurrently (max 3 threads)")
+    if no_website_projects:
+        print(f" ({len(no_website_projects)} project(s) without website skipped — see manual-research CSV)")
     print(f"{'='*60}\n")
 
     apollo_credit_cache = _build_apollo_credit_cache()
@@ -1964,8 +2219,7 @@ def gather_all():
                 data['website_info'],
                 apollo_credit_cache,
             ): url
-            for url, data in scraped_data.items()
-            if not data.get('_skipped')
+            for url, data in enrichable.items()
         }
         for future in as_completed(futures):
             url = futures[future]
@@ -1983,6 +2237,8 @@ def gather_all():
     for url, data in scraped_data.items():
         if data.get('_skipped'):
             continue
+        # _no_website entries: Apollo was skipped, but CryptoRank may have team members
+        # from the team page — include them as-is (apollo_results.get(url) returns []).
         project      = data['project']
         website_info = data['website_info']
         team         = list(data['team'])   # copy so checkpoint data stays clean
@@ -2107,7 +2363,9 @@ def gather_all():
     _clear_checkpoint()
     print(" ✓ Checkpoint cleared", flush=True)
 
-    return all_people
+    if no_website_projects:
+        print(f"\n ℹ {len(no_website_projects)} project(s) routed to manual-research CSV (no website found)")
+    return all_people, no_website_projects
 
 import json
 import pandas as pd
@@ -2250,8 +2508,56 @@ def push_to_releasi(csv_file_path):
         traceback.print_exc()
         return False
 
-def send_to_slack(csv_file_path, people_count, projects_count):
-    """Send CSV file to Slack channel using Bot API"""
+def generate_no_website_csv(no_website_projects: list, folder_name: str) -> str:
+    """Write the no-website projects to a dated CSV for manual research.
+
+    Returns the file path.
+    """
+    rows = []
+    for p in no_website_projects:
+        lead_inv = p.get('lead_investors') or []
+        other_inv = p.get('other_investors') or []
+        rows.append({
+            'Name': p['name'],
+            'Source': p.get('source', ''),
+            'Amount ($M)': p.get('amount', ''),
+            'Round': p.get('stage', ''),
+            'Category': p.get('category', ''),
+            'Description': p.get('description', ''),
+            'Lead Investors': ', '.join(lead_inv) if isinstance(lead_inv, list) else str(lead_inv),
+            'Other Investors': ', '.join(other_inv) if isinstance(other_inv, list) else str(other_inv),
+            'Chains': ', '.join(p.get('chains') or []),
+            'Source URL': p.get('source_url', ''),
+        })
+    df = pd.DataFrame(rows)
+    date_str = datetime.now().strftime("%m-%d")
+    filepath = os.path.join(folder_name, f"{date_str}_no_website.csv")
+    df.to_csv(filepath, index=False)
+    print(f" No-website CSV saved: {filepath} ({len(rows)} projects)")
+    return filepath
+
+
+def _slack_upload_file(client, channel: str, filepath: str, title: str, comment: str) -> bool:
+    """Upload a single file to Slack, trying both channel ID formats."""
+    from slack_sdk.errors import SlackApiError
+    for channel_fmt in [channel, f"#{channel}"]:
+        try:
+            client.files_upload_v2(
+                channel=channel_fmt,
+                file=filepath,
+                title=title,
+                initial_comment=comment,
+            )
+            return True
+        except SlackApiError as e:
+            if e.response.get('error') == 'channel_not_found':
+                continue
+            raise
+    return False
+
+
+def send_to_slack(csv_file_path, people_count, projects_count, no_website_csv_path=None):
+    """Send the enriched CSV (and optional no-website CSV) to Slack."""
     print(f"\nSending CSV file to Slack channel {SLACK_CHANNEL}...")
     
     try:
@@ -2259,42 +2565,36 @@ def send_to_slack(csv_file_path, people_count, projects_count):
         from slack_sdk.errors import SlackApiError
         
         client = WebClient(token=SLACK_BOT_TOKEN)
-        
-        # Try different channel formats - ensure we only send once
-        channel_formats = [SLACK_CHANNEL, f"#{SLACK_CHANNEL}"]
-        file_sent = False
-        
-        for channel_format in channel_formats:
-            if file_sent:
-                break # Ensure we only send once
-                
-            try:
-                print(f" Trying channel format: '{channel_format}'")
-                # Upload the CSV file with a descriptive message
-                response = client.files_upload_v2(
-                    channel=channel_format,
-                    file=csv_file_path,
-                    title="New Fundraising Leads Available",
-                    initial_comment=f"Fundraising Agent Success! Found {people_count} people from {projects_count} projects. Check the uploaded CSV file for details."
-                )
-                
-                print(f" File successfully uploaded to Slack!")
-                print(f" File URL: {response['file']['permalink']}")
-                file_sent = True
-                return True
-                
-            except SlackApiError as e:
-                error_msg = e.response.get('error', 'Unknown error')
-                print(f" Channel '{channel_format}' failed: {error_msg}")
-                if error_msg == 'channel_not_found':
-                    continue # Try next format
-                else:
-                    raise # Re-raise other errors
-        
-        # If we get here, all channel formats failed
-        if not file_sent:
-            print(f" All channel formats failed")
-        return False
+
+        if csv_file_path:
+            main_comment = (
+                f"Fundraising Agent: {people_count} people from {projects_count} projects. "
+                f"Enriched leads attached."
+            )
+            main_ok = _slack_upload_file(
+                client, SLACK_CHANNEL, csv_file_path,
+                "Fundraising Leads", main_comment,
+            )
+            if not main_ok:
+                print(f" All channel formats failed for main CSV")
+                return False
+            print(f" Enriched CSV uploaded to Slack")
+
+        if no_website_csv_path:
+            nw_comment = (
+                "Manual research needed — projects below have no confirmed website. "
+                "Find the URL and re-run or push manually."
+            )
+            nw_ok = _slack_upload_file(
+                client, SLACK_CHANNEL, no_website_csv_path,
+                "No-Website Projects (Manual Research)", nw_comment,
+            )
+            if nw_ok:
+                print(f" No-website CSV uploaded to Slack")
+            else:
+                print(f"  No-website CSV upload failed (main CSV still sent)")
+
+        return True
         
     except SlackApiError as e:
         error_msg = e.response.get('error', 'Unknown error')
@@ -2360,80 +2660,94 @@ if __name__ == "__main__":
 
     print("\n" + "#"*60)
     print("# Crypto Fundraising Agent")
-    print("# Sources: CryptoRank + RootData + Apollo.io")
+    print("# Sources: CryptoRank + RootData + DefiLlama + Apollo.io")
     print("#"*60)
 
     try:
-        people = gather_all()
-        
-        if not people:
+        people, no_website_projects = gather_all()
+
+        if not people and not no_website_projects:
             print(f" WARNING: No data collected. Check the logs above.")
         else:
             # Create dated folder
             current_date = datetime.now().strftime("%m-%d")
             folder_name = f"Fundraises - {current_date}"
-            
+
             print(f"\n Creating folder: {folder_name}")
             os.makedirs(folder_name, exist_ok=True)
             print(f" Folder created successfully")
-            
-            # Save JSON
+
             file_basename = datetime.now().strftime("%m-%d")
-            json_path = os.path.join(folder_name, f"{file_basename}.json")
-            print(f"\n Saving data to '{json_path}'...")
-            with open(json_path, "w") as f:
-                json.dump(people, f, indent=2)
-            print(f" JSON saved: {len(people)} people")
-            
-            # Convert to CSV
-            print(f"\n Converting to CSV...")
-            df = pd.DataFrame(people)
-            
-            # Ensure role names are properly included in CSV
-            if 'role' in df.columns:
-                df['role'] = df['role'].fillna('No Role Found')
-                print(f" Role names included in CSV output")
+
+            # ── No-website CSV (always generated if there are any) ────────────
+            no_website_csv = None
+            if no_website_projects:
+                no_website_csv = generate_no_website_csv(no_website_projects, folder_name)
+
+            if not people:
+                print(f" WARNING: No enriched leads — only no-website projects found.")
+                if no_website_csv:
+                    unique_projects = len(no_website_projects)
+                    send_to_slack(None, 0, 0, no_website_csv_path=no_website_csv)
             else:
-                print(f"  No role column found in data")
-            
-            # Order columns so telegram_username sits next to twitter_url
-            preferred_order = [
-                'name', 'role', 'linkedin_url', 'twitter_url', 'telegram_username',
-                'email', 'apollo_person_id', 'source', 'source_url',
-                'project', 'project_url', 'project_source_url', 'company_website'
-            ]
-            ordered_cols = [c for c in preferred_order if c in df.columns]
-            ordered_cols += [c for c in df.columns if c not in ordered_cols]
-            df = df[ordered_cols]
+                # Save JSON
+                json_path = os.path.join(folder_name, f"{file_basename}.json")
+                print(f"\n Saving data to '{json_path}'...")
+                with open(json_path, "w") as f:
+                    json.dump(people, f, indent=2)
+                print(f" JSON saved: {len(people)} people")
 
-            csv_filename = os.path.join(folder_name, f"{file_basename}.csv")
-            df.to_csv(csv_filename, index=False)
-            print(f" CSV saved: {csv_filename}")
-            
-            # Display summary
-            print(f"\n SUMMARY:")
-            print(f" Total people: {len(people)}")
-            cryptorank_team_count = sum(1 for p in people if 'cryptorank_team_page' in p.get('source', ''))
-            apollo_count = sum(1 for p in people if 'apollo_api' in p.get('source', ''))
-            rootdata_count = sum(1 for p in people if 'rootdata' in p.get('source', ''))
-            project_only_count = sum(1 for p in people if p.get('source') == 'project_only')
-            combined_count = sum(1 for p in people if '+' in p.get('source', ''))
-            print(f" From CryptoRank Team Pages: {cryptorank_team_count}")
-            print(f" From RootData: {rootdata_count}")
-            print(f" From Apollo API: {apollo_count}")
-            print(f" Combined Sources: {combined_count}")
-            print(f" Project Data Only: {project_only_count}")
-            print(f" Files saved in: {folder_name}/")
-            
-            # Send to Slack
-            unique_projects = len(set(p.get('project') for p in people if p.get('project')))
-            slack_success = send_to_slack(csv_filename, len(people), unique_projects)
+                # Convert to CSV
+                print(f"\n Converting to CSV...")
+                df = pd.DataFrame(people)
 
-            # Push to Linauto (independent of Slack outcome)
-            push_to_releasi(csv_filename)
+                if 'role' in df.columns:
+                    df['role'] = df['role'].fillna('No Role Found')
 
-            if not slack_success:
-                print("Slack upload failed, but data was saved locally")
+                preferred_order = [
+                    'name', 'role', 'linkedin_url', 'twitter_url', 'telegram_username',
+                    'email', 'apollo_person_id', 'source', 'source_url',
+                    'project', 'project_url', 'project_source_url', 'company_website'
+                ]
+                ordered_cols = [c for c in preferred_order if c in df.columns]
+                ordered_cols += [c for c in df.columns if c not in ordered_cols]
+                df = df[ordered_cols]
+
+                csv_filename = os.path.join(folder_name, f"{file_basename}.csv")
+                df.to_csv(csv_filename, index=False)
+                print(f" CSV saved: {csv_filename}")
+
+                # Display summary
+                print(f"\n SUMMARY:")
+                print(f" Total people: {len(people)}")
+                cryptorank_team_count = sum(1 for p in people if 'cryptorank_team_page' in p.get('source', ''))
+                apollo_count = sum(1 for p in people if 'apollo_api' in p.get('source', ''))
+                rootdata_count = sum(1 for p in people if 'rootdata' in p.get('source', ''))
+                defillama_count = sum(1 for p in people if 'defillama' in p.get('project_source_url', ''))
+                project_only_count = sum(1 for p in people if p.get('source') == 'project_only')
+                combined_count = sum(1 for p in people if '+' in p.get('source', ''))
+                print(f" From CryptoRank Team Pages: {cryptorank_team_count}")
+                print(f" From RootData: {rootdata_count}")
+                print(f" From DefiLlama: {defillama_count}")
+                print(f" From Apollo API: {apollo_count}")
+                print(f" Combined Sources: {combined_count}")
+                print(f" Project Data Only: {project_only_count}")
+                if no_website_projects:
+                    print(f" No-website (manual research): {len(no_website_projects)}")
+                print(f" Files saved in: {folder_name}/")
+
+                # Send to Slack (both files in same channel, consecutive messages)
+                unique_projects = len(set(p.get('project') for p in people if p.get('project')))
+                slack_success = send_to_slack(
+                    csv_filename, len(people), unique_projects,
+                    no_website_csv_path=no_website_csv,
+                )
+
+                # Push enriched leads to Releasi (no-website CSV is NOT pushed)
+                push_to_releasi(csv_filename)
+
+                if not slack_success:
+                    print("Slack upload failed, but data was saved locally")
 
         _write_status(False, finished_at=datetime.now().isoformat(), exit="ok")
 
