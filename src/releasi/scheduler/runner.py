@@ -23,7 +23,7 @@ from releasi.linkedin.pool import get_browser_pool, init_pool, shutdown_pool
 from releasi.scheduler.planner import generate_daily_plan, SlotType
 from releasi.safety.cooldown import is_cooldown_expired, calculate_cooldown_resume, push_cooldown_one_day
 from releasi.safety import limits as rate_limits
-from releasi.campaign.state_machine import validate_transition
+from releasi.campaign.state_machine import validate_transition, InvalidTransition
 from releasi.notifications.slack import notify as slack_notify
 from releasi.safety.dispatch_decisions import (
     classify_connection_result,
@@ -1377,7 +1377,19 @@ async def check_acceptances():
                         slug = _normalize_li_url(lead.linkedin_url)
                         if not slug or slug not in recent_slugs:
                             continue
-                        validate_transition(lead.status, LeadStatus.CONNECTED)
+                        try:
+                            validate_transition(lead.status, LeadStatus.CONNECTED)
+                        except InvalidTransition:
+                            # Lead already in a post-connection state (e.g. connected,
+                            # followup_scheduled). Sync the CLA so the dispatcher won't
+                            # re-queue this lead, then skip — no new stats or event.
+                            logger.warning(
+                                "acceptance.already_past_connected_skip",
+                                url=lead.linkedin_url,
+                                lead_status=lead.status.value if hasattr(lead.status, "value") else str(lead.status),
+                            )
+                            await repo.update_lead(lead, campaign_id_override=campaign.id, status=lead.status)
+                            continue
                         await repo.update_lead(
                             lead,
                             campaign_id_override=campaign.id,
