@@ -210,6 +210,7 @@ function TelegramSection({ lead, onSave, onToggleContacted, activity }: Telegram
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -281,6 +282,18 @@ function TelegramSection({ lead, onSave, onToggleContacted, activity }: Telegram
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter") handleSave();
     if (e.key === "Escape") setEditing(false);
+  }
+
+  async function handleDelete() {
+    setDeleting(true);
+    try {
+      await onSave(null);
+      setTaskId(null);
+    } catch {
+      toast.error("Failed to remove Telegram username");
+    } finally {
+      setDeleting(false);
+    }
   }
 
   async function handleFind(force = false) {
@@ -377,6 +390,16 @@ function TelegramSection({ lead, onSave, onToggleContacted, activity }: Telegram
             title="Edit Telegram handle">
             <Pencil className="h-3 w-3" />
           </button>
+          {displayValue && (
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-muted-foreground/60 hover:text-destructive transition-all"
+              title="Delete Telegram handle"
+            >
+              {deleting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+            </button>
+          )}
         </div>
       )}
 
