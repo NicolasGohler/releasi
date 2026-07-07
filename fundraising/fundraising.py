@@ -512,7 +512,15 @@ def get_projects_from_defillama(context, protocols_lookup: dict):
             return []
 
         payload = json.loads(raw_json)
-        raises = payload.get('props', {}).get('pageProps', {}).get('raises', [])
+        raises = payload.get('props', {}).get('pageProps', {}).get('raises')
+        if raises is None:
+            print(" ⚠ __NEXT_DATA__ found but 'raises' key missing from pageProps — DefiLlama may have restructured their page. Skipping source.")
+            page.close()
+            return []
+        if len(raises) == 0:
+            print(" ⚠ 'raises' list is empty — either no recent raises or page data has changed. Skipping source.")
+            page.close()
+            return []
         print(f" SSR payload contains {len(raises)} total raises")
 
     except Exception as e:
@@ -2611,7 +2619,8 @@ def send_to_slack(csv_file_path, people_count, projects_count, no_website_csv_pa
         elif error_msg == 'invalid_auth':
             print(f" Token appears to be invalid or expired")
         
-        print(f" CSV file is still available locally: {csv_file_path}")
+        if csv_file_path:
+            print(f" CSV file is still available locally: {csv_file_path}")
         return False
     except ImportError:
         print(f"Slack SDK not installed. Install with: pip install slack-sdk")
