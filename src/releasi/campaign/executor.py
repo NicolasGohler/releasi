@@ -267,12 +267,6 @@ class CampaignExecutor:
                     await self.repo.increment_daily_stat(account.id, "errors")
                     if _is_network_error(reason):
                         result["network_error"] = True
-                    elif reason == "send_button_not_found":
-                        # The modal didn't appear or the Send button was absent —
-                        # LinkedIn showed a direct-send flow or changed the modal
-                        # UI. The session was valid (profile loaded successfully),
-                        # so this must not count toward the session-expiry threshold.
-                        result["ui_error"] = True
 
         except Exception as e:
             err_str = str(e)

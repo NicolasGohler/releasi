@@ -772,11 +772,33 @@ class LinkedInActions:
                     details={"url": profile_url},
                 )
 
+            # Before giving up, check if the invitation was sent via LinkedIn's
+            # direct-send flow (no modal — the request went out immediately on
+            # clicking Connect). If the profile now shows "Pending", the send
+            # actually succeeded.
+            for sel in selectors.PENDING_CONNECTION_INDICATORS:
+                try:
+                    pending_el = await self.page.locator(sel).first.element_handle(timeout=1000)
+                    if pending_el:
+                        logger.info("action.direct_send_detected", url=profile_url)
+                        return ActionResult(
+                            ActionStatus.SUCCESS,
+                            details={"url": profile_url, "via": "direct_send"},
+                        )
+                except Exception:
+                    pass
+
             await self._dump_buttons_debug()
             await self._debug_screenshot("send_btn_missing")
+            # The Connect click fired but no modal appeared and the profile is
+            # still in the unconnected state (no Pending badge). This happens
+            # reliably for Follow-primary profiles where LinkedIn does not open
+            # the invite modal from the More-dropdown Connect option. Treat as
+            # SKIPPED (not ERROR) so the lead doesn't pollute error stats and
+            # the session counter is unaffected.
             return ActionResult(
-                ActionStatus.ERROR,
-                reason="send_button_not_found",
+                ActionStatus.SKIPPED,
+                reason="connect_modal_not_opened",
                 details={"url": profile_url},
             )
 

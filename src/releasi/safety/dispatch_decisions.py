@@ -239,18 +239,6 @@ def classify_connection_result(
             log_event="dispatch.fatal_error",
         )
 
-    if result.get("ui_error"):
-        # Send button not found after clicking Connect — LinkedIn showed a
-        # direct-send flow or changed the modal UI. The session was valid
-        # (navigator loaded the profile), so this must not count toward the
-        # session threshold that would mark the account cookie_expired.
-        return DispatchIntent(
-            lead_action=LeadAction.NONE,
-            consecutive_session=consecutive_session,
-            consecutive_network=consecutive_network,
-            log_event="dispatch.ui_error_not_counted",
-        )
-
     # Generic failure: executor already marked the lead ERROR. Just track
     # for 3-strike.
     new_consec = consecutive_session + 1
