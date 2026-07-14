@@ -1596,6 +1596,68 @@ class Repository:
     async def get_lead_list(self, lead_list_id: str) -> LeadList | None:
         return await self.session.get(LeadList, lead_list_id)
 
+    async def get_lead_memberships(self, lead_id: str) -> list:
+        """Return all lists a lead belongs to, most-recent first.
+
+        Returns list of (lead_list_id, name, added_at) tuples.
+        """
+        result = await self.session.execute(
+            select(LeadList.id, LeadList.name, LeadListMembership.added_at)
+            .join(LeadListMembership, LeadList.id == LeadListMembership.lead_list_id)
+            .where(LeadListMembership.lead_id == lead_id)
+            .order_by(LeadListMembership.added_at.desc())
+        )
+        return result.all()
+
+    async def get_lead_campaigns(self, lead_id: str) -> list:
+        """Return all campaigns a lead is assigned to, with their per-campaign status.
+
+        Returns list of (campaign_id, name, status, account_name) tuples.
+        """
+        result = await self.session.execute(
+            select(
+                Campaign.id, Campaign.name,
+                CampaignLeadAssignment.status,
+                Account.name,
+            )
+            .join(CampaignLeadAssignment, Campaign.id == CampaignLeadAssignment.campaign_id)
+            .join(Account, Campaign.account_id == Account.id, isouter=True)
+            .where(CampaignLeadAssignment.lead_id == lead_id)
+            .order_by(CampaignLeadAssignment.created_at.desc())
+        )
+        return result.all()
+
+    async def get_most_recent_list_for_leads(self, lead_ids: list) -> dict:
+        """Return {lead_id: (list_id, list_name)} for the most-recent membership per lead.
+
+        Used by _enrich_leads to populate lead_list_name in list views without
+        relying on the denormalized leads.lead_list_id column.
+        """
+        if not lead_ids:
+            return {}
+        subq = (
+            select(
+                LeadListMembership.lead_id,
+                func.max(LeadListMembership.added_at).label("max_added"),
+            )
+            .where(LeadListMembership.lead_id.in_(lead_ids))
+            .group_by(LeadListMembership.lead_id)
+            .subquery()
+        )
+        result = await self.session.execute(
+            select(
+                LeadListMembership.lead_id,
+                LeadList.id,
+                LeadList.name,
+            )
+            .join(subq, and_(
+                LeadListMembership.lead_id == subq.c.lead_id,
+                LeadListMembership.added_at == subq.c.max_added,
+            ))
+            .join(LeadList, LeadList.id == LeadListMembership.lead_list_id)
+        )
+        return {row[0]: (row[1], row[2]) for row in result.all()}
+
     async def get_lead_list_by_name(self, name: str) -> LeadList | None:
         result = await self.session.execute(
             select(LeadList).where(LeadList.name == name)

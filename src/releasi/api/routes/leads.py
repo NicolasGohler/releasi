@@ -16,6 +16,7 @@ from releasi.api.schemas import (
     LeadUpdateRequest, LeadActivityOut,
     FindTelegramTaskOut,
     LeadNoteOut, LeadNoteCreate, LeadNoteUpdate,
+    LeadListRef, CampaignRef,
 )
 from releasi.db.repository import Repository
 
@@ -85,11 +86,12 @@ async def list_leads(
 async def _enrich_leads(repo: Repository, leads) -> list[LeadOut]:
     """Attach campaign_name and lead_list_name to LeadOut.
 
-    Batches the name lookups (one query per unique id) so we don't fan out
-    one query per lead. Used by both per-campaign and global leads endpoints.
+    lead_list_name is sourced from lead_list_memberships (most-recent entry)
+    rather than leads.lead_list_id so de-duped leads that were re-imported
+    into a new list still show the correct list name.
     """
     campaign_ids = {l.campaign_id for l in leads if l.campaign_id}
-    list_ids = {l.lead_list_id for l in leads if l.lead_list_id}
+    lead_ids = [l.id for l in leads]
 
     campaign_names: dict[str, str] = {}
     for cid in campaign_ids:
@@ -97,19 +99,16 @@ async def _enrich_leads(repo: Repository, leads) -> list[LeadOut]:
         if c:
             campaign_names[cid] = c.name
 
-    list_names: dict[str, str] = {}
-    for lid in list_ids:
-        ll = await repo.get_lead_list(lid)
-        if ll:
-            list_names[lid] = ll.name
+    # Batch lookup: most-recent list membership per lead
+    recent_lists = await repo.get_most_recent_list_for_leads(lead_ids)
 
     items: list[LeadOut] = []
     for l in leads:
         out = LeadOut.model_validate(l)
         if l.campaign_id and l.campaign_id in campaign_names:
             out.campaign_name = campaign_names[l.campaign_id]
-        if l.lead_list_id and l.lead_list_id in list_names:
-            out.lead_list_name = list_names[l.lead_list_id]
+        if l.id in recent_lists:
+            out.lead_list_id, out.lead_list_name = recent_lists[l.id]
         items.append(out)
     return items
 
@@ -541,12 +540,28 @@ async def lookup_lead_by_url(
 
 @router.get("/leads/{lead_id}", response_model=LeadOut)
 async def get_lead(lead_id: str, repo: Repository = Depends(get_repo)):
-    """Fetch a single lead with enriched campaign/list names."""
+    """Fetch a single lead with all list memberships and campaign assignments."""
     lead = await repo.get_lead_by_id(lead_id)
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
     items = await _enrich_leads(repo, [lead])
-    return items[0]
+    out = items[0]
+
+    # Populate full list membership history (detail view only)
+    memberships = await repo.get_lead_memberships(lead_id)
+    out.lead_lists = [
+        LeadListRef(id=row[0], name=row[1], added_at=row[2])
+        for row in memberships
+    ]
+
+    # Populate all campaign assignments (detail view only)
+    campaign_rows = await repo.get_lead_campaigns(lead_id)
+    out.campaigns = [
+        CampaignRef(id=row[0], name=row[1], status=row[2], account_name=row[3])
+        for row in campaign_rows
+    ]
+
+    return out
 
 
 @router.patch("/leads/{lead_id}", response_model=LeadOut)

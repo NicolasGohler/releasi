@@ -142,6 +142,19 @@ export interface LeadListDetail extends LeadList {
   stats: LeadListStats | null;
 }
 
+export interface LeadListRef {
+  id: string;
+  name: string;
+  added_at: string;
+}
+
+export interface CampaignRef {
+  id: string;
+  name: string;
+  status: string;
+  account_name: string | null;
+}
+
 export interface Lead {
   id: string;
   campaign_id: string | null;
@@ -171,6 +184,8 @@ export interface Lead {
   updated_at: string | null;
   campaign_name: string | null;
   lead_list_name: string | null;
+  lead_lists: LeadListRef[];
+  campaigns: CampaignRef[];
 }
 
 export interface LeadUpdateRequest {

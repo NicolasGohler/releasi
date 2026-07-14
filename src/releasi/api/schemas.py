@@ -172,6 +172,21 @@ class CampaignUpdate(BaseModel):
 
 # ── Leads ─────────────────────────────────────────────────────────────────
 
+class LeadListRef(BaseModel):
+    """Slim list membership record — used in lead detail responses."""
+    id: str
+    name: str
+    added_at: datetime
+
+
+class CampaignRef(BaseModel):
+    """Slim campaign membership record — used in lead detail responses."""
+    id: str
+    name: str
+    status: str
+    account_name: Optional[str] = None
+
+
 class LeadOut(BaseModel):
     id: str
     campaign_id: Optional[str] = None
@@ -201,6 +216,9 @@ class LeadOut(BaseModel):
     updated_at: Optional[datetime] = None
     campaign_name: Optional[str] = None
     lead_list_name: Optional[str] = None
+    # Detail-only: all list memberships and campaign assignments (empty in list view)
+    lead_lists: List[LeadListRef] = []
+    campaigns: List[CampaignRef] = []
 
     class Config:
         from_attributes = True

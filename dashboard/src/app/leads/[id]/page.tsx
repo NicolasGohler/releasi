@@ -23,7 +23,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import type { Lead, LeadActivity, LeadNote, FindTelegramTask } from "@/lib/types";
+import type { Lead, LeadActivity, LeadNote, FindTelegramTask, LeadListRef, CampaignRef } from "@/lib/types";
 import {
   ArrowLeft, ExternalLink, Pencil, Check, X,
   Copy, Send, RotateCcw, FastForward, Trash2, Undo2,
@@ -703,12 +703,31 @@ function ActivityFeed({ lead, notes, notesLoading, activity, activityLoading }: 
       {/* Campaign status summary */}
       <div className="mb-4 pb-4 border-b">
         <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Campaign Status</h2>
-        {lead.campaign_name && (
-          <p className="text-sm font-medium mb-1">{lead.campaign_name}</p>
+        {/* Multi-campaign view: show each campaign with its own status */}
+        {lead.campaigns && lead.campaigns.length > 1 ? (
+          <div className="space-y-2 mb-3">
+            {lead.campaigns.map((c: CampaignRef) => (
+              <div key={c.id} className="rounded-md border bg-muted/30 px-3 py-2">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="text-xs font-medium truncate">{c.name}</span>
+                  {c.account_name && (
+                    <span className="text-xs text-muted-foreground shrink-0">{c.account_name}</span>
+                  )}
+                </div>
+                <StatusBadge status={c.status} />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <>
+            {lead.campaign_name && (
+              <p className="text-sm font-medium mb-1">{lead.campaign_name}</p>
+            )}
+            <div className="mb-3">
+              <StatusBadge status={lead.status} />
+            </div>
+          </>
         )}
-        <div className="mb-3">
-          <StatusBadge status={lead.status} />
-        </div>
         {lead.error_message && (
           <div className="rounded-md bg-rose-500/10 border border-rose-500/20 px-3 py-2 mb-3">
             <p className="text-xs text-rose-600 dark:text-rose-400 font-medium">Error</p>
@@ -991,10 +1010,24 @@ export default function LeadDetailPage() {
                 </button>
               </div>
 
-              {lead.lead_list_name && (
-                <div className="flex flex-col gap-0.5 py-1.5">
-                  <span className="text-xs font-medium text-muted-foreground">List</span>
-                  <span className="text-sm min-h-[1.75rem] flex items-center">{lead.lead_list_name}</span>
+              {lead.lead_lists && lead.lead_lists.length > 0 && (
+                <div className="flex flex-col gap-1 py-1.5">
+                  <span className="text-xs font-medium text-muted-foreground">Lists</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {lead.lead_lists.map((ll: LeadListRef, i: number) => (
+                      <span
+                        key={ll.id}
+                        className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium border ${
+                          i === 0
+                            ? "bg-blue-500/10 text-blue-700 dark:text-blue-300 border-blue-500/30"
+                            : "bg-muted text-muted-foreground border-border"
+                        }`}
+                        title={`Added ${new Date(ll.added_at.endsWith("Z") ? ll.added_at : ll.added_at + "Z").toLocaleDateString()}`}
+                      >
+                        {ll.name}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
