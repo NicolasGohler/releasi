@@ -703,8 +703,10 @@ function ActivityFeed({ lead, notes, notesLoading, activity, activityLoading }: 
       {/* Campaign status summary */}
       <div className="mb-4 pb-4 border-b">
         <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Campaign Status</h2>
-        {/* Multi-campaign view: show each campaign with its own status */}
-        {lead.campaigns && lead.campaigns.length > 1 ? (
+        {/* Campaign assignments — prefer the normalised campaigns[] array over
+            the legacy denormalized lead.campaign_name / lead.status fields,
+            which are NULL for de-duped leads re-imported into a new list. */}
+        {lead.campaigns && lead.campaigns.length > 0 ? (
           <div className="space-y-2 mb-3">
             {lead.campaigns.map((c: CampaignRef) => (
               <div key={c.id} className="rounded-md border bg-muted/30 px-3 py-2">
