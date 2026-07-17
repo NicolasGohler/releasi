@@ -195,6 +195,7 @@ export interface LeadUpdateRequest {
   title?: string | null;
   email?: string | null;
   phone?: string | null;
+  linkedin_url?: string | null;
   twitter_url?: string | null;
   telegram_username?: string | null;
   tg_contacted?: boolean | null;
