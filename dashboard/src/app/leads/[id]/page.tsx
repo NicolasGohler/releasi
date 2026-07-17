@@ -1058,8 +1058,7 @@ export default function LeadDetailPage() {
               label="LinkedIn"
               value={lead.linkedin_url}
               placeholder="https://linkedin.com/in/..."
-              href={(v) => v}
-              transform={(v) => v.replace("https://www.", "")}
+              href={(v) => v.startsWith("http") ? v : `https://${v}`}
               onSave={async (v) => {
                 await save("linkedin_url", v);
               }}
