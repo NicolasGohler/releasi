@@ -576,7 +576,7 @@ async def update_lead_profile(
     Only fields present in the request body are updated — absent fields are
     left unchanged. Pass an explicit null to clear a field.
     """
-    from releasi.campaign.importer import normalize_twitter_url, normalize_telegram_username
+    from releasi.campaign.importer import normalize_twitter_url, normalize_telegram_username, normalize_linkedin_url
 
     lead = await repo.get_lead_by_id(lead_id)
     if not lead:
@@ -587,6 +587,10 @@ async def update_lead_profile(
         if field in body.model_fields_set:
             val = getattr(body, field)
             updates[field] = val.strip() if isinstance(val, str) and field not in ("notes",) else val
+
+    if "linkedin_url" in body.model_fields_set:
+        raw = body.linkedin_url
+        updates["linkedin_url"] = normalize_linkedin_url(raw.strip()) if raw else None
 
     if "twitter_url" in body.model_fields_set:
         raw = body.twitter_url
