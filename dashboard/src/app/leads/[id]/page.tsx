@@ -1053,28 +1053,17 @@ export default function LeadDetailPage() {
           <div className="rounded-xl border bg-card p-4 space-y-1">
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Social & Links</h2>
 
-            {/* LinkedIn — read-only */}
-            <div className="flex flex-col gap-0.5 py-1.5">
-              <span className="text-xs font-medium text-muted-foreground">LinkedIn</span>
-              <div className="flex items-center gap-2">
-                {lead.linkedin_url ? (
-                  <>
-                    <a
-                      href={lead.linkedin_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sm text-primary hover:underline flex items-center gap-1 truncate"
-                    >
-                      {lead.linkedin_url.replace("https://www.", "")}
-                      <ExternalLink className="h-3 w-3 flex-shrink-0" />
-                    </a>
-                    <CopyButton text={lead.linkedin_url} label="Copy LinkedIn URL" />
-                  </>
-                ) : (
-                  <span className="text-sm text-muted-foreground">—</span>
-                )}
-              </div>
-            </div>
+            {/* LinkedIn */}
+            <InlineField
+              label="LinkedIn"
+              value={lead.linkedin_url}
+              placeholder="https://linkedin.com/in/..."
+              href={(v) => v}
+              transform={(v) => v.replace("https://www.", "")}
+              onSave={async (v) => {
+                await save("linkedin_url", v);
+              }}
+            />
 
             {/* Twitter / X */}
             <InlineField
