@@ -1539,105 +1539,157 @@ class LinkedInActions:
             "accept": "*/*",
         }
 
-        # Fetch one page (~10 items) from the correct end of the list.
-        # startIndex=0 → newest; startIndex=(total-10) → oldest.
-        page_size = 10
-        start_idx = 0 if order == "newest" else max(0, dom_total - page_size)
-
-        inner_args: dict = {
-            "$type": "proto.sdui.actions.requests.RequestedArguments",
-            "payload": {
+        def _build_pag_payload(start_idx: int) -> dict:
+            """Build a fresh pagination payload for the given startIndex."""
+            payload_inner = {
                 "startIndex": start_idx,
                 "invitationTypeEnum": ["GenericInvitationType_CONNECTION"],
                 "invitationClassificationTypes": [],
                 "filterCriteriaEnum": "FilterCriteria_UNKNOWN",
                 "invitationDirectionEnum": "PendingInvitationDirection_SENT",
-            },
-            "requestedStateKeys": [],
-            "requestMetadata": {"$type": "proto.sdui.common.RequestMetadata"},
-            "states": [],
-            "screenId": "com.linkedin.sdui.flagshipnav.mynetwork.invitations.InvitationSentWithType",
-        }
-        pag_payload = {
-            "pagerId": "com.linkedin.sdui.pagers.mynetwork.invitationsList",
-            "clientArguments": inner_args,
-            "paginationRequest": {
-                "$type": "proto.sdui.actions.requests.PaginationRequest",
+            }
+            inner: dict = {
+                "$type": "proto.sdui.actions.requests.RequestedArguments",
+                "payload": payload_inner,
+                "requestedStateKeys": [],
+                "requestMetadata": {"$type": "proto.sdui.common.RequestMetadata"},
+                "states": [],
+                "screenId": "com.linkedin.sdui.flagshipnav.mynetwork.invitations.InvitationSentWithType",
+            }
+            return {
                 "pagerId": "com.linkedin.sdui.pagers.mynetwork.invitationsList",
-                "requestedArguments": {
-                    "$type": "proto.sdui.actions.requests.RequestedArguments",
-                    "payload": inner_args["payload"],
-                    "requestedStateKeys": [],
-                    "requestMetadata": {"$type": "proto.sdui.common.RequestMetadata"},
-                },
-                "trigger": {
-                    "$case": "itemDistanceTrigger",
-                    "itemDistanceTrigger": {
-                        "$type": "proto.sdui.actions.requests.ItemDistanceTrigger",
-                        "preloadDistance": 3,
-                        "preloadLength": 250,
+                "clientArguments": inner,
+                "paginationRequest": {
+                    "$type": "proto.sdui.actions.requests.PaginationRequest",
+                    "pagerId": "com.linkedin.sdui.pagers.mynetwork.invitationsList",
+                    "requestedArguments": {
+                        "$type": "proto.sdui.actions.requests.RequestedArguments",
+                        "payload": payload_inner,
+                        "requestedStateKeys": [],
+                        "requestMetadata": {"$type": "proto.sdui.common.RequestMetadata"},
                     },
+                    "trigger": {
+                        "$case": "itemDistanceTrigger",
+                        "itemDistanceTrigger": {
+                            "$type": "proto.sdui.actions.requests.ItemDistanceTrigger",
+                            "preloadDistance": 3,
+                            "preloadLength": 250,
+                        },
+                    },
+                    "retryCount": 2,
                 },
-                "retryCount": 2,
-            },
-        }
+            }
 
-        pag_result = await self.page.evaluate(
-            """async ([url, hdrs, body]) => {
-                try {
-                    const r = await fetch(url, {
-                        method: "POST", headers: hdrs,
-                        credentials: "include", body: JSON.stringify(body),
-                    });
-                    return {status: r.status, body: await r.text()};
-                } catch (e) { return {error: e.message}; }
-            }""",
-            [PAGINATION_URL, SDUI_HEADERS, pag_payload],
-        )
+        # Fetch multiple pages until we have `count` IDs.
+        # LinkedIn stores invitations newest-first: startIndex=0 → newest,
+        # startIndex=(total-page_size) → oldest.
+        # For "oldest" order we start from the far end and work backwards.
+        # For "newest" we start from 0 and work forwards.
+        # Within each page the RSC response is in LinkedIn's natural order
+        # (newest-first); for "oldest" we reverse within each page.
+        page_size = 10
+        all_pairs: list[tuple] = []
+        seen_ids: set = set()
+        pages_needed = (count + page_size - 1) // page_size  # ceil
 
-        if pag_result.get("error") or pag_result.get("status") != 200:
-            logger.warning(
-                "action.withdraw_pagination_failed",
-                status=pag_result.get("status"),
-                error=pag_result.get("error"),
+        for page_num in range(pages_needed):
+            if len(all_pairs) >= count:
+                break
+
+            if order == "newest":
+                start_idx = page_num * page_size
+            else:  # oldest
+                start_idx = max(0, dom_total - page_size - (page_num * page_size))
+
+            pag_result = await self.page.evaluate(
+                """async ([url, hdrs, body]) => {
+                    try {
+                        const r = await fetch(url, {
+                            method: "POST", headers: hdrs,
+                            credentials: "include", body: JSON.stringify(body),
+                        });
+                        return {status: r.status, body: await r.text()};
+                    } catch (e) { return {error: e.message}; }
+                }""",
+                [PAGINATION_URL, SDUI_HEADERS, _build_pag_payload(start_idx)],
             )
-            # SDUI endpoint unavailable — fall back to DOM-scroll approach.
-            # Cap at 20 to avoid OOM on large invitation lists.
-            logger.info("action.withdraw_sdui_fallback_dom", count=count)
-            return await self._withdraw_invitations_dom(min(count, 20), order=order)
 
-        rsc_body = pag_result.get("body", "")
+            if pag_result.get("error") or pag_result.get("status") != 200:
+                if page_num == 0:
+                    # SDUI endpoint unavailable on first page — fall back to DOM.
+                    # Cap at 20 to avoid OOM on large invitation lists.
+                    logger.warning(
+                        "action.withdraw_pagination_failed",
+                        status=pag_result.get("status"),
+                        error=pag_result.get("error"),
+                    )
+                    logger.info("action.withdraw_sdui_fallback_dom", count=count)
+                    return await self._withdraw_invitations_dom(min(count, 20), order=order)
+                else:
+                    logger.warning(
+                        "action.withdraw_pagination_page_failed",
+                        page=page_num, status=pag_result.get("status"),
+                        error=pag_result.get("error"), collected=len(all_pairs),
+                    )
+                    break
 
-        # Extract invitation IDs and profile slugs from RSC body.
-        # Both appear in document order matching the pagination page.
-        # The RSC response packs all IDs in modelStates first, then card
-        # components (with profile /in/ URLs) follow — same count, same order.
-        inv_ids = list(dict.fromkeys(
-            re.findall(r'InvitationUrn\(invitationId=(\d+)\)', rsc_body)
-        ))
-        slugs = list(dict.fromkeys(
-            re.findall(r'"https://www\.linkedin\.com/in/([^/"\\]+)', rsc_body)
-        ))
+            rsc_body = pag_result.get("body", "")
 
-        if not inv_ids:
-            logger.warning("action.withdraw_no_ids", body_len=len(rsc_body))
+            # Extract invitation IDs and profile slugs from RSC body.
+            # Both appear in document order matching the pagination page.
+            # The RSC response packs all IDs in modelStates first, then card
+            # components (with profile /in/ URLs) follow — same count, same order.
+            inv_ids = list(dict.fromkeys(
+                re.findall(r'InvitationUrn\(invitationId=(\d+)\)', rsc_body)
+            ))
+            slugs = list(dict.fromkeys(
+                re.findall(r'"https://www\.linkedin\.com/in/([^/"\\]+)', rsc_body)
+            ))
+
+            if not inv_ids:
+                if page_num == 0:
+                    logger.warning("action.withdraw_no_ids", body_len=len(rsc_body))
+                    return []
+                else:
+                    logger.debug("action.withdraw_page_empty", page=page_num)
+                    break
+
+            # Pair IDs with slugs by position; fall back to no-slug if counts differ.
+            if len(inv_ids) == len(slugs):
+                page_pairs = list(zip(inv_ids, slugs))
+            else:
+                logger.warning(
+                    "action.withdraw_pairing_mismatch",
+                    page=page_num, n_ids=len(inv_ids), n_slugs=len(slugs),
+                )
+                page_pairs = [(iid, "") for iid in inv_ids]
+
+            # For oldest order the RSC returns newest-at-bottom within each page;
+            # reverse so the oldest items from this page come first.
+            if order == "oldest":
+                page_pairs = list(reversed(page_pairs))
+
+            # Deduplicate across pages (RSC responses can overlap near page boundaries).
+            for pair in page_pairs:
+                if pair[0] not in seen_ids:
+                    seen_ids.add(pair[0])
+                    all_pairs.append(pair)
+
+            logger.debug(
+                "action.withdraw_page_fetched",
+                page=page_num, start_idx=start_idx,
+                page_ids=len(inv_ids), total_collected=len(all_pairs),
+            )
+
+            # Brief delay between pagination requests to avoid rate-limiting.
+            if page_num < pages_needed - 1 and len(all_pairs) < count:
+                await asyncio.sleep(1.5)
+
+        if not all_pairs:
+            logger.warning("action.withdraw_no_ids_after_pages", pages_fetched=pages_needed)
             return []
 
-        # Pair IDs with slugs by position; fall back to no-slug if counts differ.
-        if len(inv_ids) == len(slugs):
-            pairs = list(zip(inv_ids, slugs))
-        else:
-            logger.warning(
-                "action.withdraw_pairing_mismatch",
-                n_ids=len(inv_ids), n_slugs=len(slugs),
-            )
-            pairs = [(iid, "") for iid in inv_ids]
-
-        # For oldest order the RSC returns newest-at-bottom; reverse so oldest is first.
-        if order == "oldest":
-            pairs = list(reversed(pairs))
-
-        pairs = pairs[:count]
+        pairs = all_pairs[:count]
 
         # ── Withdraw each invitation via SDUI server-request ─────────────────
         withdrawn_urls: list[str] = []
