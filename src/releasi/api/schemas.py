@@ -232,6 +232,7 @@ class LeadUpdateRequest(BaseModel):
     title: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    linkedin_url: Optional[str] = None
     twitter_url: Optional[str] = None
     telegram_username: Optional[str] = None
     # True = mark contacted now, False = clear the contacted timestamp
