@@ -1,0 +1,34 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "minimumReleaseAge": "14 days",
+  "packageRules": [
+    {
+      "description": "Pin all Python deps; wait 14 days before accepting updates",
+      "matchManagers": ["pip_setup_cfg", "pip-compile", "pipenv"],
+      "minimumReleaseAge": "14 days",
+      "rangeStrategy": "pin"
+    },
+    {
+      "description": "Pin all Node.js deps; wait 14 days before accepting updates",
+      "matchManagers": ["npm"],
+      "minimumReleaseAge": "14 days",
+      "rangeStrategy": "pin"
+    },
+    {
+      "description": "Group all non-major updates into a single weekly PR",
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "all non-major dependencies",
+      "schedule": ["before 9am on Monday"]
+    },
+    {
+      "description": "Major updates are separate PRs — need manual review",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 9am on Monday"]
+  }
+}
