@@ -11,6 +11,7 @@ import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.events import EVENT_JOB_MAX_INSTANCES
 
 from releasi.config import get_settings
 from releasi.db.engine import init_db, get_session_factory, close_db
@@ -2288,6 +2289,41 @@ async def start_scheduler():
     #     name="Daily Slack Summary",
     #     replace_existing=True,
     # )
+
+    # Alert on dispatcher hang: fire Slack after 3 consecutive max_instances skips
+    # (~15 min stuck). Counter resets whenever the job actually runs (i.e., the lock
+    # is released and APScheduler stops emitting MAX_INSTANCES events).
+    _dispatcher_skip_count = 0
+    _DISPATCHER_SKIP_ALERT_THRESHOLD = 3
+
+    def _on_max_instances(event):
+        nonlocal _dispatcher_skip_count
+        if event.job_id != "dispatcher":
+            return
+        _dispatcher_skip_count += 1
+        logger.warning(
+            "dispatcher.hang_detected",
+            consecutive_skips=_dispatcher_skip_count,
+        )
+        if _dispatcher_skip_count == _DISPATCHER_SKIP_ALERT_THRESHOLD:
+            asyncio.get_event_loop().create_task(
+                slack_notify(
+                    f":rotating_light: *Dispatcher hang detected* — skipped "
+                    f"{_DISPATCHER_SKIP_ALERT_THRESHOLD} consecutive ticks "
+                    f"(~{_DISPATCHER_SKIP_ALERT_THRESHOLD * 5} min). "
+                    f"A coroutine is holding the lock. Restart the container to recover: "
+                    f"`ssh root@REDACTED 'cd /root/linauto && bash scripts/deploy.sh'`"
+                )
+            )
+
+    def _on_dispatcher_executed(event):
+        nonlocal _dispatcher_skip_count
+        if event.job_id == "dispatcher":
+            _dispatcher_skip_count = 0
+
+    scheduler.add_listener(_on_max_instances, EVENT_JOB_MAX_INSTANCES)
+    from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
+    scheduler.add_listener(_on_dispatcher_executed, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
 
     scheduler.start()
     logger.info("scheduler.started", jobs=len(scheduler.get_jobs()))
