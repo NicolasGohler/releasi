@@ -650,10 +650,13 @@ async def _dispatch_continuous(
             noise_count = random.randint(1, 2)
             for _ in range(noise_count):
                 action = random.choice(["profile", "feed"])
-                if action == "profile":
-                    await noise.view_random_profile()
-                else:
-                    await noise.like_feed_post()
+                try:
+                    if action == "profile":
+                        await asyncio.wait_for(noise.view_random_profile(), timeout=90)
+                    else:
+                        await asyncio.wait_for(noise.like_feed_post(), timeout=90)
+                except asyncio.TimeoutError:
+                    logger.debug("dispatch.continuous_noise_timeout", action=action)
                 await asyncio.sleep(random.uniform(3, 8))
         except Exception as e:
             logger.debug("dispatch.continuous_noise_failed", error=str(e))
