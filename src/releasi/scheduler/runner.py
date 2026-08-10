@@ -2144,6 +2144,33 @@ async def _start_api_server():
     asyncio.create_task(server.serve())
 
 
+async def check_no_activity_alert():
+    """Alert via Slack if zero connection requests were sent in the last 24 hours."""
+    from sqlalchemy import select, func
+    from releasi.db.models import ActionLog, ActionLogStatus
+    repo, session = await _get_repo()
+    try:
+        cutoff = datetime.now(_dt_tz.utc) - timedelta(hours=24)
+        result = await session.execute(
+            select(func.count()).select_from(ActionLog).where(
+                ActionLog.action_type == ActionType.CONNECTION_REQUEST,
+                ActionLog.status == ActionLogStatus.SUCCESS,
+                ActionLog.created_at >= cutoff,
+            )
+        )
+        count = result.scalar() or 0
+        if count == 0:
+            await slack_notify(
+                ":warning: *No connection requests sent in the last 24 hours.* "
+                "Check if the dispatcher is running and accounts are active."
+            )
+            logger.warning("alert.no_connections_24h")
+        else:
+            logger.info("alert.connections_24h_ok", count=count)
+    finally:
+        await session.close()
+
+
 async def daily_summary():
     """Send end-of-day Slack summary of activity across all active accounts."""
     from datetime import date as date_type
@@ -2289,6 +2316,17 @@ async def start_scheduler():
     #     name="Daily Slack Summary",
     #     replace_existing=True,
     # )
+
+    # No-activity alert: fires at 10:00 UTC daily (noon Berlin / 6am EDT).
+    # Sends a Slack ping if zero successful connection requests were recorded
+    # in the previous 24 hours across all accounts.
+    scheduler.add_job(
+        check_no_activity_alert,
+        CronTrigger(hour=10, minute=0),
+        id="no_activity_alert",
+        name="No-Activity Alert",
+        replace_existing=True,
+    )
 
     # Alert on dispatcher hang: fire Slack after 3 consecutive max_instances skips
     # (~15 min stuck). Counter resets whenever the job actually runs (i.e., the lock
