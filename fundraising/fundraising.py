@@ -2507,7 +2507,28 @@ def push_to_releasi(csv_file_path):
         leads_added = assign_result.get("leads_added", 0)
         print(f" Assigned to campaign: {assign_result}")
 
-        # 4. Write activity log entry so the run appears in the campaign feed
+        # 4. Promote this list to dispatch priority #1 in the campaign
+        try:
+            campaign_data = requests.get(
+                f"{RELEASI_BASE_URL}/campaigns/{RELEASI_CAMPAIGN_ID}",
+                headers=headers,
+                timeout=30,
+            ).json()
+            existing_ids = [l["id"] for l in (campaign_data.get("assigned_lists") or [])]
+            # New list first, then the rest (deduped, preserving current priority order)
+            ordered = [list_id] + [lid for lid in existing_ids if lid != list_id]
+            r = requests.put(
+                f"{RELEASI_BASE_URL}/campaigns/{RELEASI_CAMPAIGN_ID}/lists/order",
+                headers={**headers, "Content-Type": "application/json"},
+                json={"ordered_list_ids": ordered},
+                timeout=30,
+            )
+            r.raise_for_status()
+            print(f" Promoted '{list_name}' to priority #1 ({len(ordered)} lists reordered)")
+        except Exception as prio_err:
+            print(f" ⚠ Could not set list priority (non-fatal): {prio_err}")
+
+        # 5. Write activity log entry so the run appears in the campaign feed
         _log_fundraising_run(RELEASI_CAMPAIGN_ID, list_name, list_id, import_result, leads_added)
         return True
     except Exception as e:
