@@ -637,9 +637,15 @@ class LinkedInActions:
         )
         if not dialog_check:
             logger.info("action.connect_modal_retry", url=profile_url)
-            await connect_btn.evaluate("""el => {
-                el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
-            }""")
+            try:
+                await connect_btn.evaluate("""el => {
+                    el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+                }""")
+            except Exception as retry_err:
+                # connect_btn may be stale (e.g. More dropdown closed, menuitem removed from DOM).
+                # Log and fall through — the send_btn search below will either find the modal or
+                # reach connect_modal_not_opened, which is the correct outcome for both cases.
+                logger.debug("action.connect_modal_retry_stale", error=str(retry_err)[:120])
             await self.delay.micro_delay(2.0, 3.0)
 
         # 6. Handle the invite modal
