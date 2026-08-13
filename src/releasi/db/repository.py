@@ -1738,6 +1738,27 @@ class Repository:
         )
         return {r[0] for r in result.all()}
 
+    async def update_leads_enrichment(self, enrichment_map: dict) -> int:
+        """Bulk-update Apollo enrichment fields on canonical Lead rows by linkedin_url.
+
+        enrichment_map: {linkedin_url: {first_name, last_name, email, company, title}}
+        Only sets fields that are non-None in the incoming data. Runs inside a
+        single transaction — fast enough for 500 rows in SQLite.
+        """
+        from sqlalchemy import update as sa_update
+
+        updated = 0
+        for li_url, data in enrichment_map.items():
+            non_null = {k: v for k, v in data.items() if v is not None}
+            if not non_null:
+                continue
+            r = await self.session.execute(
+                sa_update(Lead).where(Lead.linkedin_url == li_url).values(**non_null)
+            )
+            updated += r.rowcount
+        await self.session.commit()
+        return updated
+
     # ── Campaign ↔ Lead List Assignment ───────────────────────────────────
 
     async def assign_list_to_campaign(

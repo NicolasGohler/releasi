@@ -13,6 +13,11 @@ from releasi.linkedin.selectors import LOGIN_URL_PATTERNS, SEARCH_RESULTS_LOADED
 
 logger = structlog.get_logger()
 
+# Recycle the Playwright page every N pages to prevent Chromium OOM accumulation.
+_RECYCLE_INTERVAL = 20
+# Flush collected-but-unpersisted items to DB every N pages via on_checkpoint.
+_CHECKPOINT_INTERVAL = 15
+
 
 def _build_page_url(base_url: str, page_num: int) -> str:
     """Return the search URL with ?page=N set (removes it for page 1)."""
@@ -117,6 +122,7 @@ async def scrape_event_attendees(
     limit: Optional[int] = None,
     on_progress: Optional[Callable[[int, int], None]] = None,
     page_factory: Optional[Callable[[], Awaitable[Page]]] = None,
+    on_checkpoint: Optional[Callable[[List[dict]], Awaitable[None]]] = None,
 ) -> List[dict]:
     """
     Scrape profile data from a LinkedIn people search results page.
@@ -129,6 +135,10 @@ async def scrape_event_attendees(
         search_url: Full LinkedIn people search URL (e.g. event attendees URL).
         limit: Max profiles to collect. None = collect everything available.
         on_progress: Optional callback(total_collected, page_num) for live updates.
+        page_factory: Async callable that creates a fresh authenticated page.
+            Used for proactive page recycling and crash recovery.
+        on_checkpoint: Async callback(new_items) called every _CHECKPOINT_INTERVAL
+            pages so the caller can persist progress before the full scrape finishes.
 
     Returns:
         List of {url, name} dicts, e.g. [{"url": "https://www.linkedin.com/in/johndoe", "name": "John Doe"}].
@@ -136,19 +146,24 @@ async def scrape_event_attendees(
     collected: List[dict] = []
     seen: set[str] = set()
     page_num = 1
+    consecutive_empty = 0  # pages with no new results; break after 2 in a row
+    slow_mode = False       # activated after redirect-loop detection; widens delays
+    last_checkpoint_idx = 0  # index into collected of the last checkpoint boundary
 
     while True:
         if limit is not None and len(collected) >= limit:
             break
 
         url = _build_page_url(search_url, page_num)
-        logger.info("scraper.loading_page", page=page_num, url=url)
+        logger.info("scraper.loading_page", page=page_num, url=url, slow_mode=slow_mode)
 
         # Two attempts per page. Recovery strategy varies by failure type:
-        # - Page crashed (Chromium OOM): open a fresh page via page_factory, wait 5s
-        # - ERR_TOO_MANY_REDIRECTS (LinkedIn anti-bot): navigate to feed to reset
-        #   session state, wait 15s, then retry the search URL
-        # - Timeout or other errors: plain 20s backoff
+        # - Page crashed (Chromium OOM): close broken page, open a fresh one via
+        #   page_factory, wait 5 s, then retry the same search page number.
+        # - ERR_TOO_MANY_REDIRECTS (LinkedIn anti-bot): navigate to /feed/ to
+        #   reset LinkedIn's session state, wait 15 s, engage slow_mode for the
+        #   rest of the session, then retry.
+        # - Timeout or other errors: plain 20 s backoff.
         nav_ok = False
         for attempt in range(2):
             try:
@@ -179,6 +194,7 @@ async def scrape_event_attendees(
                         await asyncio.sleep(5.0)
                     elif is_redirect_loop:
                         logger.warning("scraper.redirect_loop_recovering", page=page_num)
+                        slow_mode = True
                         try:
                             await page.goto(
                                 "https://www.linkedin.com/feed/",
@@ -204,8 +220,15 @@ async def scrape_event_attendees(
 
         has_results = await _wait_for_results(page)
         if not has_results:
-            logger.info("scraper.no_results", page=page_num)
-            break
+            consecutive_empty += 1
+            logger.info("scraper.no_results", page=page_num, consecutive=consecutive_empty)
+            if consecutive_empty >= 2:
+                # Two empty pages in a row confirms real end of pagination,
+                # not a transient DOM rendering glitch on a single page.
+                break
+            page_num += 1
+            continue
+        consecutive_empty = 0
 
         # Brief pause for React to finish rendering all cards
         await asyncio.sleep(random.uniform(0.8, 1.5))
@@ -234,8 +257,41 @@ async def scrape_event_attendees(
         if new_count == 0:
             break
 
-        # Human-like inter-page delay (2–4 seconds)
-        await asyncio.sleep(random.uniform(2.0, 4.0))
+        # Checkpoint: flush newly collected items to DB every _CHECKPOINT_INTERVAL pages
+        items_since_checkpoint = len(collected) - last_checkpoint_idx
+        if on_checkpoint and items_since_checkpoint >= _CHECKPOINT_INTERVAL * 10:
+            new_batch = collected[last_checkpoint_idx:]
+            try:
+                await on_checkpoint(new_batch)
+                last_checkpoint_idx = len(collected)
+                logger.info("scraper.checkpoint", saved=len(new_batch), total=len(collected))
+            except Exception as cp_err:
+                logger.warning("scraper.checkpoint_failed", error=str(cp_err))
+
+        # Proactive page recycle every _RECYCLE_INTERVAL pages — prevents OOM from
+        # accumulated React/DOM state in a single long-lived Chromium renderer.
+        if page_factory is not None and page_num % _RECYCLE_INTERVAL == 0:
+            logger.info("scraper.recycling_page", page=page_num)
+            try:
+                await page.close()
+            except Exception:
+                pass
+            page = await page_factory()
+            # Extra breather after recycle so the new context fully initialises
+            await asyncio.sleep(random.uniform(3.0, 5.0))
+
+        # Adaptive inter-page delay: wider range after redirect-loop detection
+        delay = random.uniform(5.0, 9.0) if slow_mode else random.uniform(2.0, 4.0)
+        await asyncio.sleep(delay)
         page_num += 1
+
+    # Final checkpoint for any tail items not yet flushed
+    if on_checkpoint and len(collected) > last_checkpoint_idx:
+        tail = collected[last_checkpoint_idx:]
+        try:
+            await on_checkpoint(tail)
+            logger.info("scraper.checkpoint_final", saved=len(tail), total=len(collected))
+        except Exception as cp_err:
+            logger.warning("scraper.checkpoint_final_failed", error=str(cp_err))
 
     return collected

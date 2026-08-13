@@ -144,6 +144,36 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
             _scrape_jobs[list_id] = {"status": "error", "collected": 0, "error": "Session expired — please re-login"}
             return
 
+        # Track items written by the checkpoint callback so we can backfill
+        # Apollo enrichment into them after the full scrape completes.
+        checkpointed_urls: set = set()
+
+        async def _checkpoint(new_items: list) -> None:
+            """Write raw (unenriched) leads to DB every _CHECKPOINT_INTERVAL pages."""
+            ll_cur = await repo.get_lead_list(list_id)
+            if not ll_cur:
+                return
+            existing = await repo.get_list_lead_urls(list_id)
+            raw_leads = []
+            for item in new_items:
+                li_url = item["url"]
+                if li_url in existing:
+                    continue
+                parts = (item.get("name") or "").strip().split(None, 1)
+                raw_leads.append(Lead(
+                    lead_list_id=list_id,
+                    linkedin_url=li_url,
+                    first_name=parts[0] if parts else None,
+                    last_name=parts[1] if len(parts) > 1 else None,
+                    status=LeadStatus.PENDING,
+                ))
+                checkpointed_urls.add(li_url)
+            if raw_leads:
+                count = await repo.bulk_create_leads(raw_leads)
+                await repo.update_lead_list(
+                    ll_cur, total_leads=ll_cur.total_leads + count, csv_filename="event_attendees.csv"
+                )
+
         page = await browser.new_page()
         try:
             def _on_progress(count: int, _page_num: int):
@@ -154,6 +184,7 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
                 limit=limit,
                 on_progress=_on_progress,
                 page_factory=browser.new_page,
+                on_checkpoint=_checkpoint,
             )
         finally:
             await page.close()
@@ -171,7 +202,7 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
                 _scrape_jobs[list_id]["enriched"] = len(enrichment)
                 logger.info("apollo_enrich.progress", enriched=len(enrichment), total=len(items))
 
-        # Persist leads
+        # Persist leads that were not already checkpointed
         ll = await repo.get_lead_list(list_id)
         if ll and items:
             existing_urls = await repo.get_list_lead_urls(list_id)
@@ -199,6 +230,19 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
             if new_leads:
                 count = await repo.bulk_create_leads(new_leads)
                 await repo.update_lead_list(ll, total_leads=ll.total_leads + count, csv_filename="event_attendees.csv")
+
+            # Backfill Apollo enrichment into leads that were written raw by the
+            # checkpoint callback — they were persisted without Apollo data.
+            if enrichment and checkpointed_urls:
+                backfill = {}
+                for li_url in checkpointed_urls:
+                    apollo = enrichment.get(li_url.lower().rstrip("/"), {})
+                    filled = {k: apollo.get(k) for k in ("first_name", "last_name", "email", "company", "title") if apollo.get(k)}
+                    if filled:
+                        backfill[li_url] = filled
+                if backfill:
+                    updated = await repo.update_leads_enrichment(backfill)
+                    logger.info("event_scrape.apollo_backfill", updated=updated)
 
         _scrape_jobs[list_id] = {"status": "done", "collected": len(items), "enriched": len(enrichment)}
         logger.info("event_scrape.done", list_id=list_id, total=len(items), enriched=len(enrichment))
