@@ -149,7 +149,12 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
             def _on_progress(count: int, _page_num: int):
                 _scrape_jobs[list_id]["collected"] = count
 
-            items = await scrape_event_attendees(page, url, limit=limit, on_progress=_on_progress)
+            items = await scrape_event_attendees(
+                page, url,
+                limit=limit,
+                on_progress=_on_progress,
+                page_factory=browser.new_page,
+            )
         finally:
             await page.close()
 

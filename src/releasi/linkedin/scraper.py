@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from typing import Callable, List, Optional
+from typing import Awaitable, Callable, List, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import structlog
@@ -116,6 +116,7 @@ async def scrape_event_attendees(
     search_url: str,
     limit: Optional[int] = None,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    page_factory: Optional[Callable[[], Awaitable[Page]]] = None,
 ) -> List[dict]:
     """
     Scrape profile data from a LinkedIn people search results page.
@@ -143,9 +144,11 @@ async def scrape_event_attendees(
         url = _build_page_url(search_url, page_num)
         logger.info("scraper.loading_page", page=page_num, url=url)
 
-        # Single retry on freeze/error with a long backoff — if LinkedIn rate-limited
-        # this page, hammering it immediately would be worse. We try once more after
-        # 20s; if it freezes again we stop rather than risk the account.
+        # Two attempts per page. Recovery strategy varies by failure type:
+        # - Page crashed (Chromium OOM): open a fresh page via page_factory, wait 5s
+        # - ERR_TOO_MANY_REDIRECTS (LinkedIn anti-bot): navigate to feed to reset
+        #   session state, wait 15s, then retry the search URL
+        # - Timeout or other errors: plain 20s backoff
         nav_ok = False
         for attempt in range(2):
             try:
@@ -162,11 +165,34 @@ async def scrape_event_attendees(
                 else:
                     logger.error("scraper.page_frozen_giving_up", page=page_num)
             except Exception as e:
+                err_str = str(e)
+                is_crash = "Page crashed" in err_str
+                is_redirect_loop = "ERR_TOO_MANY_REDIRECTS" in err_str
                 if attempt == 0:
-                    logger.warning("scraper.navigation_failed_retrying", page=page_num, error=str(e))
-                    await asyncio.sleep(20.0)
+                    if is_crash and page_factory is not None:
+                        logger.warning("scraper.page_crashed_recovering", page=page_num)
+                        try:
+                            await page.close()
+                        except Exception:
+                            pass
+                        page = await page_factory()
+                        await asyncio.sleep(5.0)
+                    elif is_redirect_loop:
+                        logger.warning("scraper.redirect_loop_recovering", page=page_num)
+                        try:
+                            await page.goto(
+                                "https://www.linkedin.com/feed/",
+                                wait_until="domcontentloaded",
+                                timeout=15000,
+                            )
+                        except Exception:
+                            pass
+                        await asyncio.sleep(15.0)
+                    else:
+                        logger.warning("scraper.navigation_failed_retrying", page=page_num, error=err_str)
+                        await asyncio.sleep(20.0)
                 else:
-                    logger.error("scraper.navigation_failed_giving_up", page=page_num, error=str(e))
+                    logger.error("scraper.navigation_failed_giving_up", page=page_num, error=err_str)
 
         if not nav_ok:
             break
