@@ -157,13 +157,13 @@ class LinkedInActions:
             logger.warning("debug.screenshot_failed", error=str(e))
 
     async def _dump_buttons_debug(self):
-        """Dump all visible button text on the page for debugging."""
+        """Dump all visible buttons and connect-related anchors for debugging."""
         try:
             buttons = await self.page.evaluate("""
                 () => {
                     const result = [];
-                    const buttons = document.querySelectorAll('button');
-                    for (const btn of buttons) {
+                    // Buttons
+                    for (const btn of document.querySelectorAll('button')) {
                         const style = window.getComputedStyle(btn);
                         const visible = style.display !== 'none' && style.visibility !== 'hidden';
                         const text = btn.innerText.trim().substring(0, 50);
@@ -174,6 +174,20 @@ class LinkedInActions:
                                 classes: btn.className.substring(0, 80),
                                 ariaLabel: btn.getAttribute('aria-label') || '',
                                 role: btn.getAttribute('role') || '',
+                            });
+                        }
+                    }
+                    // Connect/Invite anchors (new LinkedIn 2025+ UI uses <a> for CTA buttons)
+                    for (const a of document.querySelectorAll('main a[aria-label*="connect" i], main a[aria-label*="invite" i], main a[href*="custom-invite"], main a[href*="preload"]')) {
+                        const style = window.getComputedStyle(a);
+                        const visible = style.display !== 'none' && style.visibility !== 'hidden';
+                        if (visible) {
+                            result.push({
+                                text: (a.innerText || '').trim().substring(0, 50),
+                                tag: a.tagName,
+                                classes: a.className.substring(0, 80),
+                                ariaLabel: a.getAttribute('aria-label') || '',
+                                href: (a.getAttribute('href') || '').substring(0, 80),
                             });
                         }
                     }
@@ -551,7 +565,21 @@ class LinkedInActions:
             logger.info("action.already_connected_1st_degree", url=profile_url)
             return ActionResult(ActionStatus.SKIPPED, reason="already_connected")
 
-        # 5. Find Connect button/anchor to confirm profile is connectable
+        # 5. Scroll back to top before locating Connect.
+        #
+        # The reading scroll above (step 1.5) triggers LinkedIn's sticky compact
+        # header, which injects duplicate Connect buttons/anchors into the DOM.
+        # The broad fallback selector ("main button:has-text('Connect')") picks up
+        # the sticky header's copy first — that element lacks the React onClick
+        # handler so the click fires but no modal opens. Resetting scroll position
+        # hides the sticky header so the main profile card's element is found first.
+        try:
+            await self.page.evaluate("window.scrollTo(0, 0)")
+            await asyncio.sleep(random.uniform(0.4, 0.8))
+        except Exception:
+            pass
+
+        # 5b. Find Connect button/anchor to confirm profile is connectable
         connect_btn = await self._find_connect_button(profile_url)
         if connect_btn == "already_connected":
             logger.info("action.already_connected_remove_in_dropdown", url=profile_url)
