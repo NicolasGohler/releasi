@@ -11,24 +11,26 @@ button labels stay stable.
 
 # ── Profile page: Connect button ──────────────────────────────────────────
 
-# Primary Connect button — only matches when Connect is a top-level action button.
-# Ordered: most specific → broadest. _find_element uses .first so the broadest
-# selectors are safe: the profile card appears before sidebar in DOM order.
+# Primary Connect button — MUST only match the profile-owner's Connect button.
+#
+# CRITICAL: do NOT use `main …` scope — LinkedIn's "People you may know" sidebar
+# on Follow-primary profiles lives inside <main> and its Connect buttons share
+# the same `Invite X to connect` aria-label. A broad `main`-scoped selector
+# grabs a random sidebar entry and fires a direct-send invite to the wrong
+# person. Only truly profile-card-scoped selectors are safe.
+#
+# The caller (_find_connect_button) ALSO verifies the candidate's aria-label
+# against the profile H1 as belt-and-suspenders. Both layers must stay.
 CONNECT_BUTTON_PRIMARY = [
-    # New LinkedIn UI (2025+): Connect is rendered as an <a> link, not a <button>.
-    # aria-label pattern "Invite X to connect" is unique to the profile's own Connect anchor.
-    # Scoped to <main> to skip the duplicate hidden anchor that appears before <main>.
-    'main a[aria-label^="Invite"][aria-label$="to connect"]',
-    # Class-based (older LinkedIn DOM — kept for compatibility)
+    # Class-based primary (older LinkedIn DOM — still present on some profiles)
     'button.pv-s-profile-actions--connect',
-    # Scoped to known profile actions containers
+    # Scoped to known profile-actions containers only
+    '.pv-top-card a[aria-label^="Invite"][aria-label$="to connect"]',
+    '.pv-top-card-v2-ctas a[aria-label^="Invite"][aria-label$="to connect"]',
+    '.pv-top-card .pvs-profile-actions a[aria-label^="Invite"][aria-label$="to connect"]',
     '.pv-top-card .pvs-profile-actions button:has-text("Connect")',
     '.pv-top-card-v2-ctas button:has-text("Connect")',
     'main .pvs-profile-actions button:has-text("Connect")',
-    # Broad button fallback — only safe if anchor selector above missed.
-    # WARNING: sidebar "People you may know" also has button:has-text("Connect"),
-    # so this is last resort only.
-    'main button:has-text("Connect")',
 ]
 
 # "More" button on profile — the dropdown trigger next to Follow/Message.

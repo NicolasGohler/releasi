@@ -241,6 +241,61 @@ class LinkedInActions:
 
     # ── Connect button finding: the critical path ─────────────────────────
 
+    async def _get_profile_owner_name(self) -> Optional[str]:
+        """Return the profile-owner display name from the page H1, or None."""
+        try:
+            h1 = self.page.locator("main h1").first
+            await h1.wait_for(state="attached", timeout=1500)
+            text = (await h1.inner_text(timeout=1500)).strip()
+            return text or None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _aria_label_matches_owner(aria_label: Optional[str], owner_name: Optional[str]) -> bool:
+        """
+        Verify an "Invite <X> to connect" aria-label refers to the profile owner.
+
+        LinkedIn's "People you may know" sidebar buttons share the same
+        aria-label pattern, so if a Connect candidate's aria-label names a
+        different person, the click would silently invite the wrong profile.
+
+        Returns True when either side is unknown (fail open — don't block
+        legitimate flows when we can't verify). Returns False only on a
+        clear name-token mismatch.
+
+        Owner name may be truncated on LinkedIn (e.g. "Jay A." vs "Jay Ar"),
+        so match by any shared word token ≥2 chars after stripping trailing
+        periods and leading @.
+        """
+        if not owner_name:
+            return True
+        if not aria_label:
+            return True
+        m = re.match(r"^\s*Invite\s+(.+?)\s+to connect\s*$", aria_label, re.IGNORECASE)
+        if not m:
+            return True  # unknown label format — fail open
+        target = m.group(1).lower()
+
+        def _tokens(s: str) -> set:
+            return {
+                t.strip(".").lstrip("@")
+                for t in s.lower().split()
+                if len(t.strip(".").lstrip("@")) >= 2
+            }
+
+        return bool(_tokens(target) & _tokens(owner_name))
+
+    async def _candidate_matches_owner(self, candidate, owner_name: Optional[str]) -> bool:
+        """Fetch a candidate's aria-label and validate against the profile owner."""
+        if not owner_name:
+            return True
+        try:
+            aria = await candidate.get_attribute("aria-label")
+        except Exception:
+            return True  # can't inspect — fail open
+        return self._aria_label_matches_owner(aria, owner_name)
+
     async def _find_connect_button(self, profile_url: str):
         """
         Find the Connect button on a profile page.
@@ -252,7 +307,14 @@ class LinkedInActions:
         Uses multiple strategies in order of reliability:
           1. Scoped CSS selectors (profile actions area only)
           2. More dropdown → Connect (with get_by_role, CSS, JS fallbacks)
+
+        Every candidate is verified against the profile-owner H1 name before
+        being returned. A mismatch means the selector accidentally matched a
+        sidebar "People you may know" Connect button — clicking it would fire
+        a direct-send invite to the wrong profile.
         """
+        owner_name = await self._get_profile_owner_name()
+
         # ── Strategy 1: Direct Connect button (profile actions area only) ──
         # IMPORTANT: Do NOT use get_by_role("button", name="Invite.*connect")
         # here — sidebar "People you may know" Connect buttons share the same
@@ -262,26 +324,39 @@ class LinkedInActions:
             selectors.CONNECT_BUTTON_PRIMARY, timeout_ms=2000,
         )
         if connect_by_css:
-            logger.info("action.connect_found", method="css_scoped", url=profile_url)
-            return connect_by_css
+            if await self._candidate_matches_owner(connect_by_css, owner_name):
+                logger.info("action.connect_found", method="css_scoped", url=profile_url)
+                return connect_by_css
+            logger.warning(
+                "action.connect_candidate_wrong_profile",
+                method="css_scoped", url=profile_url, owner=owner_name,
+            )
 
         # ── Strategy 1b: Anchor retry with longer timeout ──
         # The navigator may have resolved (via "More" button) and called window.stop()
         # before LinkedIn's JS finished making the Connect anchor visible. Give it up
         # to 3 more seconds — this covers the async rendering window without slowing
         # down profiles that genuinely have no Connect anchor.
-        # Note: must use wait_for() directly, not _try_locator(), because _try_locator
-        # checks count() first (no timeout) and exits immediately if the element isn't
-        # in the DOM yet. wait_for(state="visible") genuinely waits.
-        try:
-            anchor_loc = self.page.locator(
-                'main a[aria-label^="Invite"][aria-label$="to connect"]'
-            ).first
-            await anchor_loc.wait_for(state="visible", timeout=3000)
-            logger.info("action.connect_found", method="anchor_retry", url=profile_url)
-            return anchor_loc
-        except Exception:
-            pass
+        # Scope to .pv-top-card / .pv-top-card-v2-ctas ONLY — never bare `main`,
+        # which would match sidebar Connect anchors.
+        for scope in (".pv-top-card", ".pv-top-card-v2-ctas"):
+            try:
+                anchor_loc = self.page.locator(
+                    f'{scope} a[aria-label^="Invite"][aria-label$="to connect"]'
+                ).first
+                await anchor_loc.wait_for(state="visible", timeout=3000)
+                if await self._candidate_matches_owner(anchor_loc, owner_name):
+                    logger.info(
+                        "action.connect_found",
+                        method="anchor_retry", scope=scope, url=profile_url,
+                    )
+                    return anchor_loc
+                logger.warning(
+                    "action.connect_candidate_wrong_profile",
+                    method="anchor_retry", scope=scope, url=profile_url, owner=owner_name,
+                )
+            except Exception:
+                continue
 
         # ── Strategy 2: More dropdown → Connect ──
         logger.info("action.trying_more_dropdown", url=profile_url)
@@ -381,8 +456,13 @@ class LinkedInActions:
                 timeout_ms=2000,
             )
             if connect_btn:
-                logger.info("action.connect_in_dropdown_found", method=f"get_by_role_{role}")
-                return connect_btn
+                if await self._candidate_matches_owner(connect_btn, owner_name):
+                    logger.info("action.connect_in_dropdown_found", method=f"get_by_role_{role}")
+                    return connect_btn
+                logger.warning(
+                    "action.connect_candidate_wrong_profile",
+                    method=f"get_by_role_{role}", url=profile_url, owner=owner_name,
+                )
 
         # get_by_text for "Connect" — after clicking More, the dropdown Connect
         # is visible and the sidebar ones exist too, but dropdown is rendered last
@@ -394,7 +474,7 @@ class LinkedInActions:
             logger.info("action.connect_in_dropdown_found", method="dropdown_get_by_text")
             return connect_btn
 
-        # CSS selectors
+        # CSS selectors (all scoped to .artdeco-dropdown__content)
         connect_btn = await self._find_element(
             selectors.CONNECT_IN_DROPDOWN, timeout_ms=3000,
         )
@@ -409,18 +489,22 @@ class LinkedInActions:
             return connect_btn
 
         # ── Strategy 3: Connect is a primary button that Strategy 1 missed ──
-        # The More dropdown was opened but Connect was not inside it — this means
-        # Connect is a top-level button whose container class didn't match Strategy 1.
-        # Try a direct 'main button:has-text("Connect")' search now that the page
-        # has had extra time to settle. Profile card comes before sidebar in DOM
-        # order so .first is safe.
-        connect_btn = await self._try_locator(
-            self.page.locator("main button:has-text('Connect')").first,
-            timeout_ms=2000,
-        )
-        if connect_btn:
-            logger.info("action.connect_found", method="main_fallback", url=profile_url)
-            return connect_btn
+        # Deliberately restrictive: only try profile-card-scoped selectors here.
+        # The old broad `main button:has-text('Connect')` fallback would grab
+        # sidebar "People you may know" Connect buttons on Follow-primary
+        # profiles and fire direct-send invites to the wrong person — see
+        # `action.connect_candidate_wrong_profile` telemetry.
+        for scope in (".pv-top-card", ".pv-top-card-v2-ctas"):
+            connect_btn = await self._try_locator(
+                self.page.locator(f"{scope} button:has-text('Connect')").first,
+                timeout_ms=1500,
+            )
+            if connect_btn and await self._candidate_matches_owner(connect_btn, owner_name):
+                logger.info(
+                    "action.connect_found",
+                    method="profile_card_button", scope=scope, url=profile_url,
+                )
+                return connect_btn
 
         logger.warning("action.connect_not_in_dropdown", url=profile_url)
         await self._debug_screenshot("connect_in_dropdown_missing")
