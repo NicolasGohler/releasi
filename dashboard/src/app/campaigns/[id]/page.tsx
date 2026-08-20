@@ -17,7 +17,7 @@ import {
   SortableContext,
   sortableKeyboardCoordinates,
   useSortable,
-  verticalListSortingStrategy,
+  rectSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical } from "lucide-react";
@@ -645,35 +645,37 @@ export default function CampaignDetailPage({
                   <div className="space-y-2">
                     {(campaign.assigned_lists ?? []).length > 1 && (
                       <p className="text-xs text-muted-foreground">
-                        Leads are dispatched top-to-bottom — drag to reorder.
+                        Leads are dispatched in reading order (left-to-right, top-to-bottom) — drag to reorder.
                       </p>
                     )}
                     <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleListDragEnd}>
-                      <SortableContext items={(campaign.assigned_lists ?? []).map((l) => l.id)} strategy={verticalListSortingStrategy}>
-                        {(campaign.assigned_lists ?? []).map((ll, idx) => {
-                          const counts = ll.status_counts ?? {};
-                          const total = Object.values(counts).reduce((a: number, b: number) => a + b, 0);
-                          return (
-                            <SortableListRow
-                              key={ll.id}
-                              ll={ll}
-                              idx={idx}
-                              total={total}
-                              listsCount={(campaign.assigned_lists ?? []).length}
-                              isUnassigning={unassign.isPending}
-                              onUnassign={() =>
-                                unassign.mutate(
-                                  { listId: ll.id, campaignId: id },
-                                  {
-                                    onSuccess: (data) =>
-                                      toast.success(`Unassigned — ${data.leads_removed} leads removed`),
-                                    onError: (err) => toast.error(err.message),
-                                  }
-                                )
-                              }
-                            />
-                          );
-                        })}
+                      <SortableContext items={(campaign.assigned_lists ?? []).map((l) => l.id)} strategy={rectSortingStrategy}>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                          {(campaign.assigned_lists ?? []).map((ll, idx) => {
+                            const counts = ll.status_counts ?? {};
+                            const total = Object.values(counts).reduce((a: number, b: number) => a + b, 0);
+                            return (
+                              <SortableListRow
+                                key={ll.id}
+                                ll={ll}
+                                idx={idx}
+                                total={total}
+                                listsCount={(campaign.assigned_lists ?? []).length}
+                                isUnassigning={unassign.isPending}
+                                onUnassign={() =>
+                                  unassign.mutate(
+                                    { listId: ll.id, campaignId: id },
+                                    {
+                                      onSuccess: (data) =>
+                                        toast.success(`Unassigned — ${data.leads_removed} leads removed`),
+                                      onError: (err) => toast.error(err.message),
+                                    }
+                                  )
+                                }
+                              />
+                            );
+                          })}
+                        </div>
                       </SortableContext>
                     </DndContext>
                   </div>
