@@ -309,7 +309,17 @@ class LinkedInActions:
         if owner_name:
             return bool(_tokens(target) & _tokens(owner_name))
         if vanity:
-            return bool(_tokens(target) & _tokens(vanity))
+            # Vanities come in two flavours: hyphen-split ("rachael-mcwhirter")
+            # and glued ("pariscribben"). Split forms match by token
+            # intersection; glued forms need a substring test — every target
+            # name token has to appear inside the vanity for it to count.
+            vslug = vanity.lower()
+            target_tokens = _tokens(target)
+            if _tokens(vanity) & target_tokens:
+                return True
+            if target_tokens and all(tok in vslug for tok in target_tokens):
+                return True
+            return False
         return True  # neither signal available — fail open
 
     async def _candidate_matches_owner(
