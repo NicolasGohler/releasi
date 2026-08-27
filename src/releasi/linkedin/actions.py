@@ -243,16 +243,42 @@ class LinkedInActions:
 
     async def _get_profile_owner_name(self) -> Optional[str]:
         """Return the profile-owner display name from the page H1, or None."""
+        # 5s + visibility waits — the earlier 1500ms/attached combo left this
+        # returning None on slower profile loads, which relaxed the sidebar
+        # invite guard to fail-open. That risks reintroducing the d18f312 bug.
         try:
             h1 = self.page.locator("main h1").first
-            await h1.wait_for(state="attached", timeout=1500)
-            text = (await h1.inner_text(timeout=1500)).strip()
+            await h1.wait_for(state="visible", timeout=5000)
+            text = (await h1.inner_text(timeout=2000)).strip()
+            if text:
+                return text
+        except Exception:
+            pass
+        # Fallback: some LinkedIn layouts use a heading nested in a wrapper.
+        try:
+            text = await self.page.evaluate("""() => {
+                const h = document.querySelector('main h1, main [data-anonymize="person-name"]');
+                return h ? h.innerText.trim() : '';
+            }""")
             return text or None
         except Exception:
             return None
 
     @staticmethod
-    def _aria_label_matches_owner(aria_label: Optional[str], owner_name: Optional[str]) -> bool:
+    def _vanity_name_from_url(profile_url: str) -> Optional[str]:
+        """Extract the /in/<vanity> slug from a LinkedIn profile URL."""
+        try:
+            m = re.search(r"/in/([^/?#]+)", profile_url)
+            return m.group(1) if m else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _aria_label_matches_owner(
+        aria_label: Optional[str],
+        owner_name: Optional[str],
+        vanity: Optional[str] = None,
+    ) -> bool:
         """
         Verify an "Invite <X> to connect" aria-label refers to the profile owner.
 
@@ -260,16 +286,12 @@ class LinkedInActions:
         aria-label pattern, so if a Connect candidate's aria-label names a
         different person, the click would silently invite the wrong profile.
 
-        Returns True when either side is unknown (fail open — don't block
-        legitimate flows when we can't verify). Returns False only on a
-        clear name-token mismatch.
-
         Owner name may be truncated on LinkedIn (e.g. "Jay A." vs "Jay Ar"),
         so match by any shared word token ≥2 chars after stripping trailing
-        periods and leading @.
+        periods and leading @. If owner_name is unknown, fall back to the URL
+        vanity slug (e.g. `linus-chung` → `linus`) — fail-open on unknown
+        aria-label formats only.
         """
-        if not owner_name:
-            return True
         if not aria_label:
             return True
         m = re.match(r"^\s*Invite\s+(.+?)\s+to connect\s*$", aria_label, re.IGNORECASE)
@@ -280,21 +302,30 @@ class LinkedInActions:
         def _tokens(s: str) -> set:
             return {
                 t.strip(".").lstrip("@")
-                for t in s.lower().split()
+                for t in re.split(r"[\s\-_.]+", s.lower())
                 if len(t.strip(".").lstrip("@")) >= 2
             }
 
-        return bool(_tokens(target) & _tokens(owner_name))
+        if owner_name:
+            return bool(_tokens(target) & _tokens(owner_name))
+        if vanity:
+            return bool(_tokens(target) & _tokens(vanity))
+        return True  # neither signal available — fail open
 
-    async def _candidate_matches_owner(self, candidate, owner_name: Optional[str]) -> bool:
+    async def _candidate_matches_owner(
+        self,
+        candidate,
+        owner_name: Optional[str],
+        vanity: Optional[str] = None,
+    ) -> bool:
         """Fetch a candidate's aria-label and validate against the profile owner."""
-        if not owner_name:
+        if not owner_name and not vanity:
             return True
         try:
             aria = await candidate.get_attribute("aria-label")
         except Exception:
             return True  # can't inspect — fail open
-        return self._aria_label_matches_owner(aria, owner_name)
+        return self._aria_label_matches_owner(aria, owner_name, vanity)
 
     async def _find_connect_button(self, profile_url: str):
         """
@@ -314,6 +345,7 @@ class LinkedInActions:
         a direct-send invite to the wrong profile.
         """
         owner_name = await self._get_profile_owner_name()
+        vanity = self._vanity_name_from_url(profile_url)
 
         # ── Strategy 1: Direct Connect button (profile actions area only) ──
         # IMPORTANT: Do NOT use get_by_role("button", name="Invite.*connect")
@@ -324,7 +356,7 @@ class LinkedInActions:
             selectors.CONNECT_BUTTON_PRIMARY, timeout_ms=2000,
         )
         if connect_by_css:
-            if await self._candidate_matches_owner(connect_by_css, owner_name):
+            if await self._candidate_matches_owner(connect_by_css, owner_name, vanity):
                 logger.info("action.connect_found", method="css_scoped", url=profile_url)
                 return connect_by_css
             logger.warning(
@@ -345,7 +377,7 @@ class LinkedInActions:
                     f'{scope} a[aria-label^="Invite"][aria-label$="to connect"]'
                 ).first
                 await anchor_loc.wait_for(state="visible", timeout=3000)
-                if await self._candidate_matches_owner(anchor_loc, owner_name):
+                if await self._candidate_matches_owner(anchor_loc, owner_name, vanity):
                     logger.info(
                         "action.connect_found",
                         method="anchor_retry", scope=scope, url=profile_url,
@@ -466,7 +498,7 @@ class LinkedInActions:
                 timeout_ms=2000,
             )
             if connect_btn:
-                if await self._candidate_matches_owner(connect_btn, owner_name):
+                if await self._candidate_matches_owner(connect_btn, owner_name, vanity):
                     logger.info("action.connect_in_dropdown_found", method=f"get_by_role_{role}")
                     return connect_btn
                 logger.warning(
@@ -509,7 +541,7 @@ class LinkedInActions:
                 self.page.locator(f"{scope} button:has-text('Connect')").first,
                 timeout_ms=1500,
             )
-            if connect_btn and await self._candidate_matches_owner(connect_btn, owner_name):
+            if connect_btn and await self._candidate_matches_owner(connect_btn, owner_name, vanity):
                 logger.info(
                     "action.connect_found",
                     method="profile_card_button", scope=scope, url=profile_url,
