@@ -427,17 +427,27 @@ class LinkedInActions:
         # 400ms covers the typical async render window without adding noticeable delay.
         await asyncio.sleep(0.4)
 
-        # ── Guard: if 'Remove connection' is visible, this profile is already
-        # connected — return a sentinel value so the caller knows to skip.
-        # Check this BEFORE searching for Connect to avoid misclassifying
-        # 'Remove connection' as the Connect target (both contain "connect").
+        # ── Guard: if 'Remove connection' is visible INSIDE the just-opened
+        # More dropdown, this profile is already connected — return a sentinel
+        # value so the caller knows to skip. Check this BEFORE searching for
+        # Connect to avoid misclassifying 'Remove connection' as the Connect
+        # target (both contain "connect").
+        #
+        # Scoped to `.artdeco-dropdown__content` on purpose — an unscoped scan
+        # can pick up "Remove connection" items in other page dropdowns (e.g.
+        # a 1st-degree card in the right rail) and misclassify a 2nd/3rd
+        # profile as already connected.
         remove_conn = await self._try_locator(
-            self.page.get_by_role("menuitem", name=re.compile(r"Remove connection", re.IGNORECASE)),
+            self.page.locator('.artdeco-dropdown__content').get_by_role(
+                "menuitem", name=re.compile(r"Remove connection", re.IGNORECASE)
+            ),
             timeout_ms=500,
         )
         if not remove_conn:
             remove_conn = await self.page.evaluate("""() => {
-                return Array.from(document.querySelectorAll('[role="menuitem"], .artdeco-dropdown__item'))
+                const container = document.querySelector('.artdeco-dropdown__content');
+                if (!container) return false;
+                return Array.from(container.querySelectorAll('[role="menuitem"], .artdeco-dropdown__item'))
                     .some(el => el.innerText.trim().toLowerCase().startsWith('remove connection'));
             }""")
         if remove_conn:
@@ -626,16 +636,21 @@ class LinkedInActions:
         # Secondary: CSS selectors as fallback.
         is_first_degree = False
         if not is_non_first:
+            # Only match LinkedIn's actual degree indicator — either the
+            # bullet-prefixed form "· 1st" / "• 1st" or the explicit
+            # "1st degree connection" phrase. Naked "\b1st\b" in short text
+            # matched innocuous headers like "1st place hackathon" and was
+            # the loose-match half of the 2026-08 false-positive wave.
             is_first_degree = await self.page.evaluate(r"""() => {
                 const main = document.querySelector('main');
                 if (!main) return false;
-                // Only scan the profile header section, not the full page body
                 const header = main.querySelector('section') || main;
                 const walker = document.createTreeWalker(header, NodeFilter.SHOW_TEXT);
                 let node;
+                const rx = /(?:^|[•·])\s*1st\b|\b1st\s+degree\b/;
                 while ((node = walker.nextNode())) {
                     const t = node.textContent.trim();
-                    if (t.length < 15 && /\b1st\b/.test(t)) return true;
+                    if (t.length < 40 && rx.test(t)) return true;
                 }
                 return false;
             }""")
@@ -647,7 +662,7 @@ class LinkedInActions:
                     is_first_degree = True
         if is_first_degree:
             logger.info("action.already_connected_1st_degree", url=profile_url)
-            return ActionResult(ActionStatus.SKIPPED, reason="already_connected")
+            return ActionResult(ActionStatus.SKIPPED, reason="already_connected:1st_degree_badge")
 
         # 5. Scroll back to top before locating Connect.
         #
@@ -667,44 +682,21 @@ class LinkedInActions:
         connect_btn = await self._find_connect_button(profile_url)
         if connect_btn == "already_connected":
             logger.info("action.already_connected_remove_in_dropdown", url=profile_url)
-            return ActionResult(ActionStatus.SKIPPED, reason="already_connected")
+            return ActionResult(ActionStatus.SKIPPED, reason="already_connected:remove_in_dropdown")
         if not connect_btn:
-            # Last-resort already-connected check: Message present + Follow absent
-            # + Connect absent → 1st-degree connection.
+            # No Connect element found and no degree/Remove-connection signal
+            # either. This is ambiguous — treat as a transient DOM issue and
+            # return ERROR so the lead retries tomorrow rather than being
+            # silently marked CONNECTED.
             #
-            # Why all three conditions matter:
-            #   - Creator profiles show Follow + Message (not connected)
-            #   - Open profiles may show Message without Follow (but JS step 2
-            #     should have caught genuine 1st-degree already)
-            #   - Only 1st-degree shows Message with no Follow and no Connect
-            #
-            # This is deliberately conservative — if Follow is present we fall
-            # through to ERROR so the lead retries tomorrow rather than being
-            # permanently marked connected incorrectly.
-            has_message = await self._try_locator(
-                self.page.locator("main").get_by_role("button", name=re.compile(r"^Message$", re.IGNORECASE)),
-                timeout_ms=1500,
-            )
-            if not has_message:
-                # Fallback: on the current LinkedIn UI the profile Message CTA is an
-                # <a> pointing at /messaging/compose/?recipient=<URN>. Its presence
-                # is a reliable 1st-degree signal.
-                has_message = await self._try_locator(
-                    self.page.locator('a[href*="/messaging/compose/"][href*="recipient="]'),
-                    timeout_ms=1000,
-                )
-
-            has_follow = await self._try_locator(
-                self.page.locator("main").get_by_role("button", name=re.compile(r"^Follow$", re.IGNORECASE)),
-                timeout_ms=500,
-            )
-
-            if has_message and not has_follow:
-                logger.info("action.already_connected_msg_no_follow", url=profile_url)
-                return ActionResult(ActionStatus.SKIPPED, reason="already_connected")
-
-            # Use ERROR (not SKIPPED) so the lead re-enters retry logic tomorrow.
-            # SKIPPED is permanent; a missing button is often a transient DOM issue.
+            # The old "Message present + Follow absent → already_connected"
+            # fallback ran here and was the main source of the 2026-08 false
+            # positives: a 2nd/3rd-degree profile whose Connect anchor missed
+            # our selectors would satisfy that heuristic (Message visible,
+            # Follow only appears on creator/Follow-primary profiles) and get
+            # promoted to CONNECTED without an invite ever being sent. If a
+            # lead is genuinely 1st-degree, the daily acceptance checker's
+            # connections-page scan will catch them retroactively.
             return ActionResult(
                 ActionStatus.ERROR,
                 reason="no_connect_button",
@@ -855,7 +847,7 @@ class LinkedInActions:
                         await close_btn.click()
                 except Exception:
                     pass
-                return ActionResult(ActionStatus.SKIPPED, reason="already_connected")
+                return ActionResult(ActionStatus.SKIPPED, reason="already_connected:removal_dialog")
 
             # Check for LinkedIn's "How do you know [Person]?" dialog — shown for
             # high-profile / creator-mode accounts. LinkedIn requires selecting a

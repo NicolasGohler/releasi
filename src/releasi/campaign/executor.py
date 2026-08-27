@@ -189,7 +189,12 @@ class CampaignExecutor:
                 result["skipped"] = True  # counts as skipped for dispatcher backfill
 
             elif action_result.status == ActionStatus.SKIPPED:
-                if action_result.reason == "already_connected":
+                # actions.py tags the specific detection path in the reason
+                # (already_connected:1st_degree_badge / :remove_in_dropdown /
+                # :removal_dialog) so we can tell them apart in action_log.
+                # Match on the shared prefix here.
+                reason_str = action_result.reason or ""
+                if reason_str == "already_connected" or reason_str.startswith("already_connected:"):
                     # Already a 1st-degree connection — mark CONNECTED, not SKIPPED.
                     # Don't count as a new send; just update the DB to reflect reality.
                     try:
@@ -214,7 +219,7 @@ class CampaignExecutor:
                         lead_id=lead.id,
                         action_type=ActionType.CONNECTION_REQUEST,
                         status=ActionLogStatus.SKIPPED,
-                        details={"reason": "already_connected"},
+                        details={"reason": reason_str or "already_connected"},
                     )
                 else:
                     # Phase 3b: Lead.status is a legacy column that can be stale relative

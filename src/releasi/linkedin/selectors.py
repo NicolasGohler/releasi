@@ -31,6 +31,14 @@ CONNECT_BUTTON_PRIMARY = [
     '.pv-top-card .pvs-profile-actions button:has-text("Connect")',
     '.pv-top-card-v2-ctas button:has-text("Connect")',
     'main .pvs-profile-actions button:has-text("Connect")',
+    # Broad main-scoped anchor — the new LinkedIn UI often renders Connect
+    # outside .pv-top-card. Safe here because _find_connect_button pipes every
+    # candidate through _candidate_matches_owner (aria-label "Invite X to
+    # connect" must contain a token shared with the profile H1). A sidebar
+    # "People you may know" Connect targets a different X and is rejected.
+    # Do NOT drop this again without a replacement — its removal is what
+    # caused the 2026-08 false-positive already_connected wave.
+    'main a[aria-label^="Invite"][aria-label$="to connect"]',
 ]
 
 # "More" button on profile — the dropdown trigger next to Follow/Message.
