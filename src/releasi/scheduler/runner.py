@@ -578,7 +578,24 @@ async def _dispatch_continuous(
         while lead_queue and successful_sends < remaining_batch and attempts < max_attempts:
             attempts += 1
             lead = lead_queue.pop(0)
-            result = await executor.execute_single_lead(account, campaign, lead)
+            # Per-lead ceiling so one hung Playwright call can't freeze the whole
+            # dispatcher for hours (see 2026-08-24 → 2026-08-27 hang). Real dispatches
+            # complete in ~30–90s; 180s is a hard "something's wrong" wall.
+            try:
+                result = await asyncio.wait_for(
+                    executor.execute_single_lead(account, campaign, lead),
+                    timeout=180,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "dispatch.execute_lead_timeout",
+                    account=account.name, campaign=campaign.name,
+                    lead_id=lead.id, url=lead.linkedin_url,
+                )
+                # Treat as a per-lead error and move on so the dispatcher stays alive.
+                result = {"success": False, "skipped": False, "fatal": False,
+                          "limit_reached": False, "session_expired": False,
+                          "error": "execute_lead_timeout"}
 
             if result.get("soft_limit_reached"):
                 backoff_hours = random.uniform(2, 4)
@@ -724,7 +741,21 @@ async def _dispatch_planned(
         while lead_queue and successful_sends < target and attempts < max_attempts:
             attempts += 1
             lead = lead_queue.pop(0)
-            result = await executor.execute_single_lead(account, campaign, lead)
+            # Per-lead ceiling — see _dispatch_continuous for rationale.
+            try:
+                result = await asyncio.wait_for(
+                    executor.execute_single_lead(account, campaign, lead),
+                    timeout=180,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "dispatch.execute_lead_timeout",
+                    account=account.name, campaign=campaign.name,
+                    lead_id=lead.id, url=lead.linkedin_url,
+                )
+                result = {"success": False, "skipped": False, "fatal": False,
+                          "limit_reached": False, "session_expired": False,
+                          "error": "execute_lead_timeout"}
 
             if result.get("soft_limit_reached"):
                 # Rate-limit modal (soft block) — short 2–4 hour backoff.
@@ -1123,11 +1154,20 @@ async def dispatch():
             if not any_due:
                 continue
 
-            # Acquire pool browser once per account
+            # Acquire pool browser once per account. Timeout prevents a stuck
+            # per-slot asyncio.Lock (from an earlier crashed/hung acquirer) from
+            # blocking this dispatcher cycle forever.
             pool = get_browser_pool()
             pool_context = None
             try:
-                pool_context = await pool.acquire(account)
+                pool_context = await asyncio.wait_for(pool.acquire(account), timeout=90)
+            except asyncio.TimeoutError:
+                logger.error(
+                    "dispatch.pool_acquire_timeout",
+                    account=account.name,
+                    hint="stuck slot lock — will retry next cycle",
+                )
+                continue
             except Exception as e:
                 logger.error("dispatch.pool_acquire_failed", account=account.name, error=str(e))
                 continue
@@ -1231,6 +1271,42 @@ async def dispatch():
         logger.error("dispatch.failed", error=str(e))
     finally:
         await session.close()
+
+
+async def prune_debug_screenshots(max_age_days: int = 7) -> None:
+    """Delete debug screenshots older than `max_age_days`.
+
+    We take screenshots on every DOM-mismatch failure path (Connect not
+    found, dropdown empty, send button missing, etc.). Left unattended
+    the directory grows without bound — it was ~55 MB / ~1,600 files
+    the day this pruner shipped. Anything older than a week is beyond
+    the useful investigation window.
+    """
+    from pathlib import Path
+    ss_dir = Path("data/debug_screenshots")
+    if not ss_dir.exists():
+        return
+    cutoff = datetime.utcnow().timestamp() - max_age_days * 86400
+    removed = 0
+    freed = 0
+    for p in ss_dir.iterdir():
+        if not p.is_file():
+            continue
+        try:
+            st = p.stat()
+            if st.st_mtime < cutoff:
+                freed += st.st_size
+                p.unlink()
+                removed += 1
+        except Exception:
+            continue
+    if removed:
+        logger.info(
+            "screenshots.pruned",
+            removed=removed,
+            freed_mb=round(freed / (1024 * 1024), 2),
+            max_age_days=max_age_days,
+        )
 
 
 async def check_cooldowns():
@@ -2253,6 +2329,16 @@ async def start_scheduler():
         IntervalTrigger(hours=1),
         id="acceptance_checker",
         name="Daily Acceptance Checker",
+        replace_existing=True,
+    )
+
+    # Debug-screenshot pruner — keep the last 7 days only. Fires nightly at
+    # 03:30 UTC, well outside the dispatch window.
+    scheduler.add_job(
+        prune_debug_screenshots,
+        CronTrigger(hour=3, minute=30),
+        id="prune_debug_screenshots",
+        name="Prune Debug Screenshots",
         replace_existing=True,
     )
 
