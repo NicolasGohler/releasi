@@ -19,6 +19,7 @@ from releasi.db.models import (
     ScraperCookie,
     SessionEvent,
     User,
+    Broadcast, BroadcastLead, BroadcastStatus,
 )
 
 
@@ -2767,3 +2768,404 @@ class Repository:
             update(User).where(User.id == user_id).values(last_seen_at=datetime.utcnow())
         )
         await self.session.commit()
+
+    # ── Broadcasts ─────────────────────────────────────────────────────────
+
+    async def create_broadcast(
+        self,
+        account_id: str,
+        name: str,
+        message_1: Optional[str] = None,
+        message_2: Optional[str] = None,
+        message_3: Optional[str] = None,
+        source_list_id: Optional[str] = None,
+        delay_between_hours: int = 24,
+        weekend_enabled: bool = False,
+        status: BroadcastStatus = BroadcastStatus.DRAFT,
+    ) -> Broadcast:
+        broadcast = Broadcast(
+            account_id=account_id,
+            name=name,
+            source_list_id=source_list_id,
+            message_1=message_1,
+            message_2=message_2,
+            message_3=message_3,
+            delay_between_hours=delay_between_hours,
+            weekend_enabled=weekend_enabled,
+            status=status,
+        )
+        self.session.add(broadcast)
+        await self.session.commit()
+        await self.session.refresh(broadcast)
+        return broadcast
+
+    async def get_broadcast(self, broadcast_id: str) -> Optional[Broadcast]:
+        return await self.session.get(Broadcast, broadcast_id)
+
+    async def list_broadcasts(
+        self,
+        account_id: Optional[str] = None,
+        include_archived: bool = False,
+    ) -> Sequence[Broadcast]:
+        query = select(Broadcast)
+        if account_id:
+            query = query.where(Broadcast.account_id == account_id)
+        if not include_archived:
+            query = query.where(Broadcast.archived == False)  # noqa: E712
+        query = query.order_by(Broadcast.created_at.desc())
+        result = await self.session.execute(query)
+        return result.scalars().all()
+
+    async def update_broadcast(self, broadcast: Broadcast, **kwargs) -> Broadcast:
+        # paused_at is set when transitioning ACTIVE → PAUSED (mirrors Campaign)
+        if kwargs.get("status") == BroadcastStatus.PAUSED and broadcast.status == BroadcastStatus.ACTIVE:
+            if broadcast.paused_at is None:
+                broadcast.paused_at = datetime.utcnow()
+        for k, v in kwargs.items():
+            if hasattr(broadcast, k):
+                setattr(broadcast, k, v)
+        await self.session.commit()
+        await self.session.refresh(broadcast)
+        return broadcast
+
+    async def delete_broadcast(self, broadcast_id: str) -> bool:
+        """Hard-delete a broadcast and its snapshot rows.
+
+        Explicit child cleanup — this codebase's SQLite engine does not enable
+        FK enforcement, so ON DELETE CASCADE declared in the schema is
+        informational only. Deletes broadcast_leads first, then the broadcast.
+
+        Use archive (broadcast.archived=True) for soft-delete instead when a
+        record of the broadcast's sends should be preserved.
+        """
+        from sqlalchemy import delete as sa_delete
+
+        broadcast = await self.session.get(Broadcast, broadcast_id)
+        if broadcast is None:
+            return False
+        await self.session.execute(
+            sa_delete(BroadcastLead).where(BroadcastLead.broadcast_id == broadcast_id)
+        )
+        await self.session.delete(broadcast)
+        await self.session.commit()
+        return True
+
+    async def snapshot_leads_into_broadcast(
+        self,
+        broadcast_id: str,
+        lead_ids: Sequence[str],
+    ) -> int:
+        """Create BroadcastLead rows for each lead_id.
+
+        Idempotent: leads already in this broadcast are skipped (relies on
+        UNIQUE(broadcast_id, lead_id)). Only leads that actually exist in
+        the leads table are snapshotted — silently drops unknown IDs.
+
+        Returns the number of new snapshot rows created.
+        """
+        if not lead_ids:
+            return 0
+
+        # De-duplicate the input to avoid unique-constraint noise on retries
+        # driven by a caller that sent the same lead twice.
+        unique_ids = list(dict.fromkeys(lead_ids))
+
+        # Filter to leads that actually exist AND aren't already in this broadcast.
+        existing_lead_rows = await self.session.execute(
+            select(Lead.id).where(Lead.id.in_(unique_ids))
+        )
+        existing_lead_ids = set(existing_lead_rows.scalars().all())
+
+        already_snapshotted_rows = await self.session.execute(
+            select(BroadcastLead.lead_id).where(
+                BroadcastLead.broadcast_id == broadcast_id,
+                BroadcastLead.lead_id.in_(unique_ids),
+            )
+        )
+        already_snapshotted = set(already_snapshotted_rows.scalars().all())
+
+        to_insert = [lid for lid in unique_ids if lid in existing_lead_ids and lid not in already_snapshotted]
+        if not to_insert:
+            return 0
+
+        # Count BEFORE add_all — any SELECT after add_all triggers autoflush,
+        # which would make the count include the just-added rows and cause a
+        # double-count when we add len(to_insert) on top.
+        count_result = await self.session.execute(
+            select(func.count()).select_from(BroadcastLead).where(
+                BroadcastLead.broadcast_id == broadcast_id
+            )
+        )
+        current_count = count_result.scalar_one() or 0
+
+        rows = [
+            BroadcastLead(broadcast_id=broadcast_id, lead_id=lid, status="pending")
+            for lid in to_insert
+        ]
+        self.session.add_all(rows)
+
+        broadcast = await self.session.get(Broadcast, broadcast_id)
+        if broadcast is not None:
+            broadcast.total_leads = current_count + len(to_insert)
+
+        await self.session.commit()
+        return len(to_insert)
+
+    async def snapshot_lead_list_into_broadcast(
+        self,
+        broadcast_id: str,
+        source_list_id: str,
+    ) -> int:
+        """Snapshot every lead currently in a list into a broadcast.
+
+        Uses LeadListMembership (Phase-2 source of truth). Idempotent: already-
+        snapshotted leads are skipped.
+        """
+        lead_ids_result = await self.session.execute(
+            select(LeadListMembership.lead_id).where(
+                LeadListMembership.lead_list_id == source_list_id
+            )
+        )
+        lead_ids = list(lead_ids_result.scalars().all())
+        if not lead_ids:
+            return 0
+        return await self.snapshot_leads_into_broadcast(broadcast_id, lead_ids)
+
+    async def get_broadcast_lead_by_id(self, broadcast_lead_id: str) -> Optional[BroadcastLead]:
+        return await self.session.get(BroadcastLead, broadcast_lead_id)
+
+    async def update_broadcast_lead(
+        self, broadcast_lead: BroadcastLead, **kwargs
+    ) -> BroadcastLead:
+        for k, v in kwargs.items():
+            if hasattr(broadcast_lead, k):
+                setattr(broadcast_lead, k, v)
+        await self.session.commit()
+        await self.session.refresh(broadcast_lead)
+        return broadcast_lead
+
+    async def get_pending_broadcast_leads(
+        self,
+        broadcast_id: str,
+        limit: int = 50,
+    ) -> Sequence[BroadcastLead]:
+        """Leads awaiting their FIRST message send.
+
+        status='pending' — never touched. Ordered by created_at so the
+        dispatcher walks the snapshot in insertion order.
+        """
+        result = await self.session.execute(
+            select(BroadcastLead)
+            .where(
+                BroadcastLead.broadcast_id == broadcast_id,
+                BroadcastLead.status == "pending",
+            )
+            .order_by(BroadcastLead.created_at)
+            .limit(limit)
+        )
+        return result.scalars().all()
+
+    async def get_due_broadcast_leads_for_next_message(
+        self,
+        broadcast_id: str,
+        before: Optional[datetime] = None,
+        limit: int = 50,
+    ) -> Sequence[BroadcastLead]:
+        """Leads awaiting message 2 or 3 in the sequence.
+
+        status='sent' means at least one message has been sent successfully.
+        next_message_at is set by the executor after each successful send
+        to (now + delay_between_hours). Once last_message_index reaches the
+        configured sequence length, status flips to 'sequence_complete' and
+        this query stops returning the row.
+        """
+        cutoff = before or datetime.utcnow()
+        result = await self.session.execute(
+            select(BroadcastLead)
+            .where(
+                BroadcastLead.broadcast_id == broadcast_id,
+                BroadcastLead.status == "sent",
+                BroadcastLead.next_message_at != None,  # noqa: E711
+                BroadcastLead.next_message_at <= cutoff,
+            )
+            .order_by(BroadcastLead.next_message_at)
+            .limit(limit)
+        )
+        return result.scalars().all()
+
+    async def list_broadcast_leads_paginated(
+        self,
+        broadcast_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        status_filter: Optional[str] = None,
+    ) -> tuple[Sequence[BroadcastLead], int]:
+        """For the broadcast detail page's per-lead table.
+
+        Returns (rows, total_count). total_count applies the same status
+        filter so pagination reflects the filtered set.
+        """
+        base_where = [BroadcastLead.broadcast_id == broadcast_id]
+        if status_filter:
+            base_where.append(BroadcastLead.status == status_filter)
+
+        rows_result = await self.session.execute(
+            select(BroadcastLead)
+            .where(*base_where)
+            .order_by(BroadcastLead.created_at)
+            .limit(limit)
+            .offset(offset)
+        )
+        rows = rows_result.scalars().all()
+
+        count_result = await self.session.execute(
+            select(func.count()).select_from(BroadcastLead).where(*base_where)
+        )
+        total = count_result.scalar_one() or 0
+        return rows, total
+
+    async def get_broadcast_status_counts(self, broadcast_id: str) -> dict[str, int]:
+        """Bucket counts for the broadcast detail header (pending / sent / ...)."""
+        result = await self.session.execute(
+            select(BroadcastLead.status, func.count())
+            .where(BroadcastLead.broadcast_id == broadcast_id)
+            .group_by(BroadcastLead.status)
+        )
+        return {status: count for status, count in result.all()}
+
+    async def list_active_broadcasts(
+        self, account_id: Optional[str] = None
+    ) -> Sequence[Broadcast]:
+        """Broadcasts the dispatcher should consider this cycle.
+
+        Excludes archived and non-active statuses so paused broadcasts don't
+        get dispatched.
+        """
+        query = select(Broadcast).where(
+            Broadcast.status == BroadcastStatus.ACTIVE,
+            Broadcast.archived == False,  # noqa: E712
+        )
+        if account_id:
+            query = query.where(Broadcast.account_id == account_id)
+        result = await self.session.execute(query)
+        return result.scalars().all()
+
+    async def get_direct_messages_sent_today(
+        self, account_id: str, stat_date: Optional[date] = None
+    ) -> int:
+        """Today's direct_messages_sent count from DailyStat.
+
+        Counts broadcast messages specifically (not follow-ups). The daily
+        message limit is enforced against the SUM of this + follow-ups.
+        """
+        stat_date = stat_date or date.today()
+        result = await self.session.execute(
+            select(func.coalesce(DailyStat.direct_messages_sent, 0))
+            .where(
+                DailyStat.account_id == account_id,
+                DailyStat.date == stat_date,
+            )
+        )
+        return result.scalar_one_or_none() or 0
+
+    async def get_distinct_message_recipients_today(
+        self, account_id: str, at: Optional[datetime] = None
+    ) -> int:
+        """Distinct leads that received a message today (broadcast OR follow-up).
+
+        This is the unified counter enforced against Account.daily_message_limit.
+        Semantics: the cap is per lead-per-day, not per message — a 3-message
+        broadcast sequence to one person counts as one. Preserves the historical
+        follow-up cap semantics (which also counted distinct sequences, not
+        individual messages) while extending it to include broadcast sends.
+        """
+        now = at or datetime.utcnow()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        result = await self.session.execute(
+            select(func.count(func.distinct(ActionLog.lead_id)))
+            .where(
+                ActionLog.account_id == account_id,
+                ActionLog.action_type.in_(
+                    [ActionType.DIRECT_MESSAGE, ActionType.FOLLOWUP_MESSAGE]
+                ),
+                ActionLog.status == ActionLogStatus.SUCCESS,
+                ActionLog.created_at >= today_start,
+                ActionLog.lead_id != None,  # noqa: E711
+            )
+        )
+        return result.scalar_one() or 0
+
+    async def account_has_broadcast_work(
+        self,
+        account_id: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Pre-dispatch check: does any active broadcast for this account
+        have work to do right now?
+
+        Cheap SQL — avoids acquiring the browser pool if nothing is due.
+        Considers both pending (never-touched) leads and due
+        next-in-sequence sends.
+        """
+        cutoff = now or datetime.utcnow()
+        result = await self.session.execute(
+            select(func.count()).select_from(BroadcastLead)
+            .join(Broadcast, Broadcast.id == BroadcastLead.broadcast_id)
+            .where(
+                Broadcast.account_id == account_id,
+                Broadcast.status == BroadcastStatus.ACTIVE,
+                Broadcast.archived == False,  # noqa: E712
+                or_(
+                    BroadcastLead.status == "pending",
+                    and_(
+                        BroadcastLead.status == "sent",
+                        BroadcastLead.next_message_at != None,  # noqa: E711
+                        BroadcastLead.next_message_at <= cutoff,
+                    ),
+                ),
+            )
+        )
+        return (result.scalar_one() or 0) > 0
+
+    async def get_broadcast_leads_for_lead(
+        self, lead_id: str
+    ) -> Sequence[BroadcastLead]:
+        """All BroadcastLead rows for a lead across broadcasts.
+
+        Used by the lead detail Outreach panel to show broadcast membership
+        + per-broadcast state.
+        """
+        result = await self.session.execute(
+            select(BroadcastLead)
+            .where(BroadcastLead.lead_id == lead_id)
+            .order_by(BroadcastLead.created_at.desc())
+        )
+        return result.scalars().all()
+
+    async def mark_broadcast_completed_if_done(self, broadcast_id: str) -> bool:
+        """Flip broadcast to COMPLETED when every lead has terminated.
+
+        Terminal states for a broadcast lead: sequence_complete, skipped, error.
+        Returns True if the status was changed.
+        """
+        broadcast = await self.session.get(Broadcast, broadcast_id)
+        if broadcast is None or broadcast.status != BroadcastStatus.ACTIVE:
+            return False
+
+        counts_result = await self.session.execute(
+            select(BroadcastLead.status, func.count())
+            .where(BroadcastLead.broadcast_id == broadcast_id)
+            .group_by(BroadcastLead.status)
+        )
+        counts = {s: c for s, c in counts_result.all()}
+        if not counts:
+            return False  # empty broadcast — leave it alone
+
+        terminal = {"sequence_complete", "skipped", "error"}
+        outstanding = sum(c for s, c in counts.items() if s not in terminal)
+        if outstanding > 0:
+            return False
+
+        broadcast.status = BroadcastStatus.COMPLETED
+        await self.session.commit()
+        return True

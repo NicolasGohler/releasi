@@ -4,11 +4,12 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { Target, List, Users, UserCircle, Archive, Globe, Activity, Menu, X, type LucideIcon } from "lucide-react";
+import { Target, List, Users, UserCircle, Archive, Globe, Activity, Menu, X, Mail, type LucideIcon } from "lucide-react";
 import { useSidebar } from "./sidebar-context";
 
 const navItems: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/campaigns", label: "Campaigns", icon: Target },
+  { href: "/broadcasts", label: "Broadcasts", icon: Mail },
   { href: "/lead-lists", label: "Lists", icon: List },
   { href: "/leads", label: "Leads", icon: Users },
   { href: "/accounts", label: "Accounts", icon: UserCircle },

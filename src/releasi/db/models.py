@@ -41,6 +41,13 @@ class CampaignStatus(str, enum.Enum):
     COMPLETED = "completed"
 
 
+class BroadcastStatus(str, enum.Enum):
+    DRAFT = "draft"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+
+
 class LeadStatus(str, enum.Enum):
     PENDING = "pending"
     SCHEDULED = "scheduled"
@@ -72,6 +79,7 @@ class ActionType(str, enum.Enum):
     DAILY_PLAN_GENERATED = "daily_plan_generated"
     INVITATION_WITHDRAWN = "invitation_withdrawn"
     FUNDRAISING_IMPORT = "fundraising_import"
+    DIRECT_MESSAGE = "direct_message"
     ERROR = "error"
 
 
@@ -107,6 +115,11 @@ class Account(Base):
         Enum(AccountStatus), default=AccountStatus.ACTIVE
     )
     daily_limit: Mapped[int] = mapped_column(Integer, default=20)
+    # Ceiling for message sends across BOTH post-acceptance follow-ups and
+    # broadcasts (message-only campaigns). Separate lever from daily_limit
+    # (connections) so message volume can be tuned without affecting
+    # network growth. Default matches the legacy settings.followup_daily_cap.
+    daily_message_limit: Mapped[int] = mapped_column(Integer, default=15)
     weekly_limit: Mapped[int] = mapped_column(Integer, default=80)
     timezone: Mapped[Optional[str]] = mapped_column(String(63), default="Europe/Berlin")
     proxy_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -244,6 +257,9 @@ class ActionLog(Base):
     campaign_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("campaigns.id"), nullable=True
     )
+    broadcast_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("broadcasts.id"), nullable=True
+    )
     lead_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("leads.id"), nullable=True
     )
@@ -266,6 +282,7 @@ class DailyStat(Base):
     date: Mapped[date] = mapped_column(Date)
     connection_requests_sent: Mapped[int] = mapped_column(Integer, default=0)
     followup_messages_sent: Mapped[int] = mapped_column(Integer, default=0)
+    direct_messages_sent: Mapped[int] = mapped_column(Integer, default=0)
     connections_accepted: Mapped[int] = mapped_column(Integer, default=0)
     errors: Mapped[int] = mapped_column(Integer, default=0)
     proxy_mb_used: Mapped[float] = mapped_column(Float, default=0.0)
@@ -404,6 +421,89 @@ class CampaignLeadList(Base):
 
     campaign: Mapped[Campaign] = relationship()
     lead_list: Mapped[LeadList] = relationship(back_populates="campaign_links")
+
+
+class Broadcast(Base):
+    """A message-only campaign: sends a message sequence to 1st-degree connections.
+
+    Peer to Campaign — has its own dispatcher, its own snapshot lead set, its
+    own daily counter (via daily_message_limit on Account, shared with
+    post-acceptance follow-ups). The lead set is snapshotted at creation into
+    BroadcastLead rows; growing the source_list later doesn't retro-add leads.
+    """
+    __tablename__ = "broadcasts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    account_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("accounts.id"), index=True, nullable=False
+    )
+    # NULL when the broadcast was created ad-hoc from a bulk lead selection
+    # rather than from a whole list.
+    source_list_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("lead_lists.id"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[BroadcastStatus] = mapped_column(
+        Enum(BroadcastStatus), default=BroadcastStatus.DRAFT
+    )
+    message_1: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    message_2: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    message_3: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Delay between successive messages in the sequence (hours). Same
+    # semantics as Campaign.followup_delay_hours.
+    delay_between_hours: Mapped[int] = mapped_column(Integer, default=24)
+    weekend_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    total_leads: Mapped[int] = mapped_column(Integer, default=0)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Mirrors Campaign.paused_at semantics for completeness / future work.
+    paused_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+
+class BroadcastLead(Base):
+    """A lead's per-broadcast state (snapshot).
+
+    One row per (broadcast, lead). Independent from Lead.status and
+    CampaignLeadAssignment.status so a lead can be in a broadcast without
+    interfering with any campaign it's also in.
+
+    status values: pending | scheduled | sent | sequence_complete | skipped | error
+    """
+    __tablename__ = "broadcast_leads"
+    __table_args__ = (
+        UniqueConstraint("broadcast_id", "lead_id", name="uq_broadcast_lead"),
+        Index("ix_broadcast_leads_broadcast_status", "broadcast_id", "status"),
+        Index("ix_broadcast_leads_scheduled_at", "scheduled_at"),
+        Index("ix_broadcast_leads_next_message_at", "next_message_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    broadcast_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("broadcasts.id", ondelete="CASCADE"), nullable=False
+    )
+    lead_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    scheduled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_message_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # 1-based index of the highest message successfully sent (1, 2, or 3).
+    last_message_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # When message_(last_message_index+1) is due to fire. NULL if sequence
+    # is complete or the broadcast has only one message.
+    next_message_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # For status='skipped': reason string (e.g. 'not_first_degree',
+    # 'existing_conversation', 'profile_unreachable').
+    skipped_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
 
 
 class ScraperCookie(Base):

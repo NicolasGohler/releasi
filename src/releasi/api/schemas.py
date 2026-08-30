@@ -14,6 +14,10 @@ class AccountOut(BaseModel):
     name: str
     status: str
     daily_limit: int
+    # Unified daily cap on messages sent (broadcasts + post-acceptance
+    # follow-ups combined). Semantics: distinct leads reached per day. A
+    # 3-message sequence to one lead counts as one against the cap.
+    daily_message_limit: int
     weekly_limit: int
     timezone: Optional[str] = None
     proxy_country: Optional[str] = None
@@ -75,6 +79,7 @@ class AccountUpdate(BaseModel):
     proxy_username: Optional[str] = None
     proxy_password: Optional[str] = None
     daily_limit: Optional[int] = None
+    daily_message_limit: Optional[int] = None
     weekly_limit: Optional[int] = None
     withdraw_threshold: Optional[int] = None
     auto_withdraw_interval_days: Optional[int] = None
@@ -168,6 +173,96 @@ class CampaignUpdate(BaseModel):
     filter_no_photo: Optional[bool] = None
     filter_min_connections: Optional[int] = None
     filter_exclude_open_to_work: Optional[bool] = None
+
+
+# ── Broadcasts (message-only campaigns) ───────────────────────────────────
+
+class BroadcastOut(BaseModel):
+    id: str
+    account_id: str
+    account_name: Optional[str] = None
+    source_list_id: Optional[str] = None
+    source_list_name: Optional[str] = None
+    name: str
+    status: str
+    message_1: Optional[str] = None
+    message_2: Optional[str] = None
+    message_3: Optional[str] = None
+    delay_between_hours: int
+    weekend_enabled: bool = False
+    total_leads: int
+    archived: bool = False
+    paused_at: Optional[datetime] = None
+    # Bucket counts across broadcast_leads (pending / sent / sequence_complete / skipped / error)
+    status_counts: Optional[Dict[str, int]] = None
+    # Sum of successful action_log DIRECT_MESSAGE rows for this broadcast; distinct
+    # from total_leads because a lead can receive 1–3 messages.
+    messages_sent: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class BroadcastCreate(BaseModel):
+    """Create a broadcast.
+
+    Exactly one of ``source_list_id`` or ``lead_ids`` must be provided:
+    - ``source_list_id`` snapshots every lead currently in the list.
+    - ``lead_ids`` snapshots the given lead IDs directly (bulk-selection path).
+    """
+    account_id: str
+    name: str
+    message_1: str
+    message_2: Optional[str] = None
+    message_3: Optional[str] = None
+    delay_between_hours: int = 24
+    weekend_enabled: bool = False
+    source_list_id: Optional[str] = None
+    lead_ids: Optional[List[str]] = None
+
+
+class BroadcastUpdate(BaseModel):
+    name: Optional[str] = None
+    message_1: Optional[str] = None
+    message_2: Optional[str] = None
+    message_3: Optional[str] = None
+    delay_between_hours: Optional[int] = None
+    weekend_enabled: Optional[bool] = None
+
+
+class BroadcastAddLeadsRequest(BaseModel):
+    lead_ids: List[str]
+
+
+class BroadcastLeadOut(BaseModel):
+    id: str
+    broadcast_id: str
+    lead_id: str
+    status: str
+    scheduled_at: Optional[datetime] = None
+    last_message_sent_at: Optional[datetime] = None
+    last_message_index: Optional[int] = None
+    next_message_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    retry_count: int
+    skipped_reason: Optional[str] = None
+    # Enriched from the joined Lead row for the detail table UI.
+    lead_name: Optional[str] = None
+    lead_company: Optional[str] = None
+    lead_linkedin_url: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class BroadcastLeadsPage(BaseModel):
+    items: List[BroadcastLeadOut]
+    total: int
+    limit: int
+    offset: int
 
 
 # ── Leads ─────────────────────────────────────────────────────────────────

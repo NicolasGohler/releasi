@@ -3,6 +3,7 @@ export interface Account {
   name: string;
   status: string;
   daily_limit: number;
+  daily_message_limit: number;
   weekly_limit: number;
   timezone: string | null;
   proxy_country: string | null;
@@ -79,6 +80,53 @@ export interface Campaign {
   paused_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface Broadcast {
+  id: string;
+  account_id: string;
+  account_name: string | null;
+  source_list_id: string | null;
+  source_list_name: string | null;
+  name: string;
+  status: string; // draft | active | paused | completed
+  message_1: string | null;
+  message_2: string | null;
+  message_3: string | null;
+  delay_between_hours: number;
+  weekend_enabled: boolean;
+  total_leads: number;
+  archived: boolean;
+  paused_at: string | null;
+  status_counts: Record<string, number> | null;
+  messages_sent: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BroadcastLead {
+  id: string;
+  broadcast_id: string;
+  lead_id: string;
+  status: string; // pending | sent | sequence_complete | skipped | error
+  scheduled_at: string | null;
+  last_message_sent_at: string | null;
+  last_message_index: number | null;
+  next_message_at: string | null;
+  error_message: string | null;
+  retry_count: number;
+  skipped_reason: string | null;
+  lead_name: string | null;
+  lead_company: string | null;
+  lead_linkedin_url: string | null;
+  created_at: string;
+}
+
+export interface BroadcastLeadsPage {
+  items: BroadcastLead[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface LeadList {

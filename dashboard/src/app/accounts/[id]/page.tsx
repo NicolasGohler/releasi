@@ -48,6 +48,7 @@ export default function AccountDetailPage({
   const [editName, setEditName] = useState("");
   const [editTimezone, setEditTimezone] = useState("");
   const [editDailyLimit, setEditDailyLimit] = useState("");
+  const [editDailyMessageLimit, setEditDailyMessageLimit] = useState("");
   const [editWeeklyLimit, setEditWeeklyLimit] = useState("");
   const [settingsInitialized, setSettingsInitialized] = useState(false);
   const [loginSessionActive, setLoginSessionActive] = useState(false);
@@ -87,6 +88,7 @@ export default function AccountDetailPage({
     setEditName(account.name);
     setEditTimezone(account.timezone ?? "");
     setEditDailyLimit(String(account.daily_limit));
+    setEditDailyMessageLimit(String(account.daily_message_limit ?? 15));
     setEditWeeklyLimit(String(account.weekly_limit));
     setEditWithdrawThreshold(account.withdraw_threshold ? String(account.withdraw_threshold) : "");
     setEditAutoWithdrawInterval(String(account.auto_withdraw_interval_days ?? 30));
@@ -145,6 +147,7 @@ export default function AccountDetailPage({
     if (editName !== account!.name) data.name = editName;
     if (editTimezone !== (account!.timezone ?? "")) data.timezone = editTimezone;
     if (Number(editDailyLimit) !== account!.daily_limit) data.daily_limit = Number(editDailyLimit);
+    if (Number(editDailyMessageLimit) !== (account!.daily_message_limit ?? 15)) data.daily_message_limit = Number(editDailyMessageLimit);
     if (Number(editWeeklyLimit) !== account!.weekly_limit) data.weekly_limit = Number(editWeeklyLimit);
     const newThreshold = editWithdrawThreshold ? Number(editWithdrawThreshold) : null;
     if (newThreshold !== (account!.withdraw_threshold ?? null)) data.withdraw_threshold = newThreshold;
@@ -535,22 +538,43 @@ export default function AccountDetailPage({
                     <option value="America/Vancouver">Canada — PST (Vancouver)</option>
                   </select>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs text-muted-foreground">Daily Limit</label>
-                    <Input
-                      type="number"
-                      value={editDailyLimit}
-                      onChange={(e) => setEditDailyLimit(e.target.value)}
-                    />
+                <div className="space-y-3">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground/70 pt-1">
+                    Daily sending limits
                   </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground">Weekly Limit</label>
-                    <Input
-                      type="number"
-                      value={editWeeklyLimit}
-                      onChange={(e) => setEditWeeklyLimit(e.target.value)}
-                    />
+                  <div className="grid grid-cols-3 gap-4">
+                    <div>
+                      <label className="text-xs text-muted-foreground">Connection requests</label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={editDailyLimit}
+                        onChange={(e) => setEditDailyLimit(e.target.value)}
+                      />
+                      <p className="mt-1 text-[10px] text-muted-foreground/70">per day</p>
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground">Messages</label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={editDailyMessageLimit}
+                        onChange={(e) => setEditDailyMessageLimit(e.target.value)}
+                      />
+                      <p className="mt-1 text-[10px] text-muted-foreground/70">
+                        distinct leads / day (broadcasts + follow-ups)
+                      </p>
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground">Weekly cap</label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={editWeeklyLimit}
+                        onChange={(e) => setEditWeeklyLimit(e.target.value)}
+                      />
+                      <p className="mt-1 text-[10px] text-muted-foreground/70">connections / week</p>
+                    </div>
                   </div>
                 </div>
                 <ProxySettings

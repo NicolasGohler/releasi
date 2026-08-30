@@ -67,6 +67,7 @@ export const updateAccount = (
     name?: string;
     timezone?: string;
     daily_limit?: number;
+    daily_message_limit?: number;
     weekly_limit?: number;
     withdraw_threshold?: number | null;
     proxy_host?: string | null;
@@ -616,3 +617,79 @@ export const triggerFundraisingRun = () =>
 
 export const fetchTgSweepStatus = () =>
   apiFetch<import("./types").TgSweepStatus>("/scrapers/tg-sweep/status");
+
+// ── Broadcasts ────────────────────────────────────────────────────────────
+
+export const fetchBroadcasts = (params?: {
+  account_id?: string;
+  status?: string;
+  include_archived?: boolean;
+}) => {
+  const qs = new URLSearchParams();
+  if (params?.account_id) qs.set("account_id", params.account_id);
+  if (params?.status) qs.set("status", params.status);
+  if (params?.include_archived) qs.set("include_archived", "true");
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return apiFetch<import("./types").Broadcast[]>(`/broadcasts${suffix}`);
+};
+
+export const fetchBroadcast = (id: string) =>
+  apiFetch<import("./types").Broadcast>(`/broadcasts/${id}`);
+
+export const createBroadcast = (data: {
+  account_id: string;
+  name: string;
+  message_1: string;
+  message_2?: string | null;
+  message_3?: string | null;
+  delay_between_hours?: number;
+  weekend_enabled?: boolean;
+  source_list_id?: string | null;
+  lead_ids?: string[] | null;
+}) =>
+  apiFetch<import("./types").Broadcast>("/broadcasts", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const updateBroadcast = (id: string, data: Partial<{
+  name: string;
+  message_1: string;
+  message_2: string;
+  message_3: string;
+  delay_between_hours: number;
+  weekend_enabled: boolean;
+}>) =>
+  apiFetch<import("./types").Broadcast>(`/broadcasts/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+
+export const deleteBroadcast = (id: string) =>
+  apiFetch<void>(`/broadcasts/${id}`, { method: "DELETE" });
+
+export const activateBroadcast = (id: string) =>
+  apiFetch<import("./types").Broadcast>(`/broadcasts/${id}/activate`, { method: "POST" });
+
+export const pauseBroadcast = (id: string) =>
+  apiFetch<import("./types").Broadcast>(`/broadcasts/${id}/pause`, { method: "POST" });
+
+export const archiveBroadcast = (id: string) =>
+  apiFetch<import("./types").Broadcast>(`/broadcasts/${id}/archive`, { method: "POST" });
+
+export const unarchiveBroadcast = (id: string) =>
+  apiFetch<import("./types").Broadcast>(`/broadcasts/${id}/unarchive`, { method: "POST" });
+
+export const fetchBroadcastLeads = (
+  id: string,
+  params?: { limit?: number; offset?: number; status?: string }
+) => {
+  const qs = new URLSearchParams();
+  if (params?.limit) qs.set("limit", String(params.limit));
+  if (params?.offset) qs.set("offset", String(params.offset));
+  if (params?.status) qs.set("status", params.status);
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return apiFetch<import("./types").BroadcastLeadsPage>(
+    `/broadcasts/${id}/leads${suffix}`
+  );
+};

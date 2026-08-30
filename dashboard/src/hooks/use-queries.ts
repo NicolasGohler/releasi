@@ -611,3 +611,88 @@ export function useScrapers() {
     refetchInterval: 30_000,
   });
 }
+
+// ── Broadcasts ────────────────────────────────────────────────────────────
+
+export function useBroadcasts(params?: { account_id?: string; status?: string; include_archived?: boolean }) {
+  return useQuery({
+    queryKey: ["broadcasts", params],
+    queryFn: () => api.fetchBroadcasts(params),
+  });
+}
+
+export function useBroadcast(id: string) {
+  return useQuery({
+    queryKey: ["broadcasts", id],
+    queryFn: () => api.fetchBroadcast(id),
+    enabled: !!id,
+  });
+}
+
+export function useCreateBroadcast() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.createBroadcast,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["broadcasts"] }),
+  });
+}
+
+export function useUpdateBroadcast(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.updateBroadcast>[1]) =>
+      api.updateBroadcast(id, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["broadcasts", id] });
+      qc.invalidateQueries({ queryKey: ["broadcasts"] });
+    },
+  });
+}
+
+export function useDeleteBroadcast() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.deleteBroadcast,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["broadcasts"] }),
+  });
+}
+
+export function useActivateBroadcast() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.activateBroadcast,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["broadcasts"] }),
+  });
+}
+
+export function usePauseBroadcast() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.pauseBroadcast,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["broadcasts"] }),
+  });
+}
+
+export function useArchiveBroadcast() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.archiveBroadcast,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["broadcasts"] }),
+  });
+}
+
+export function useUnarchiveBroadcast() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.unarchiveBroadcast,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["broadcasts"] }),
+  });
+}
+
+export function useBroadcastLeads(id: string, params?: { limit?: number; offset?: number; status?: string }) {
+  return useQuery({
+    queryKey: ["broadcasts", id, "leads", params],
+    queryFn: () => api.fetchBroadcastLeads(id, params),
+    enabled: !!id,
+  });
+}

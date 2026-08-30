@@ -10,7 +10,10 @@ import structlog
 
 from playwright.async_api import BrowserContext
 
-from releasi.db.models import Lead, LeadStatus, Account, Campaign, ActionType, ActionLogStatus
+from releasi.db.models import (
+    Lead, LeadStatus, Account, Campaign, ActionType, ActionLogStatus,
+    Broadcast, BroadcastLead,
+)
 from releasi.db.repository import Repository
 from releasi.linkedin.browser import LinkedInBrowser
 from releasi.linkedin.actions import LinkedInActions, ActionStatus
@@ -511,6 +514,301 @@ class CampaignExecutor:
             await page.close()
             if browser:
                 await browser.close()
+
+        return result
+
+    async def execute_broadcast_lead(
+        self,
+        account: Account,
+        broadcast: Broadcast,
+        broadcast_lead: BroadcastLead,
+    ) -> dict:
+        """Send the next message in a broadcast's sequence to a single lead.
+
+        Called by dispatch_broadcasts. Uses the shared pool context if set,
+        otherwise creates an ephemeral browser. Returns a result dict shaped
+        like execute_single_lead / execute_followup_sequence so the dispatcher's
+        session-health classifier can consume it uniformly.
+
+        Result dict:
+          - success: bool          — a message was successfully sent
+          - message_index: int     — 1-based index of the message sent (0 if none)
+          - skipped: bool
+          - skipped_reason: str | None
+          - fatal: bool            — stop dispatching to this account this cycle
+          - session_expired: bool  — mark cookie_expired
+          - network_error: bool    — skip cycle without penalising session
+          - reason: str | None
+
+        Broadcast-lead state transitions (persisted here):
+          - success + more messages left  → status='sent', next_message_at=now+delay
+          - success + last message        → status='sequence_complete', next_message_at=NULL
+          - skipped (non-recoverable)     → status='skipped', skipped_reason=<reason>
+          - error (recoverable)           → retry_count++; status='error' after 3 retries
+        """
+        result = {
+            "success": False,
+            "message_index": 0,
+            "skipped": False,
+            "skipped_reason": None,
+            "fatal": False,
+            "session_expired": False,
+            "network_error": False,
+            "reason": None,
+        }
+
+        # Determine which message to send (1-based). last_message_index is
+        # the highest successfully sent so far; 0 means none.
+        last_index = broadcast_lead.last_message_index or 0
+        next_index = last_index + 1
+
+        messages = [broadcast.message_1, broadcast.message_2, broadcast.message_3]
+        available_messages = [m for m in messages if m]
+
+        if next_index > len(available_messages):
+            # Nothing left to send — mark complete and return. This is defensive:
+            # the dispatcher's due-lead query should already filter these out.
+            await self.repo.update_broadcast_lead(
+                broadcast_lead,
+                status="sequence_complete",
+                next_message_at=None,
+            )
+            result["skipped"] = True
+            result["skipped_reason"] = "sequence_already_complete"
+            return result
+
+        # Fetch the target Lead
+        lead = await self.repo.get_lead_by_id(broadcast_lead.lead_id)
+        if lead is None:
+            # Lead was hard-deleted between snapshot and dispatch — mark skipped.
+            await self.repo.update_broadcast_lead(
+                broadcast_lead,
+                status="skipped",
+                skipped_reason="lead_deleted",
+            )
+            result["skipped"] = True
+            result["skipped_reason"] = "lead_deleted"
+            return result
+
+        if not lead.linkedin_url:
+            await self.repo.update_broadcast_lead(
+                broadcast_lead,
+                status="skipped",
+                skipped_reason="no_linkedin_url",
+            )
+            result["skipped"] = True
+            result["skipped_reason"] = "no_linkedin_url"
+            return result
+
+        msg_template = available_messages[next_index - 1]
+        rendered = render_template(msg_template, lead)
+
+        # ── Pool mode vs ephemeral (same pattern as execute_followup_sequence) ──
+        browser: Optional[LinkedInBrowser] = None
+        if self._shared_context:
+            page = await self._shared_context.new_page()
+        else:
+            browser = LinkedInBrowser()
+            await browser.launch(
+                account_id=account.id,
+                li_at_cookie=account.li_at_cookie,
+                user_agent=account.user_agent,
+                proxy_url=account.proxy_url,
+                proxy_country=account.proxy_country,
+                timezone=account.timezone,
+            )
+            if not await browser.validate_session():
+                result["fatal"] = True
+                result["session_expired"] = True
+                result["reason"] = "session_validate_failed"
+                await browser.close()
+                return result
+            page = await browser.new_page()
+
+        try:
+            actions = LinkedInActions(page)
+            # skip_prior_conversation_check=True for msg 2/3 — the bubbles are
+            # our own from earlier in the sequence.
+            action_result = await actions.send_message(
+                lead.linkedin_url,
+                rendered,
+                skip_prior_conversation_check=(next_index > 1),
+            )
+
+            if action_result.status == ActionStatus.SUCCESS:
+                now = datetime.utcnow()
+                # Determine if this was the last message in the sequence.
+                is_last = next_index >= len(available_messages)
+                next_at = None
+                new_status = "sequence_complete" if is_last else "sent"
+                if not is_last:
+                    from datetime import timedelta as _td
+                    next_at = now + _td(hours=broadcast.delay_between_hours)
+
+                await self.repo.update_broadcast_lead(
+                    broadcast_lead,
+                    status=new_status,
+                    last_message_sent_at=now,
+                    last_message_index=next_index,
+                    next_message_at=next_at,
+                    error_message=None,
+                )
+                await self.repo.log_action(
+                    account_id=account.id,
+                    action_type=ActionType.DIRECT_MESSAGE,
+                    status=ActionLogStatus.SUCCESS,
+                    lead_id=lead.id,
+                    details={
+                        "broadcast_id": broadcast.id,
+                        "message_index": next_index,
+                        "total_messages": len(available_messages),
+                    },
+                )
+                await self.repo.increment_daily_stat(account.id, "direct_messages_sent")
+                result["success"] = True
+                result["message_index"] = next_index
+                logger.info(
+                    "broadcast.message_sent",
+                    broadcast=broadcast.name,
+                    url=lead.linkedin_url,
+                    index=next_index,
+                    total=len(available_messages),
+                )
+
+            elif action_result.status == ActionStatus.SKIPPED:
+                # Non-recoverable skip (existing conversation) — mark and move on.
+                reason = action_result.reason or "skipped"
+                await self.repo.update_broadcast_lead(
+                    broadcast_lead,
+                    status="skipped",
+                    skipped_reason=reason,
+                )
+                await self.repo.log_action(
+                    account_id=account.id,
+                    action_type=ActionType.DIRECT_MESSAGE,
+                    status=ActionLogStatus.SKIPPED,
+                    lead_id=lead.id,
+                    details={"broadcast_id": broadcast.id, "reason": reason, "message_index": next_index},
+                )
+                result["skipped"] = True
+                result["skipped_reason"] = reason
+                logger.info("broadcast.skipped", broadcast=broadcast.name, url=lead.linkedin_url, reason=reason)
+
+            elif action_result.status == ActionStatus.SESSION_EXPIRED:
+                # Do NOT update broadcast_lead — this lead will be retried.
+                await self.repo.log_action(
+                    account_id=account.id,
+                    action_type=ActionType.DIRECT_MESSAGE,
+                    status=ActionLogStatus.FAILED,
+                    lead_id=lead.id,
+                    details={"broadcast_id": broadcast.id, "reason": "session_expired", "message_index": next_index},
+                )
+                result["fatal"] = True
+                result["session_expired"] = True
+                result["reason"] = action_result.reason or "session_expired"
+
+            else:
+                # ActionStatus.ERROR (or unclassified). Common cases:
+                #   - recipient_urn_not_found → not a 1st-degree connection.
+                #     Treat as a permanent skip, not a retry.
+                #   - profile_not_found       → same.
+                #   - message_input_not_found → transient DOM issue, retry.
+                #   - navigation timeout      → network_error.
+                reason_str = (action_result.reason or "").lower()
+                is_not_first_degree = "recipient_urn_not_found" in reason_str
+                is_profile_missing = "profile_not_found" in reason_str
+
+                if is_not_first_degree or is_profile_missing:
+                    permanent_reason = (
+                        "not_first_degree" if is_not_first_degree else "profile_not_found"
+                    )
+                    await self.repo.update_broadcast_lead(
+                        broadcast_lead,
+                        status="skipped",
+                        skipped_reason=permanent_reason,
+                    )
+                    await self.repo.log_action(
+                        account_id=account.id,
+                        action_type=ActionType.DIRECT_MESSAGE,
+                        status=ActionLogStatus.SKIPPED,
+                        lead_id=lead.id,
+                        details={"broadcast_id": broadcast.id, "reason": permanent_reason, "message_index": next_index},
+                    )
+                    result["skipped"] = True
+                    result["skipped_reason"] = permanent_reason
+                    logger.info(
+                        "broadcast.permanent_skip",
+                        broadcast=broadcast.name, url=lead.linkedin_url, reason=permanent_reason,
+                    )
+                else:
+                    # Recoverable error — bump retry_count, mark ERROR after 3 attempts.
+                    new_retry = (broadcast_lead.retry_count or 0) + 1
+                    fields = {
+                        "retry_count": new_retry,
+                        "error_message": action_result.reason,
+                    }
+                    if new_retry >= 3:
+                        fields["status"] = "error"
+                    await self.repo.update_broadcast_lead(broadcast_lead, **fields)
+                    await self.repo.log_action(
+                        account_id=account.id,
+                        action_type=ActionType.DIRECT_MESSAGE,
+                        status=ActionLogStatus.FAILED,
+                        lead_id=lead.id,
+                        details={
+                            "broadcast_id": broadcast.id,
+                            "reason": action_result.reason,
+                            "message_index": next_index,
+                            "retry_count": new_retry,
+                        },
+                    )
+                    result["reason"] = action_result.reason
+                    if _is_network_error(action_result.reason or ""):
+                        result["network_error"] = True
+                    logger.warning(
+                        "broadcast.error",
+                        broadcast=broadcast.name,
+                        url=lead.linkedin_url,
+                        reason=action_result.reason,
+                        retry_count=new_retry,
+                    )
+
+        except Exception as e:
+            err_str = str(e)
+            logger.error("broadcast.execute_failed", broadcast=broadcast.name, url=lead.linkedin_url, error=err_str)
+            result["reason"] = err_str
+            if _is_session_expired_signal(err_str):
+                result["fatal"] = True
+                result["session_expired"] = True
+            elif _is_network_error(err_str):
+                result["network_error"] = True
+            else:
+                # Log an error to action_log so the lead detail page shows it.
+                try:
+                    await self.repo.log_action(
+                        account_id=account.id,
+                        action_type=ActionType.DIRECT_MESSAGE,
+                        status=ActionLogStatus.FAILED,
+                        lead_id=broadcast_lead.lead_id,
+                        details={"broadcast_id": broadcast.id, "reason": err_str, "exception": True},
+                    )
+                except Exception:
+                    pass
+                result["fatal"] = True
+        finally:
+            try:
+                await page.goto("about:blank", wait_until="domcontentloaded", timeout=2000)
+            except Exception:
+                pass
+            try:
+                await page.close()
+            except Exception:
+                pass
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
 
         return result
 

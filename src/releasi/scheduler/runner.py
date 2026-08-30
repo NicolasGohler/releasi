@@ -1649,11 +1649,14 @@ async def dispatch_followups():
 
             campaigns = await repo.get_active_campaigns(account.id)
 
-            # ── Daily cap pre-check ────────────────────────────────────────────
-            # Count distinct leads that already had a followup sequence started today.
-            # Multi-message sequences count as one, so the cap is in sequences not messages.
-            sent_today = await repo.get_followup_sequences_started_today(account.id)
-            daily_cap = settings.followup_daily_cap
+            # ── Unified per-lead daily cap pre-check ──────────────────────────
+            # Distinct leads that received a message today (follow-up OR
+            # broadcast). Migrated 2026-08-30 from the legacy
+            # settings.followup_daily_cap + get_followup_sequences_started_today
+            # pair — semantics preserved (3-message sequence to one lead = 1
+            # against the cap) while now correctly co-counting broadcast sends.
+            sent_today = await repo.get_distinct_message_recipients_today(account.id)
+            daily_cap = account.daily_message_limit or 15
             if sent_today >= daily_cap:
                 logger.info(
                     "followup.daily_cap_reached",
@@ -1793,6 +1796,226 @@ async def dispatch_followups():
 
     except Exception as e:
         logger.error("followup_dispatch.failed", error=str(e))
+    finally:
+        await session.close()
+
+
+async def dispatch_broadcasts():
+    """Send broadcast messages (message-only campaigns) for each active account.
+
+    Runs every 30 minutes. For each active account:
+      1. Skip if in cooldown or over the unified daily_message_limit.
+      2. Cheap SQL pre-check: any due broadcast work at all? Skip cycle if not.
+      3. Acquire per-account browser pool slot (serialises with connect + followup).
+      4. Iterate active broadcasts, dispatching:
+         a) First-message sends for status='pending' broadcast_leads.
+         b) Sequence continuations for status='sent' broadcast_leads whose
+            next_message_at <= now.
+      5. Respect the unified message cap per lead-per-day (broadcasts + follow-ups).
+
+    Mirrors dispatch_followups' shape but with:
+      - Broadcast + broadcast_lead state (not campaign + lead)
+      - Unified per-lead cap via account.daily_message_limit
+      - Direct message action_log rows tagged with broadcast_id
+    """
+    repo, session = await _get_repo()
+    try:
+        now = datetime.utcnow()
+        accounts = await repo.list_active_accounts()
+
+        for account in accounts:
+            if account.paused_until and not is_cooldown_expired(account.paused_until):
+                continue
+
+            # ── Unified per-lead daily cap pre-check ──────────────────────
+            # Distinct leads that received a message today (broadcast OR
+            # follow-up). A 3-message sequence to one lead counts as one.
+            distinct_today = await repo.get_distinct_message_recipients_today(account.id)
+            daily_cap = account.daily_message_limit or 15
+            remaining_cap = daily_cap - distinct_today
+            if remaining_cap <= 0:
+                logger.info(
+                    "broadcast.daily_cap_reached",
+                    account=account.name,
+                    distinct_today=distinct_today,
+                    cap=daily_cap,
+                )
+                continue
+
+            # ── Cheap pre-check: any broadcast work due at all? ───────────
+            if not await repo.account_has_broadcast_work(account.id, now):
+                continue
+
+            # ── Acquire browser pool slot ─────────────────────────────────
+            pool = get_browser_pool()
+            pool_context = None
+            try:
+                pool_context = await pool.acquire(account)
+            except Exception as e:
+                logger.error(
+                    "broadcast_dispatch.pool_acquire_failed",
+                    account=account.name, error=str(e),
+                )
+                continue
+
+            try:
+                from releasi.campaign.executor import CampaignExecutor
+                executor = CampaignExecutor(repo, browser_context=pool_context)
+
+                # Load active broadcasts for this account
+                broadcasts = await repo.list_active_broadcasts(account_id=account.id)
+
+                # Mirror the followup dispatcher's session-health heuristics:
+                # 3 consecutive session errors → mark account cookie_expired.
+                # 3 consecutive network errors → skip cycle, don't penalise.
+                consecutive_session_errors = 0
+                consecutive_network_errors = 0
+                sent_this_cycle = 0
+                stop_account = False
+
+                for broadcast in broadcasts:
+                    if stop_account or remaining_cap <= 0:
+                        break
+
+                    # ── (a) First-message sends for pending leads ─────────
+                    # Also pull continuations. Do first-sends first so a
+                    # slow-to-drain sequence can't starve fresh leads.
+                    #
+                    # Fetch a small batch (2–5 leads per broadcast per cycle)
+                    # to keep sends spread across the work window rather than
+                    # blasted at cap in one cycle.
+                    per_cycle_target = min(random.randint(2, 5), remaining_cap)
+
+                    pending = await repo.get_pending_broadcast_leads(
+                        broadcast.id, limit=per_cycle_target * 2  # oversample for skips
+                    )
+                    due_continuations = await repo.get_due_broadcast_leads_for_next_message(
+                        broadcast.id, before=now, limit=per_cycle_target * 2
+                    )
+
+                    # Interleave: alternate pending / continuations so both progress.
+                    work_queue: list = []
+                    p_iter = iter(pending)
+                    c_iter = iter(due_continuations)
+                    while True:
+                        p = next(p_iter, None)
+                        c = next(c_iter, None)
+                        if p is None and c is None:
+                            break
+                        if p is not None:
+                            work_queue.append(p)
+                        if c is not None:
+                            work_queue.append(c)
+
+                    if not work_queue:
+                        continue
+
+                    successful_sends_this_broadcast = 0
+                    attempts = 0
+                    max_attempts = per_cycle_target * 3
+
+                    for bl in work_queue:
+                        if remaining_cap <= 0:
+                            break
+                        if successful_sends_this_broadcast >= per_cycle_target:
+                            break
+                        if attempts >= max_attempts:
+                            break
+                        attempts += 1
+
+                        # Pre-send status re-verification — guard against stale
+                        # rows if a concurrent cycle already handled this lead.
+                        fresh = await repo.get_broadcast_lead_by_id(bl.id)
+                        if fresh is None:
+                            continue
+                        # Fresh must be in a dispatchable state
+                        expected_next_index = (fresh.last_message_index or 0) + 1
+                        if fresh.status not in ("pending", "sent"):
+                            continue
+                        if fresh.status == "sent" and (fresh.next_message_at is None or fresh.next_message_at > now):
+                            continue
+
+                        # Bounded per-lead execution — one hung Playwright
+                        # can't freeze the dispatcher.
+                        try:
+                            bc_result = await asyncio.wait_for(
+                                executor.execute_broadcast_lead(account, broadcast, fresh),
+                                timeout=180,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                "broadcast_dispatch.execute_timeout",
+                                broadcast=broadcast.name,
+                                broadcast_lead_id=fresh.id,
+                            )
+                            bc_result = {
+                                "success": False, "skipped": False, "fatal": False,
+                                "session_expired": False, "network_error": False,
+                                "reason": "execute_broadcast_lead_timeout",
+                            }
+
+                        # Session-health heuristics
+                        if bc_result.get("network_error"):
+                            consecutive_network_errors += 1
+                            consecutive_session_errors = 0
+                            if consecutive_network_errors >= 3:
+                                logger.warning(
+                                    "broadcast_dispatch.proxy_connectivity_issues",
+                                    account=account.name,
+                                )
+                                stop_account = True
+                                break
+                        elif bc_result.get("session_expired") or bc_result.get("fatal"):
+                            consecutive_session_errors += 1
+                            consecutive_network_errors = 0
+                            if bc_result.get("session_expired") or consecutive_session_errors >= 3:
+                                logger.error(
+                                    "broadcast_dispatch.session_expired",
+                                    account=account.name,
+                                    consecutive=consecutive_session_errors,
+                                )
+                                await repo.update_account(account, status="cookie_expired")
+                                await slack_notify(
+                                    f":warning: *Cookie expired* — account *{account.name}* "
+                                    f"(detected during broadcast dispatch)."
+                                )
+                                stop_account = True
+                                break
+                        else:
+                            consecutive_session_errors = 0
+                            consecutive_network_errors = 0
+
+                        if bc_result.get("success"):
+                            successful_sends_this_broadcast += 1
+                            sent_this_cycle += 1
+                            # Only count against remaining_cap on the FIRST
+                            # message per lead per day — msg 2/3 to the same
+                            # lead don't consume additional per-lead capacity.
+                            if bc_result.get("message_index") == 1:
+                                remaining_cap -= 1
+                            await repo.add_proxy_mb(account.id, 1.0)  # messaging page
+
+                        # Small delay between sends (human-like)
+                        await asyncio.sleep(random.uniform(3, 8))
+
+                    # After processing this broadcast, check if it completed
+                    if broadcast.status.value == "active":
+                        try:
+                            await repo.mark_broadcast_completed_if_done(broadcast.id)
+                        except Exception:
+                            pass  # non-fatal
+
+                if sent_this_cycle > 0:
+                    logger.info(
+                        "broadcast_dispatch.cycle_done",
+                        account=account.name,
+                        sent=sent_this_cycle,
+                        distinct_today_after=distinct_today + sent_this_cycle,
+                    )
+            finally:
+                await pool.release_idle(account.id)
+    except Exception as e:
+        logger.error("broadcast_dispatch.failed", error=str(e))
     finally:
         await session.close()
 
@@ -2357,6 +2580,18 @@ async def start_scheduler():
         IntervalTrigger(minutes=30),
         id="followup_dispatcher",
         name="Follow-up Dispatcher",
+        replace_existing=True,
+        misfire_grace_time=600,
+    )
+
+    # Broadcast dispatcher every 30 minutes — offset by 15 minutes from
+    # the follow-up dispatcher so they don't compete for the pool at the
+    # same instant. Both check account.daily_message_limit (unified cap).
+    scheduler.add_job(
+        dispatch_broadcasts,
+        IntervalTrigger(minutes=30),
+        id="broadcast_dispatcher",
+        name="Broadcast Dispatcher",
         replace_existing=True,
         misfire_grace_time=600,
     )
