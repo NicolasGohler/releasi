@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AddCard } from "@/components/add-card";
 import { toast } from "sonner";
 import { Mail } from "lucide-react";
 
@@ -122,6 +123,7 @@ export default function BroadcastsPage() {
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <AddCard href="/broadcasts/new" label="New broadcast" />
           {filtered.map((b) => {
             const p = getProgress(b);
             return (

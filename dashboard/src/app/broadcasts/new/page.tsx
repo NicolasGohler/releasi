@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   useAccounts,
   useLeadLists,
+  useLeadList,
   useCreateBroadcast,
 } from "@/hooks/use-queries";
 import { PageHeader } from "@/components/layout/page-header";
@@ -25,9 +26,32 @@ import Link from "next/link";
 
 export default function NewBroadcastPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: accounts } = useAccounts();
   const { data: lists } = useLeadLists();
   const create = useCreateBroadcast();
+
+  // Read incoming ?lead_ids= / ?list_id= / ?from=selection once on mount.
+  const preselectedLeadIds = useMemo<string[]>(() => {
+    const raw = searchParams.get("lead_ids");
+    if (raw) {
+      return raw.split(",").map((s) => s.trim()).filter(Boolean);
+    }
+    if (searchParams.get("from") === "selection") {
+      try {
+        const stored = sessionStorage.getItem("broadcast_lead_ids");
+        if (stored) return JSON.parse(stored) as string[];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  }, [searchParams]);
+  const sourceListIdFromUrl = searchParams.get("list_id");
+  const fromSelection = preselectedLeadIds.length > 0;
+
+  // Show which list the selection came from as context (read-only).
+  const { data: originList } = useLeadList(sourceListIdFromUrl ?? "");
 
   const [name, setName] = useState("");
   const [accountId, setAccountId] = useState("");
@@ -39,10 +63,26 @@ export default function NewBroadcastPage() {
   const [showMsg2, setShowMsg2] = useState(false);
   const [showMsg3, setShowMsg3] = useState(false);
 
+  // Clean up sessionStorage after we've read it, so a later manual open
+  // doesn't re-populate from a stale selection.
+  useEffect(() => {
+    if (searchParams.get("from") === "selection") {
+      try {
+        sessionStorage.removeItem("broadcast_lead_ids");
+      } catch {
+        // no-op — private mode / disabled storage
+      }
+    }
+  }, [searchParams]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name || !accountId || !sourceListId) {
-      toast.error("Name, account, and source list are required");
+    if (!name || !accountId) {
+      toast.error("Name and account are required");
+      return;
+    }
+    if (!fromSelection && !sourceListId) {
+      toast.error("Please pick a source list");
       return;
     }
     if (!message1.trim()) {
@@ -54,7 +94,8 @@ export default function NewBroadcastPage() {
       {
         account_id: accountId,
         name,
-        source_list_id: sourceListId,
+        source_list_id: fromSelection ? null : sourceListId,
+        lead_ids: fromSelection ? preselectedLeadIds : null,
         message_1: message1,
         message_2: showMsg2 && message2 ? message2 : null,
         message_3: showMsg3 && message3 ? message3 : null,
@@ -114,27 +155,50 @@ export default function NewBroadcastPage() {
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label>Source List</Label>
-              <Select value={sourceListId} onValueChange={setSourceListId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select a lead list" />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableLists.map((l) => (
-                    <SelectItem key={l.id} value={l.id}>
-                      {l.name} ({l.total_leads} leads)
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {selectedList && (
+            {fromSelection ? (
+              <div className="rounded-md border border-primary/30 bg-primary/5 p-3 space-y-1">
+                <p className="text-sm font-medium">
+                  {preselectedLeadIds.length} leads pre-selected
+                  {originList?.name && (
+                    <span className="text-muted-foreground font-normal">
+                      {" "}
+                      from{" "}
+                      <Link
+                        href={`/lead-lists/${sourceListIdFromUrl}`}
+                        className="underline hover:text-foreground"
+                      >
+                        {originList.name}
+                      </Link>
+                    </span>
+                  )}
+                </p>
                 <p className="text-xs text-muted-foreground">
-                  {selectedList.total_leads} leads will be snapshotted at creation.
                   Only 1st-degree connections receive messages; others are marked skipped.
                 </p>
-              )}
-            </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label>Source List</Label>
+                <Select value={sourceListId} onValueChange={setSourceListId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a lead list" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableLists.map((l) => (
+                      <SelectItem key={l.id} value={l.id}>
+                        {l.name} ({l.total_leads} leads)
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedList && (
+                  <p className="text-xs text-muted-foreground">
+                    {selectedList.total_leads} leads will be snapshotted at creation.
+                    Only 1st-degree connections receive messages; others are marked skipped.
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="m1">Message 1</Label>

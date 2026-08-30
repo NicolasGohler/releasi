@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AddCard } from "@/components/add-card";
 import { toast } from "sonner";
 import { ResumeCampaignDialog, shouldOfferCatchup } from "@/components/resume-campaign-dialog";
 import type { Campaign } from "@/lib/types";
@@ -136,6 +137,7 @@ export default function CampaignsPage() {
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <AddCard href="/campaigns/new" label="New campaign" />
           {filtered.map((c) => {
             const progress = getProgress(c.status_counts);
             return (

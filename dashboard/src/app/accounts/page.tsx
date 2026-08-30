@@ -10,6 +10,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AddCard } from "@/components/add-card";
 
 type SortOption = "name" | "status" | "pending_desc" | "daily_limit";
 
@@ -167,6 +168,7 @@ export default function AccountsPage() {
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <AddCard href="/accounts/new" label="Add account" />
           {filtered.map((a) => (
             <Link key={a.id} href={`/accounts/${a.id}`}>
               <Card className="hover:border-muted-foreground/30 transition-colors cursor-pointer">

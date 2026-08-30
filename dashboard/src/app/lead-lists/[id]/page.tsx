@@ -1,7 +1,8 @@
 "use client";
 
-import { use, useState, useCallback, useTransition } from "react";
-import { Mail, Check, RefreshCw } from "lucide-react";
+import { use, useState, useCallback, useTransition, useMemo, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { Mail, Check, RefreshCw, Trash2, Send, X } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -18,6 +19,7 @@ import {
   useUpdateLeadList,
   useReScrapeList,
   useScrapeStatus,
+  useBulkRemoveLeads,
 } from "@/hooks/use-queries";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
@@ -26,6 +28,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useDropzone } from "react-dropzone";
 import { exportLeadListCSV } from "@/lib/api";
+import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 
 function EmailCopyButton({ email }: { email: string }) {
@@ -58,6 +61,8 @@ export default function LeadListDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
+  const router = useRouter();
+  const qc = useQueryClient();
   const { data: list, isLoading } = useLeadList(id);
   const [page, setPage] = useState(1);
   const { data: leadsData } = useLeadListLeads(id, { page, per_page: 50 });
@@ -67,10 +72,83 @@ export default function LeadListDetailPage({
   const unassign = useUnassignListFromCampaign();
   const updateList = useUpdateLeadList(id);
   const reScrape = useReScrapeList(id);
+  const bulkRemove = useBulkRemoveLeads();
   const [scrapingListId, setScrapingListId] = useState<string | null>(null);
   const { data: scrapeStatus } = useScrapeStatus(scrapingListId);
   const [selectedCampaign, setSelectedCampaign] = useState("");
   const [isExporting, startExport] = useTransition();
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  // Clear selection whenever the page changes (rows shown differ).
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [page, id]);
+
+  const pageIds = useMemo(
+    () => (leadsData?.items ?? []).map((l) => l.id),
+    [leadsData]
+  );
+  const allOnPageSelected =
+    pageIds.length > 0 && pageIds.every((lid) => selectedIds.has(lid));
+  const someOnPageSelected =
+    pageIds.some((lid) => selectedIds.has(lid)) && !allOnPageSelected;
+
+  function toggleAllOnPage() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allOnPageSelected) {
+        pageIds.forEach((lid) => next.delete(lid));
+      } else {
+        pageIds.forEach((lid) => next.add(lid));
+      }
+      return next;
+    });
+  }
+
+  function toggleOne(lid: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(lid)) next.delete(lid);
+      else next.add(lid);
+      return next;
+    });
+  }
+
+  function handleBulkDelete() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    bulkRemove.mutate(ids, {
+      onSuccess: (data) => {
+        toast.success(`Removed ${data.updated} leads`);
+        setSelectedIds(new Set());
+        setConfirmingDelete(false);
+        qc.invalidateQueries({ queryKey: ["lead-list-leads", id] });
+        qc.invalidateQueries({ queryKey: ["lead-lists", id] });
+        qc.invalidateQueries({ queryKey: ["lead-lists"] });
+      },
+      onError: (err) => {
+        toast.error(`Delete failed: ${err.message}`);
+        setConfirmingDelete(false);
+      },
+    });
+  }
+
+  function handleStartBroadcast() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    // Cap URL length — huge selections use sessionStorage as fallback.
+    if (ids.length > 200) {
+      try {
+        sessionStorage.setItem("broadcast_lead_ids", JSON.stringify(ids));
+        router.push(`/broadcasts/new?from=selection&list_id=${id}`);
+      } catch {
+        toast.error("Selection too large — please pick fewer leads");
+      }
+      return;
+    }
+    router.push(`/broadcasts/new?lead_ids=${ids.join(",")}&list_id=${id}`);
+  }
 
   const onDrop = useCallback(
     (files: File[]) => {
@@ -342,6 +420,71 @@ export default function LeadListDetailPage({
         </CardContent>
       </Card>
 
+      {/* Sticky bulk-action bar (appears when ≥1 selected) */}
+      {selectedIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2">
+          <div className="flex items-center gap-2 rounded-full border border-border bg-background/95 px-4 py-2 shadow-xl backdrop-blur">
+            <span className="text-sm font-medium">
+              {selectedIds.size} selected
+            </span>
+            <span className="text-muted-foreground">·</span>
+            <Button
+              size="sm"
+              variant="default"
+              onClick={handleStartBroadcast}
+              className="h-8"
+            >
+              <Send className="h-3.5 w-3.5 mr-1.5" />
+              Start broadcast
+            </Button>
+            {confirmingDelete ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={handleBulkDelete}
+                  disabled={bulkRemove.isPending}
+                  className="h-8"
+                >
+                  {bulkRemove.isPending
+                    ? "Deleting…"
+                    : `Confirm delete ${selectedIds.size}`}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setConfirmingDelete(false)}
+                  className="h-8"
+                >
+                  Cancel
+                </Button>
+              </>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setConfirmingDelete(true)}
+                className="h-8"
+              >
+                <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                Delete
+              </Button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedIds(new Set());
+                setConfirmingDelete(false);
+              }}
+              className="ml-1 rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              aria-label="Clear selection"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Leads table */}
       <Card>
         <CardHeader>
@@ -356,6 +499,18 @@ export default function LeadListDetailPage({
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b text-left text-muted-foreground">
+                      <th className="pb-2 w-8 pr-2">
+                        <input
+                          type="checkbox"
+                          aria-label="Select all on page"
+                          className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
+                          checked={allOnPageSelected}
+                          ref={(el) => {
+                            if (el) el.indeterminate = someOnPageSelected;
+                          }}
+                          onChange={toggleAllOnPage}
+                        />
+                      </th>
                       <th className="pb-2 font-medium">Name</th>
                       <th className="pb-2 font-medium">Company</th>
                       <th className="pb-2 font-medium">Title</th>
@@ -363,38 +518,53 @@ export default function LeadListDetailPage({
                     </tr>
                   </thead>
                   <tbody>
-                    {leadsData.items.map((lead) => (
-                      <tr key={lead.id} className="border-b last:border-0">
-                        <td className="py-2">
-                          <div className="flex items-center gap-0.5">
-                            <Link href={`/leads/${lead.id}`} className="hover:underline">
-                              {[lead.first_name, lead.last_name].filter(Boolean).join(" ") || "—"}
-                            </Link>
-                            {lead.email && <EmailCopyButton email={lead.email} />}
-                          </div>
-                        </td>
-                        <td className="py-2 max-w-[160px]">
-                          <span className="block truncate" title={lead.company ?? undefined}>{lead.company ?? "—"}</span>
-                        </td>
-                        <td className="py-2 max-w-[180px]">
-                          <span className="block truncate" title={lead.title ?? undefined}>{lead.title ?? "—"}</span>
-                        </td>
-                        <td className="py-2">
-                          {lead.linkedin_url ? (
-                            <a
-                              href={lead.linkedin_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-blue-500 hover:underline truncate block max-w-[200px] text-xs"
-                            >
-                              {lead.linkedin_url.replace("https://www.linkedin.com/in/", "")}
-                            </a>
-                          ) : (
-                            <span className="text-muted-foreground text-xs">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                    {leadsData.items.map((lead) => {
+                      const checked = selectedIds.has(lead.id);
+                      return (
+                        <tr
+                          key={lead.id}
+                          className={`border-b last:border-0 ${checked ? "bg-primary/5" : ""}`}
+                        >
+                          <td className="py-2 pr-2">
+                            <input
+                              type="checkbox"
+                              aria-label={`Select ${lead.first_name ?? "lead"}`}
+                              className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
+                              checked={checked}
+                              onChange={() => toggleOne(lead.id)}
+                            />
+                          </td>
+                          <td className="py-2">
+                            <div className="flex items-center gap-0.5">
+                              <Link href={`/leads/${lead.id}`} className="hover:underline">
+                                {[lead.first_name, lead.last_name].filter(Boolean).join(" ") || "—"}
+                              </Link>
+                              {lead.email && <EmailCopyButton email={lead.email} />}
+                            </div>
+                          </td>
+                          <td className="py-2 max-w-[160px]">
+                            <span className="block truncate" title={lead.company ?? undefined}>{lead.company ?? "—"}</span>
+                          </td>
+                          <td className="py-2 max-w-[180px]">
+                            <span className="block truncate" title={lead.title ?? undefined}>{lead.title ?? "—"}</span>
+                          </td>
+                          <td className="py-2">
+                            {lead.linkedin_url ? (
+                              <a
+                                href={lead.linkedin_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-500 hover:underline truncate block max-w-[200px] text-xs"
+                              >
+                                {lead.linkedin_url.replace("https://www.linkedin.com/in/", "")}
+                              </a>
+                            ) : (
+                              <span className="text-muted-foreground text-xs">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

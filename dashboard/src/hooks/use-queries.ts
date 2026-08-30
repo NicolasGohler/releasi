@@ -203,10 +203,11 @@ export function useLeadLists(params?: { include_archived?: boolean }) {
   return useQuery({ queryKey: ["lead-lists", params], queryFn: () => api.fetchLeadLists(params) });
 }
 
-export function useLeadList(id: string) {
+export function useLeadList(id: string, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ["lead-lists", id],
     queryFn: () => api.fetchLeadList(id),
+    enabled: options?.enabled ?? !!id,
   });
 }
 
