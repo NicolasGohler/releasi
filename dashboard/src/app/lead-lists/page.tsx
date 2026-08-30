@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import {
   useLeadLists,
@@ -53,6 +53,7 @@ export default function LeadListsPage() {
   const [newTgEnrich, setNewTgEnrich] = useState(true);
   const [showEventDialog, setShowEventDialog] = useState(false);
   const [scrapingIds, setScrapingIds] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
 
   const handleScrapeStarted = (listId: string) => {
     setScrapingIds((prev) => new Set(prev).add(listId));
@@ -74,8 +75,18 @@ export default function LeadListsPage() {
     );
   };
 
-  const activeLists = lists?.filter((ll) => !ll.archived) ?? [];
-  const archivedLists = lists?.filter((ll) => ll.archived) ?? [];
+  const filteredLists = useMemo(() => {
+    if (!lists) return [];
+    const q = search.trim().toLowerCase();
+    if (!q) return lists;
+    return lists.filter(
+      (ll) =>
+        ll.name?.toLowerCase().includes(q) ||
+        ll.csv_filename?.toLowerCase().includes(q)
+    );
+  }, [lists, search]);
+  const activeLists = filteredLists.filter((ll) => !ll.archived);
+  const archivedLists = filteredLists.filter((ll) => ll.archived);
 
   const renderCard = (ll: NonNullable<typeof lists>[0]) => {
     const isScraping = scrapingIds.has(ll.id) || ll.csv_filename === "scraping...";
@@ -235,6 +246,20 @@ export default function LeadListsPage() {
         onStarted={handleScrapeStarted}
       />
 
+      <div className="flex flex-wrap items-center gap-3">
+        <Input
+          placeholder="Search lists…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="max-w-xs"
+        />
+        {search && lists && (
+          <span className="text-xs text-muted-foreground">
+            {filteredLists.length} of {lists.length} match
+          </span>
+        )}
+      </div>
+
       {isLoading ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {Array.from({ length: 3 }).map((_, i) => (
@@ -244,14 +269,18 @@ export default function LeadListsPage() {
       ) : activeLists.length === 0 && !showArchived ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">
-            <p className="text-muted-foreground">No lead lists yet</p>
-            <Button
-              variant="outline"
-              className="mt-4"
-              onClick={() => setShowEventDialog(true)}
-            >
-              Import from LinkedIn Event
-            </Button>
+            <p className="text-muted-foreground">
+              {search ? "No lists match your search" : "No lead lists yet"}
+            </p>
+            {!search && (
+              <Button
+                variant="outline"
+                className="mt-4"
+                onClick={() => setShowEventDialog(true)}
+              >
+                Import from LinkedIn Event
+              </Button>
+            )}
           </CardContent>
         </Card>
       ) : (
