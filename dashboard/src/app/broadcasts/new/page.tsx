@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   useAccounts,
@@ -25,6 +25,14 @@ import { toast } from "sonner";
 import Link from "next/link";
 
 export default function NewBroadcastPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading…</div>}>
+      <NewBroadcastPageInner />
+    </Suspense>
+  );
+}
+
+function NewBroadcastPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { data: accounts } = useAccounts();
