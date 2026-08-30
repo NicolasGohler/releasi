@@ -645,6 +645,7 @@ export const createBroadcast = (data: {
   delay_between_hours?: number;
   weekend_enabled?: boolean;
   source_list_id?: string | null;
+  source_list_ids?: string[] | null;
   lead_ids?: string[] | null;
 }) =>
   apiFetch<import("./types").Broadcast>("/broadcasts", {

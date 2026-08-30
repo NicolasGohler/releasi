@@ -2931,6 +2931,27 @@ class Repository:
             return 0
         return await self.snapshot_leads_into_broadcast(broadcast_id, lead_ids)
 
+    async def snapshot_lead_lists_into_broadcast(
+        self,
+        broadcast_id: str,
+        source_list_ids: list,
+    ) -> int:
+        """Snapshot the union of leads across multiple lists into a broadcast.
+
+        Deduplicates lead IDs before delegating to snapshot_leads_into_broadcast.
+        """
+        if not source_list_ids:
+            return 0
+        lead_ids_result = await self.session.execute(
+            select(LeadListMembership.lead_id).where(
+                LeadListMembership.lead_list_id.in_(source_list_ids)
+            )
+        )
+        lead_ids = list({lid for lid in lead_ids_result.scalars().all()})
+        if not lead_ids:
+            return 0
+        return await self.snapshot_leads_into_broadcast(broadcast_id, lead_ids)
+
     async def get_broadcast_lead_by_id(self, broadcast_lead_id: str) -> Optional[BroadcastLead]:
         return await self.session.get(BroadcastLead, broadcast_lead_id)
 

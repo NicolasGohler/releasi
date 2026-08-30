@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   useLeadLists,
   useCreateLeadList,
@@ -24,7 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { EventImportDialog } from "@/components/leads/event-import-dialog";
-import { ChevronDown, Archive, ArchiveRestore } from "lucide-react";
+import { ChevronDown, Archive, ArchiveRestore, Send, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 // Shows live scrape progress for a single list card
@@ -41,6 +42,7 @@ function ScrapeProgressBadge({ listId }: { listId: string }) {
 }
 
 export default function LeadListsPage() {
+  const router = useRouter();
   const [showArchived, setShowArchived] = useState(false);
   const { data: lists, isLoading } = useLeadLists({ include_archived: showArchived });
   const deleteList = useDeleteLeadList();
@@ -54,6 +56,100 @@ export default function LeadListsPage() {
   const [showEventDialog, setShowEventDialog] = useState(false);
   const [scrapingIds, setScrapingIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [bulkPending, setBulkPending] = useState<null | "delete" | "archive" | "unarchive">(null);
+
+  // Drop any selections for lists no longer in the current filtered view.
+  useEffect(() => {
+    if (!lists) return;
+    const validIds = new Set(lists.map((l) => l.id));
+    setSelectedIds((prev) => {
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (validIds.has(id)) next.add(id);
+      });
+      return next.size === prev.size ? prev : next;
+    });
+  }, [lists]);
+
+  function toggleOne(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set());
+    setConfirmingDelete(false);
+  }
+
+  const selectedList = useMemo(() => Array.from(selectedIds), [selectedIds]);
+  const selectedListObjs = useMemo(
+    () => (lists ?? []).filter((l) => selectedIds.has(l.id)),
+    [lists, selectedIds]
+  );
+  const allSelectedArchived =
+    selectedListObjs.length > 0 && selectedListObjs.every((l) => l.archived);
+  const allSelectedActive =
+    selectedListObjs.length > 0 && selectedListObjs.every((l) => !l.archived);
+
+  async function runBulk(
+    action: (id: string) => Promise<unknown>,
+    label: string,
+    key: "delete" | "archive" | "unarchive"
+  ) {
+    if (selectedList.length === 0) return;
+    setBulkPending(key);
+    let ok = 0;
+    const failures: string[] = [];
+    for (const id of selectedList) {
+      try {
+        await action(id);
+        ok += 1;
+      } catch (err) {
+        failures.push((err as Error).message);
+      }
+    }
+    setBulkPending(null);
+    setConfirmingDelete(false);
+    setSelectedIds(new Set());
+    if (failures.length === 0) {
+      toast.success(`${label} ${ok} list${ok === 1 ? "" : "s"}`);
+    } else {
+      toast.error(
+        `${label} ${ok}/${selectedList.length} — ${failures.length} failed`
+      );
+    }
+  }
+
+  function handleBulkDelete() {
+    return runBulk((id) => deleteList.mutateAsync(id), "Deleted", "delete");
+  }
+
+  function handleBulkArchive() {
+    return runBulk((id) => archiveList.mutateAsync(id), "Archived", "archive");
+  }
+
+  function handleBulkUnarchive() {
+    return runBulk(
+      (id) => unarchiveList.mutateAsync(id),
+      "Restored",
+      "unarchive"
+    );
+  }
+
+  function handleCreateBroadcast() {
+    if (selectedList.length === 0) return;
+    if (selectedList.length === 1) {
+      router.push(`/broadcasts/new?list_id=${selectedList[0]}`);
+    } else {
+      router.push(`/broadcasts/new?list_ids=${selectedList.join(",")}`);
+    }
+  }
 
   const handleScrapeStarted = (listId: string) => {
     setScrapingIds((prev) => new Set(prev).add(listId));
@@ -90,85 +186,65 @@ export default function LeadListsPage() {
 
   const renderCard = (ll: NonNullable<typeof lists>[0]) => {
     const isScraping = scrapingIds.has(ll.id) || ll.csv_filename === "scraping...";
+    const isChecked = selectedIds.has(ll.id);
     return (
-      <Link key={ll.id} href={`/lead-lists/${ll.id}`}>
-        <Card className={`hover:border-muted-foreground/30 transition-colors cursor-pointer ${ll.archived ? "opacity-60" : ""}`}>
-          <CardContent className="p-5 space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="font-medium truncate">{ll.name}</h3>
-              <div className="flex items-center gap-1 shrink-0">
-                {ll.archived && <Badge variant="outline" className="text-xs">Archived</Badge>}
-                {!ll.tg_enrich_enabled && <Badge variant="outline" className="text-xs text-muted-foreground">TG off</Badge>}
-                {isScraping && <ScrapeProgressBadge listId={ll.id} />}
+      <div key={ll.id} className="relative group">
+        {/* Checkbox overlay — visible on hover, always visible when the card is
+            selected. Stopping propagation prevents the surrounding Link from
+            navigating on click. */}
+        <div
+          className={`absolute left-3 top-3 z-10 transition-opacity ${
+            isChecked ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+          }`}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleOne(ll.id);
+          }}
+        >
+          <input
+            type="checkbox"
+            aria-label={`Select ${ll.name}`}
+            checked={isChecked}
+            onChange={() => toggleOne(ll.id)}
+            onClick={(e) => e.stopPropagation()}
+            className="h-4 w-4 rounded border-border accent-primary cursor-pointer bg-background"
+          />
+        </div>
+        <Link href={`/lead-lists/${ll.id}`}>
+          <Card
+            className={`hover:border-muted-foreground/30 transition-colors cursor-pointer ${
+              ll.archived ? "opacity-60" : ""
+            } ${isChecked ? "border-primary/60 bg-primary/5" : ""}`}
+          >
+            <CardContent className="p-5 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-medium truncate pl-6">{ll.name}</h3>
+                <div className="flex items-center gap-1 shrink-0">
+                  {ll.archived && <Badge variant="outline" className="text-xs">Archived</Badge>}
+                  {!ll.tg_enrich_enabled && <Badge variant="outline" className="text-xs text-muted-foreground">TG off</Badge>}
+                  {isScraping && <ScrapeProgressBadge listId={ll.id} />}
+                </div>
               </div>
-            </div>
-            {ll.csv_filename && ll.csv_filename !== "scraping..." && (
-              <p className="text-xs text-muted-foreground truncate">
-                {ll.csv_filename}
-              </p>
-            )}
-            <div className="flex gap-4 text-sm text-muted-foreground">
-              <span>{ll.total_leads} leads</span>
-              <span>{ll.campaign_count} campaigns</span>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Created{" "}
-              {new Date(
-                ll.created_at.endsWith("Z") ? ll.created_at : ll.created_at + "Z"
-              ).toLocaleDateString()}
-            </p>
-            <div className="flex gap-2">
-              {ll.archived ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    unarchiveList.mutate(ll.id, {
-                      onSuccess: () => toast.success("List restored"),
-                      onError: (err) => toast.error(err.message),
-                    });
-                  }}
-                >
-                  <ArchiveRestore className="h-3.5 w-3.5 mr-1.5" />
-                  Restore
-                </Button>
-              ) : (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    archiveList.mutate(ll.id, {
-                      onSuccess: () => toast.success("List archived"),
-                      onError: (err) => toast.error(err.message),
-                    });
-                  }}
-                >
-                  <Archive className="h-3.5 w-3.5 mr-1.5" />
-                  Archive
-                </Button>
+              {ll.csv_filename && ll.csv_filename !== "scraping..." && (
+                <p className="text-xs text-muted-foreground truncate">
+                  {ll.csv_filename}
+                </p>
               )}
-              <Button
-                size="sm"
-                variant="outline"
-                className="text-destructive"
-                onClick={(e) => {
-                  e.preventDefault();
-                  if (confirm("Delete this lead list? This cannot be undone.")) {
-                    deleteList.mutate(ll.id, {
-                      onSuccess: () => toast.success("List deleted"),
-                      onError: (err) => toast.error(err.message),
-                    });
-                  }
-                }}
-              >
-                Delete
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </Link>
+              <div className="flex gap-4 text-sm text-muted-foreground">
+                <span>{ll.total_leads} leads</span>
+                <span>{ll.campaign_count} campaigns</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Created{" "}
+                {new Date(
+                  ll.created_at.endsWith("Z") ? ll.created_at : ll.created_at + "Z"
+                ).toLocaleDateString()}
+              </p>
+            </CardContent>
+          </Card>
+        </Link>
+      </div>
     );
   };
 
@@ -303,6 +379,92 @@ export default function LeadListsPage() {
           {showArchived && archivedLists.length === 0 && (
             <p className="text-sm text-muted-foreground">No archived lists.</p>
           )}
+        </div>
+      )}
+
+      {/* Sticky bulk-action bar — appears when ≥1 list selected. */}
+      {selectedIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2">
+          <div className="flex items-center gap-2 rounded-full border border-border bg-background/95 px-4 py-2 shadow-xl backdrop-blur">
+            <span className="text-sm font-medium">
+              {selectedIds.size} selected
+            </span>
+            <span className="text-muted-foreground">·</span>
+            <Button
+              size="sm"
+              onClick={handleCreateBroadcast}
+              className="h-8"
+            >
+              <Send className="h-3.5 w-3.5 mr-1.5" />
+              Create broadcast
+            </Button>
+            {allSelectedActive && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleBulkArchive}
+                disabled={bulkPending !== null}
+                className="h-8"
+              >
+                <Archive className="h-3.5 w-3.5 mr-1.5" />
+                {bulkPending === "archive" ? "Archiving…" : "Archive"}
+              </Button>
+            )}
+            {allSelectedArchived && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleBulkUnarchive}
+                disabled={bulkPending !== null}
+                className="h-8"
+              >
+                <ArchiveRestore className="h-3.5 w-3.5 mr-1.5" />
+                {bulkPending === "unarchive" ? "Restoring…" : "Restore"}
+              </Button>
+            )}
+            {confirmingDelete ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={handleBulkDelete}
+                  disabled={bulkPending !== null}
+                  className="h-8"
+                >
+                  {bulkPending === "delete"
+                    ? "Deleting…"
+                    : `Confirm delete ${selectedIds.size}`}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setConfirmingDelete(false)}
+                  className="h-8"
+                >
+                  Cancel
+                </Button>
+              </>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setConfirmingDelete(true)}
+                disabled={bulkPending !== null}
+                className="h-8"
+              >
+                <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                Delete
+              </Button>
+            )}
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="ml-1 rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              aria-label="Clear selection"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
       )}
     </div>

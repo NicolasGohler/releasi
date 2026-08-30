@@ -39,7 +39,7 @@ function NewBroadcastPageInner() {
   const { data: lists } = useLeadLists();
   const create = useCreateBroadcast();
 
-  // Read incoming ?lead_ids= / ?list_id= / ?from=selection once on mount.
+  // Read incoming ?lead_ids= / ?list_id= / ?list_ids= / ?from=selection once on mount.
   const preselectedLeadIds = useMemo<string[]>(() => {
     const raw = searchParams.get("lead_ids");
     if (raw) {
@@ -56,7 +56,14 @@ function NewBroadcastPageInner() {
     return [];
   }, [searchParams]);
   const sourceListIdFromUrl = searchParams.get("list_id");
-  const fromSelection = preselectedLeadIds.length > 0;
+  const sourceListIdsFromUrl = useMemo<string[]>(() => {
+    const raw = searchParams.get("list_ids");
+    if (!raw) return [];
+    return raw.split(",").map((s) => s.trim()).filter(Boolean);
+  }, [searchParams]);
+  const fromLeadSelection = preselectedLeadIds.length > 0;
+  const fromMultiListSelection = sourceListIdsFromUrl.length > 0;
+  const fromSelection = fromLeadSelection || fromMultiListSelection;
 
   // Show which list the selection came from as context (read-only).
   const { data: originList } = useLeadList(sourceListIdFromUrl ?? "");
@@ -83,6 +90,20 @@ function NewBroadcastPageInner() {
     }
   }, [searchParams]);
 
+  // If the URL carried a single ?list_id= without lead_ids or list_ids, seed
+  // the source-list picker so the user doesn't have to re-pick it. This covers
+  // the "1 list selected on the Lists page → Create broadcast" path.
+  useEffect(() => {
+    if (
+      sourceListIdFromUrl &&
+      !fromLeadSelection &&
+      !fromMultiListSelection &&
+      !sourceListId
+    ) {
+      setSourceListId(sourceListIdFromUrl);
+    }
+  }, [sourceListIdFromUrl, fromLeadSelection, fromMultiListSelection, sourceListId]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name || !accountId) {
@@ -103,7 +124,8 @@ function NewBroadcastPageInner() {
         account_id: accountId,
         name,
         source_list_id: fromSelection ? null : sourceListId,
-        lead_ids: fromSelection ? preselectedLeadIds : null,
+        source_list_ids: fromMultiListSelection ? sourceListIdsFromUrl : null,
+        lead_ids: fromLeadSelection ? preselectedLeadIds : null,
         message_1: message1,
         message_2: showMsg2 && message2 ? message2 : null,
         message_3: showMsg3 && message3 ? message3 : null,
@@ -165,21 +187,30 @@ function NewBroadcastPageInner() {
 
             {fromSelection ? (
               <div className="rounded-md border border-primary/30 bg-primary/5 p-3 space-y-1">
-                <p className="text-sm font-medium">
-                  {preselectedLeadIds.length} leads pre-selected
-                  {originList?.name && (
+                {fromMultiListSelection ? (
+                  <p className="text-sm font-medium">
+                    {sourceListIdsFromUrl.length} lists selected
                     <span className="text-muted-foreground font-normal">
-                      {" "}
-                      from{" "}
-                      <Link
-                        href={`/lead-lists/${sourceListIdFromUrl}`}
-                        className="underline hover:text-foreground"
-                      >
-                        {originList.name}
-                      </Link>
+                      {" "}— leads will be pooled and deduplicated at snapshot time
                     </span>
-                  )}
-                </p>
+                  </p>
+                ) : (
+                  <p className="text-sm font-medium">
+                    {preselectedLeadIds.length} leads pre-selected
+                    {originList?.name && (
+                      <span className="text-muted-foreground font-normal">
+                        {" "}
+                        from{" "}
+                        <Link
+                          href={`/lead-lists/${sourceListIdFromUrl}`}
+                          className="underline hover:text-foreground"
+                        >
+                          {originList.name}
+                        </Link>
+                      </span>
+                    )}
+                  </p>
+                )}
                 <p className="text-xs text-muted-foreground">
                   Only 1st-degree connections receive messages; others are marked skipped.
                 </p>

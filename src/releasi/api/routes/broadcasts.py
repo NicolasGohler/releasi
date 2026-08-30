@@ -108,11 +108,12 @@ async def create_broadcast(body: BroadcastCreate, repo: Repository = Depends(get
 
     # Exactly one snapshot source must be provided.
     has_list = bool(body.source_list_id)
+    has_lists = bool(body.source_list_ids)
     has_leads = bool(body.lead_ids)
-    if has_list == has_leads:
+    if sum([has_list, has_lists, has_leads]) != 1:
         raise HTTPException(
             status_code=422,
-            detail="Provide exactly one of source_list_id or lead_ids",
+            detail="Provide exactly one of source_list_id, source_list_ids, or lead_ids",
         )
 
     if has_list:
@@ -120,13 +121,27 @@ async def create_broadcast(body: BroadcastCreate, repo: Repository = Depends(get
         if not source_list:
             raise HTTPException(status_code=404, detail="Source lead list not found")
 
+    if has_lists:
+        # Validate every referenced list exists — reject the whole request if any
+        # are missing so the user sees the error rather than a silently-shorter
+        # snapshot.
+        for lid in body.source_list_ids:
+            ll = await repo.get_lead_list(lid)
+            if not ll:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Source lead list not found: {lid}",
+                )
+
     if not body.message_1 or not body.message_1.strip():
         raise HTTPException(status_code=422, detail="message_1 is required")
 
+    # When pooling from multiple lists, we don't stamp a single source_list_id
+    # on the broadcast — the linkage is captured by the snapshotted lead rows.
     broadcast = await repo.create_broadcast(
         account_id=body.account_id,
         name=body.name,
-        source_list_id=body.source_list_id,
+        source_list_id=body.source_list_id if has_list else None,
         message_1=body.message_1,
         message_2=body.message_2,
         message_3=body.message_3,
@@ -139,6 +154,10 @@ async def create_broadcast(body: BroadcastCreate, repo: Repository = Depends(get
     if has_list:
         inserted = await repo.snapshot_lead_list_into_broadcast(
             broadcast.id, body.source_list_id
+        )
+    elif has_lists:
+        inserted = await repo.snapshot_lead_lists_into_broadcast(
+            broadcast.id, body.source_list_ids
         )
     else:
         inserted = await repo.snapshot_leads_into_broadcast(

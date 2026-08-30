@@ -208,8 +208,11 @@ class BroadcastOut(BaseModel):
 class BroadcastCreate(BaseModel):
     """Create a broadcast.
 
-    Exactly one of ``source_list_id`` or ``lead_ids`` must be provided:
-    - ``source_list_id`` snapshots every lead currently in the list.
+    Exactly one of ``source_list_id``, ``source_list_ids``, or ``lead_ids`` must
+    be provided:
+    - ``source_list_id`` snapshots every lead currently in a single list.
+    - ``source_list_ids`` snapshots the union of leads across several lists
+      (deduplicated).
     - ``lead_ids`` snapshots the given lead IDs directly (bulk-selection path).
     """
     account_id: str
@@ -220,6 +223,7 @@ class BroadcastCreate(BaseModel):
     delay_between_hours: int = 24
     weekend_enabled: bool = False
     source_list_id: Optional[str] = None
+    source_list_ids: Optional[List[str]] = None
     lead_ids: Optional[List[str]] = None
 
 
