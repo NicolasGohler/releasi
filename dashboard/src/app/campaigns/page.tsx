@@ -137,7 +137,6 @@ export default function CampaignsPage() {
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <AddCard href="/campaigns/new" label="New campaign" />
           {filtered.map((c) => {
             const progress = getProgress(c.status_counts);
             return (
@@ -204,6 +203,7 @@ export default function CampaignsPage() {
               </Link>
             );
           })}
+          <AddCard href="/campaigns/new" label="New campaign" />
         </div>
       )}
       {resumeDialogCampaign && (

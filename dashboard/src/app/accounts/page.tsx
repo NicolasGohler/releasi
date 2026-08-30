@@ -168,7 +168,6 @@ export default function AccountsPage() {
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <AddCard href="/accounts/new" label="Add account" />
           {filtered.map((a) => (
             <Link key={a.id} href={`/accounts/${a.id}`}>
               <Card className="hover:border-muted-foreground/30 transition-colors cursor-pointer">
@@ -209,6 +208,7 @@ export default function AccountsPage() {
               </Card>
             </Link>
           ))}
+          <AddCard href="/accounts/new" label="Add account" />
         </div>
       )}
     </div>

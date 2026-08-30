@@ -123,7 +123,6 @@ export default function BroadcastsPage() {
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <AddCard href="/broadcasts/new" label="New broadcast" />
           {filtered.map((b) => {
             const p = getProgress(b);
             return (
@@ -207,6 +206,7 @@ export default function BroadcastsPage() {
               </Link>
             );
           })}
+          <AddCard href="/broadcasts/new" label="New broadcast" />
         </div>
       )}
     </div>
