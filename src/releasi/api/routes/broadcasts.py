@@ -147,6 +147,8 @@ async def create_broadcast(body: BroadcastCreate, repo: Repository = Depends(get
         message_3=body.message_3,
         delay_between_hours=body.delay_between_hours,
         weekend_enabled=body.weekend_enabled,
+        conversation_routing=body.conversation_routing,
+        message_prior_only=body.message_prior_only,
     )
 
     # Snapshot leads into broadcast_leads NOW so total_leads is accurate
@@ -191,7 +193,8 @@ async def update_broadcast(
     # Lock message-sequence and pacing fields once the broadcast has started.
     # Changing them mid-flight would silently change what pending leads receive.
     if broadcast.status in (BroadcastStatus.ACTIVE, BroadcastStatus.COMPLETED):
-        locked = {"message_1", "message_2", "message_3", "delay_between_hours"}
+        locked = {"message_1", "message_2", "message_3", "delay_between_hours",
+                  "conversation_routing", "message_prior_only"}
         if locked & updates.keys():
             raise HTTPException(
                 status_code=409,

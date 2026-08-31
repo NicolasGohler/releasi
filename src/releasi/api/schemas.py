@@ -190,10 +190,14 @@ class BroadcastOut(BaseModel):
     message_3: Optional[str] = None
     delay_between_hours: int
     weekend_enabled: bool = False
+    # "skip" = existing behaviour; "branch" = route on conversation history.
+    conversation_routing: str = "skip"
+    message_prior_only: Optional[str] = None
     total_leads: int
     archived: bool = False
     paused_at: Optional[datetime] = None
-    # Bucket counts across broadcast_leads (pending / sent / sequence_complete / skipped / error)
+    # Bucket counts across broadcast_leads (pending / sent / sequence_complete /
+    # skipped / manual_outreach / error)
     status_counts: Optional[Dict[str, int]] = None
     # Sum of successful action_log DIRECT_MESSAGE rows for this broadcast; distinct
     # from total_leads because a lead can receive 1–3 messages.
@@ -222,6 +226,10 @@ class BroadcastCreate(BaseModel):
     message_3: Optional[str] = None
     delay_between_hours: int = 24
     weekend_enabled: bool = False
+    # Conversation routing: "skip" (default) or "branch".
+    conversation_routing: str = "skip"
+    # Message sent in branch mode when a prior outgoing-only conversation exists.
+    message_prior_only: Optional[str] = None
     source_list_id: Optional[str] = None
     source_list_ids: Optional[List[str]] = None
     lead_ids: Optional[List[str]] = None
@@ -234,6 +242,8 @@ class BroadcastUpdate(BaseModel):
     message_3: Optional[str] = None
     delay_between_hours: Optional[int] = None
     weekend_enabled: Optional[bool] = None
+    conversation_routing: Optional[str] = None
+    message_prior_only: Optional[str] = None
 
 
 class BroadcastAddLeadsRequest(BaseModel):

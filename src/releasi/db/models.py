@@ -453,6 +453,13 @@ class Broadcast(Base):
     # semantics as Campaign.followup_delay_hours.
     delay_between_hours: Mapped[int] = mapped_column(Integer, default=24)
     weekend_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # "skip" = any prior conversation → skip (default, original behaviour).
+    # "branch" = classify conversation history and route accordingly:
+    #   fresh → send message_1; sent_only → send message_prior_only;
+    #   has_reply → mark broadcast_lead as manual_outreach.
+    conversation_routing: Mapped[str] = mapped_column(String(16), default="skip", nullable=False)
+    # Text used when routing="branch" and prior outgoing-only conversation detected.
+    message_prior_only: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     total_leads: Mapped[int] = mapped_column(Integer, default=0)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     # Mirrors Campaign.paused_at semantics for completeness / future work.

@@ -981,7 +981,14 @@ class LinkedInActions:
         logger.info("action.connection_request_sent", url=profile_url, with_note=bool(message))
         return ActionResult(ActionStatus.SUCCESS)
 
-    async def send_message(self, profile_url: str, message: str, skip_prior_conversation_check: bool = False) -> ActionResult:
+    async def send_message(
+        self,
+        profile_url: str,
+        message: str,
+        skip_prior_conversation_check: bool = False,
+        conversation_routing: str = "skip",
+        message_prior_only: Optional[str] = None,
+    ) -> ActionResult:
         """
         Send a direct message to a 1st-degree connection.
 
@@ -1034,32 +1041,80 @@ class LinkedInActions:
         # Wait for the messaging app to hydrate (it's a JS-heavy widget)
         await self.delay.micro_delay(3.5, 5.0)
 
-        # ── 3a. Guard: skip if a prior conversation already exists ──
-        # LinkedIn renders existing message bubbles in the thread area below the
-        # compose form.  If any are present we have already exchanged messages
-        # with this person (inside or outside our system) and should not send
-        # another automated one.
-        # skip_prior_conversation_check=True when this is not the first message
-        # in a multi-message sequence — the bubbles are ones we just sent.
+        # ── 3a. Conversation history check ──
+        # LinkedIn renders prior message bubbles in the thread area below the
+        # compose form. skip_prior_conversation_check=True for messages 2/3 in a
+        # sequence (those bubbles are ours from the current sequence, not prior).
+        #
+        # conversation_routing="skip"  (default): any bubbles → SKIPPED.
+        # conversation_routing="branch": classify direction of bubbles:
+        #   "fresh"    → no prior messages, send message normally.
+        #   "sent_only"→ we messaged but got no reply → send message_prior_only.
+        #   "has_reply"→ they replied → return SKIPPED("existing_conversation_replied")
+        #                 so the executor can mark manual_outreach.
+        # Detection fails open: unknown/error → treat as "fresh" and send.
         if not skip_prior_conversation_check:
             try:
-                has_prior_messages = await self.page.evaluate("""
+                conv_state = await self.page.evaluate("""
 () => {
-    const bubbles = document.querySelectorAll(
-        '.msg-s-event-listitem, [class*="msg-s-event-listitem"]'
-    );
-    return bubbles.length > 0;
+    const items = document.querySelectorAll('.msg-s-event-listitem');
+    if (items.length === 0) return 'fresh';
+    for (const item of items) {
+        // Class-based: LinkedIn often adds a modifier such as --other for
+        // messages from the other person.
+        for (const cls of item.classList) {
+            if (cls.includes('--other') || cls.includes('-incoming') || cls.includes('-received')) {
+                return 'has_reply';
+            }
+        }
+        // Link-based: received messages contain the sender's /in/ profile link;
+        // outgoing messages from the current user do not.
+        if (item.querySelector('a[href*="/in/"]')) {
+            return 'has_reply';
+        }
+    }
+    return 'sent_only';
 }
 """)
-                if has_prior_messages:
-                    logger.info(
-                        "action.message_skipped_existing_conversation",
-                        url=profile_url,
-                    )
-                    return ActionResult(
-                        ActionStatus.SKIPPED,
-                        reason="existing_conversation",
-                    )
+                if conv_state != "fresh":
+                    if conversation_routing == "branch":
+                        if conv_state == "has_reply":
+                            logger.info(
+                                "action.message_skipped_prior_reply",
+                                url=profile_url,
+                            )
+                            return ActionResult(
+                                ActionStatus.SKIPPED,
+                                reason="existing_conversation_replied",
+                            )
+                        elif conv_state == "sent_only":
+                            if message_prior_only:
+                                # Swap in the warm message and continue to the send step.
+                                message = message_prior_only
+                                logger.info(
+                                    "action.message_routing_prior_only",
+                                    url=profile_url,
+                                )
+                            else:
+                                logger.info(
+                                    "action.message_skipped_existing_conversation",
+                                    url=profile_url,
+                                )
+                                return ActionResult(
+                                    ActionStatus.SKIPPED,
+                                    reason="existing_conversation",
+                                )
+                        # Any other unexpected conv_state → fail open, send normally.
+                    else:
+                        # Default "skip" routing: any prior conversation → skip.
+                        logger.info(
+                            "action.message_skipped_existing_conversation",
+                            url=profile_url,
+                        )
+                        return ActionResult(
+                            ActionStatus.SKIPPED,
+                            reason="existing_conversation",
+                        )
             except Exception:
                 pass  # Fail open — don't block the send if the check errors
 

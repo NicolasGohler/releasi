@@ -26,6 +26,7 @@ const STATUS_LABEL: Record<string, string> = {
   sent: "Msg sent",
   sequence_complete: "Complete",
   skipped: "Skipped",
+  manual_outreach: "Manual",
   error: "Error",
 };
 
@@ -34,6 +35,7 @@ const STATUS_STYLE: Record<string, string> = {
   sent: "bg-blue-500/20 text-blue-400",
   sequence_complete: "bg-emerald-500/20 text-emerald-400",
   skipped: "bg-amber-500/20 text-amber-400",
+  manual_outreach: "bg-purple-500/20 text-purple-400",
   error: "bg-red-500/20 text-red-400",
 };
 
@@ -200,8 +202,8 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
       </div>
 
       {/* Status counts row */}
-      <div className="grid gap-3 sm:grid-cols-5">
-        {["pending", "sent", "sequence_complete", "skipped", "error"].map((s) => {
+      <div className="grid gap-3 sm:grid-cols-6">
+        {["pending", "sent", "sequence_complete", "skipped", "manual_outreach", "error"].map((s) => {
           const n = counts[s] ?? 0;
           return (
             <button
@@ -250,6 +252,24 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
               <div className="whitespace-pre-wrap text-sm">{m}</div>
             </div>
           ))}
+          {bc.conversation_routing === "branch" && (
+            <div className="mt-2 space-y-2">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="rounded bg-primary/20 text-primary px-1.5 py-0.5 font-medium">Branch mode</span>
+                <span>Fresh → msg 1 · Replied → manual outreach</span>
+              </div>
+              {bc.message_prior_only ? (
+                <div className="rounded-md border border-purple-500/20 bg-purple-500/5 p-3">
+                  <div className="text-xs text-muted-foreground mb-1">
+                    If previously messaged, no reply
+                  </div>
+                  <div className="whitespace-pre-wrap text-sm">{bc.message_prior_only}</div>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">No warm message — &quot;sent, no reply&quot; leads will be skipped.</p>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -271,6 +291,7 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
                 <TabsTrigger value="pending">Pending</TabsTrigger>
                 <TabsTrigger value="sent">Sent</TabsTrigger>
                 <TabsTrigger value="skipped">Skipped</TabsTrigger>
+                <TabsTrigger value="manual_outreach">Manual</TabsTrigger>
                 <TabsTrigger value="error">Error</TabsTrigger>
               </TabsList>
             </Tabs>

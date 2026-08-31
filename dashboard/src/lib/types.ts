@@ -95,9 +95,14 @@ export interface Broadcast {
   message_3: string | null;
   delay_between_hours: number;
   weekend_enabled: boolean;
+  /** "skip" = original behaviour; "branch" = route on conversation history. */
+  conversation_routing: string;
+  /** Message used in branch mode when prior outgoing-only conversation detected. */
+  message_prior_only: string | null;
   total_leads: number;
   archived: boolean;
   paused_at: string | null;
+  // Bucket counts: pending | sent | sequence_complete | skipped | manual_outreach | error
   status_counts: Record<string, number> | null;
   messages_sent: number | null;
   created_at: string;

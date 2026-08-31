@@ -2781,6 +2781,8 @@ class Repository:
         source_list_id: Optional[str] = None,
         delay_between_hours: int = 24,
         weekend_enabled: bool = False,
+        conversation_routing: str = "skip",
+        message_prior_only: Optional[str] = None,
         status: BroadcastStatus = BroadcastStatus.DRAFT,
     ) -> Broadcast:
         broadcast = Broadcast(
@@ -2792,6 +2794,8 @@ class Repository:
             message_3=message_3,
             delay_between_hours=delay_between_hours,
             weekend_enabled=weekend_enabled,
+            conversation_routing=conversation_routing,
+            message_prior_only=message_prior_only,
             status=status,
         )
         self.session.add(broadcast)

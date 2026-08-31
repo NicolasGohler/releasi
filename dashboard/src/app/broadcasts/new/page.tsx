@@ -77,6 +77,9 @@ function NewBroadcastPageInner() {
   const [delayHours, setDelayHours] = useState(24);
   const [showMsg2, setShowMsg2] = useState(false);
   const [showMsg3, setShowMsg3] = useState(false);
+  // Conversation routing
+  const [conversationRouting, setConversationRouting] = useState<"skip" | "branch">("skip");
+  const [messagePriorOnly, setMessagePriorOnly] = useState("");
 
   // Clean up sessionStorage after we've read it, so a later manual open
   // doesn't re-populate from a stale selection.
@@ -130,6 +133,8 @@ function NewBroadcastPageInner() {
         message_2: showMsg2 && message2 ? message2 : null,
         message_3: showMsg3 && message3 ? message3 : null,
         delay_between_hours: delayHours,
+        conversation_routing: conversationRouting,
+        message_prior_only: conversationRouting === "branch" && messagePriorOnly.trim() ? messagePriorOnly.trim() : null,
       },
       {
         onSuccess: (bc) => {
@@ -328,6 +333,70 @@ function NewBroadcastPageInner() {
                 />
               </div>
             )}
+
+            {/* Conversation routing */}
+            <div className="space-y-3">
+              <Label>If a prior LinkedIn conversation exists</Label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConversationRouting("skip")}
+                  className={`rounded-md border px-3 py-2.5 text-left text-sm transition-colors ${
+                    conversationRouting === "skip"
+                      ? "border-primary bg-primary/10 text-foreground"
+                      : "border-border hover:border-muted-foreground/40 text-muted-foreground"
+                  }`}
+                >
+                  <div className="font-medium mb-0.5">Skip</div>
+                  <div className="text-xs opacity-70">Skip anyone already messaged</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConversationRouting("branch")}
+                  className={`rounded-md border px-3 py-2.5 text-left text-sm transition-colors ${
+                    conversationRouting === "branch"
+                      ? "border-primary bg-primary/10 text-foreground"
+                      : "border-border hover:border-muted-foreground/40 text-muted-foreground"
+                  }`}
+                >
+                  <div className="font-medium mb-0.5">Branch</div>
+                  <div className="text-xs opacity-70">Different message per conversation state</div>
+                </button>
+              </div>
+
+              {conversationRouting === "branch" && (
+                <div className="rounded-md border border-border/60 bg-muted/20 p-3 space-y-4">
+                  <div className="grid gap-1 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      <span className="rounded bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 font-medium">Fresh</span>
+                      <span>No prior messages → sends Message 1 above</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="rounded bg-blue-500/20 text-blue-400 px-1.5 py-0.5 font-medium">Sent, no reply</span>
+                      <span>You messaged, they didn&apos;t reply → sends the message below</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="rounded bg-amber-500/20 text-amber-400 px-1.5 py-0.5 font-medium">They replied</span>
+                      <span>They replied to you → marked for manual outreach, no automated send</span>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="msg-prior">Message for &quot;sent, no reply&quot; leads</Label>
+                    <MessageTemplateEditor
+                      id="msg-prior"
+                      value={messagePriorOnly}
+                      onChange={setMessagePriorOnly}
+                      placeholder={"Hey {{first_name}}, just following up on my last message…"}
+                      showCharLimit
+                      minHeight={90}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Leave blank to skip these leads instead of sending an alternative message.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
 
             <div className="rounded-md border border-border/50 bg-muted/30 p-3 text-xs text-muted-foreground">
               <p className="font-medium text-foreground/80 mb-1">Before you activate</p>

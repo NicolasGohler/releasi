@@ -627,12 +627,14 @@ class CampaignExecutor:
 
         try:
             actions = LinkedInActions(page)
-            # skip_prior_conversation_check=True for msg 2/3 — the bubbles are
-            # our own from earlier in the sequence.
+            # Conversation routing only applies to the first message; messages 2/3
+            # skip the check entirely (their bubbles are our own from this sequence).
             action_result = await actions.send_message(
                 lead.linkedin_url,
                 rendered,
                 skip_prior_conversation_check=(next_index > 1),
+                conversation_routing=broadcast.conversation_routing if next_index == 1 else "skip",
+                message_prior_only=broadcast.message_prior_only if next_index == 1 else None,
             )
 
             if action_result.status == ActionStatus.SUCCESS:
@@ -676,11 +678,17 @@ class CampaignExecutor:
                 )
 
             elif action_result.status == ActionStatus.SKIPPED:
-                # Non-recoverable skip (existing conversation) — mark and move on.
                 reason = action_result.reason or "skipped"
+                # "existing_conversation_replied" means branch-mode detected a
+                # reply from the lead — route to manual_outreach, not skipped.
+                bl_status = (
+                    "manual_outreach"
+                    if reason == "existing_conversation_replied"
+                    else "skipped"
+                )
                 await self.repo.update_broadcast_lead(
                     broadcast_lead,
-                    status="skipped",
+                    status=bl_status,
                     skipped_reason=reason,
                 )
                 await self.repo.log_action(
@@ -692,7 +700,7 @@ class CampaignExecutor:
                 )
                 result["skipped"] = True
                 result["skipped_reason"] = reason
-                logger.info("broadcast.skipped", broadcast=broadcast.name, url=lead.linkedin_url, reason=reason)
+                logger.info("broadcast.skipped", broadcast=broadcast.name, url=lead.linkedin_url, reason=reason, bl_status=bl_status)
 
             elif action_result.status == ActionStatus.SESSION_EXPIRED:
                 # Do NOT update broadcast_lead — this lead will be retried.
