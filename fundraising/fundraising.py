@@ -815,12 +815,15 @@ def _parse_team_from_cryptorank_soup(soup, team_url):
         'bdr', 'sdr', 'revenue', 'partnerships', 'partner manager',
         'product', 'product manager', 'product owner', 'product lead', 'cpo',
         'chief product', 'product director', 'product head',
-        # CFO / Finance roles
+        # CFO / Finance / FP&A roles
         'cfo', 'chief financial', 'chief finance', 'finance director',
         'vp finance', 'head of finance', 'treasurer', 'controller',
+        'fp&a', 'fpa', 'financial planning', 'financial analyst',
         # Legal / Compliance roles
         'general counsel', 'chief legal', 'clo', 'legal counsel', 'legal officer',
         'compliance', 'regulatory', 'counsel', 'attorney', 'lawyer',
+        # Design roles
+        'design', 'designer', 'ux', 'ui ', 'creative director', 'art director', 'graphic',
     ]
     name_pattern = re.compile(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+){1,3}$')
 
@@ -1274,12 +1277,15 @@ def fetch_team_from_apollo(company_name, company_website=None, credit_cache=None
                 # Product roles
                 'product', 'product manager', 'product owner', 'product lead', 'cpo',
                 'chief product', 'product director', 'product head',
-                # CFO / Finance roles
+                # CFO / Finance / FP&A roles
                 'cfo', 'chief financial', 'chief finance', 'finance director',
                 'vp finance', 'head of finance', 'treasurer', 'controller',
+                'fp&a', 'fpa', 'financial planning', 'financial analyst',
                 # Legal / Compliance roles
                 'general counsel', 'chief legal', 'clo', 'legal counsel', 'legal officer',
                 'compliance', 'regulatory', 'counsel', 'attorney', 'lawyer',
+                # Design roles
+                'design', 'designer', 'ux', 'ui ', 'creative director', 'art director', 'graphic',
             }
             for person in people:
                 title = person.get('title', '')
@@ -2042,12 +2048,15 @@ def _merge_apollo_into_team(team: list, apollo_team: list) -> list:
         'bdr', 'sdr', 'revenue', 'partnerships', 'partner manager',
         'product', 'product manager', 'product owner', 'product lead', 'cpo',
         'chief product', 'product director', 'product head',
-        # CFO / Finance roles
+        # CFO / Finance / FP&A roles
         'cfo', 'chief financial', 'chief finance', 'finance director',
         'vp finance', 'head of finance', 'treasurer', 'controller',
+        'fp&a', 'fpa', 'financial planning', 'financial analyst',
         # Legal / Compliance roles
         'general counsel', 'chief legal', 'clo', 'legal counsel', 'legal officer',
         'compliance', 'regulatory', 'counsel', 'attorney', 'lawyer',
+        # Design roles
+        'design', 'designer', 'ux', 'ui ', 'creative director', 'art director', 'graphic',
     ]
     existing_names = {m['name'].lower() for m in team}
 
