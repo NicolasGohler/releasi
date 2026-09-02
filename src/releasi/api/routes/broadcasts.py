@@ -192,14 +192,7 @@ async def update_broadcast(
 
     # Lock message-sequence and pacing fields once the broadcast has started.
     # Changing them mid-flight would silently change what pending leads receive.
-    if broadcast.status in (BroadcastStatus.ACTIVE, BroadcastStatus.COMPLETED):
-        locked = {"message_1", "message_2", "message_3", "delay_between_hours",
-                  "conversation_routing", "message_prior_only"}
-        if locked & updates.keys():
-            raise HTTPException(
-                status_code=409,
-                detail="Cannot edit message sequence or delay once broadcast is active or completed",
-            )
+    # Sequence fields are always editable — changes take effect for pending leads.
 
     if updates:
         broadcast = await repo.update_broadcast(broadcast, **updates)
