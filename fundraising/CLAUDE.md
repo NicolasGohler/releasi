@@ -30,7 +30,7 @@ RootData (Playwright)   ──→ project list (up to 15)
                     CSV + JSON output → Slack upload
 ```
 
-Runs every **Monday at 9:00 UTC** on GitHub Actions, plus manual `workflow_dispatch`.
+Runs every **Monday at 9:00 UTC** via systemd timer (`fundraising-agent.timer`) on the host server (not inside Docker). Manual run: `cd /root/linauto/fundraising && venv/bin/python -u fundraising.py`.
 
 ## Target Roles (Included)
 
@@ -63,7 +63,6 @@ CTO, engineers, developers, HR/recruiting, traders, sales/BD, product managers �
 |------|---------|
 | `fundraising.py` | Full pipeline: scrape, enrich, resolve Telegram, output CSV, send to Slack |
 | `requirements.txt` | Python dependencies |
-| `.github/workflows/fundraising.yml` | GitHub Actions workflow (weekly + manual trigger) |
 
 ## Data Sources & APIs
 
@@ -92,7 +91,7 @@ Key classes (as of Feb 2026):
 - **Save Apollo credits** — the people search endpoint is free; email enrichment (which costs credits) is disabled since outreach happens via Telegram/LinkedIn
 - **CryptoRank team page is the primary data source** — always scrape it first, Apollo supplements
 - **Telegram > LinkedIn > Email** for outreach channel priority
-- **GitHub Actions 6-hour limit** — pipeline typically completes in ~20 minutes
+- **Runtime** — pipeline typically completes in ~30 seconds (32s CPU on last run)
 - API keys are passed via GitHub Secrets (`APOLLO_API_KEY`, `SLACK_BOT_TOKEN`); Telegram credentials are hardcoded
 
 ## Related Projects

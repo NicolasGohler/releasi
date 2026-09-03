@@ -466,7 +466,7 @@ Weekly pipeline that scrapes CryptoRank and RootData for recently-funded crypto 
 - **Systemd timer**: `fundraising-agent.timer` — fires every **Monday 09:00 UTC**
   - Check: `systemctl status fundraising-agent.timer`
   - Manual run: `cd /root/linauto/fundraising && venv/bin/python -u fundraising.py`
-- **Config**: reads `config/settings.yaml` → `fundraising:` section (proxy, Apollo, Slack, Releasi keys). Falls back to env vars so GitHub Actions still works.
+- **Config**: reads `config/settings.yaml` → `fundraising:` section (proxy, Apollo, Slack, Releasi keys).
 - **DB access**: reads `scraper_cookies` table directly (WAL-safe read-only) for CryptoRank/RootData session cookies; reads `leads` table for dedup; writes `action_log` (type `fundraising_import`) after each successful run so the import appears in the campaign's Activity feed.
 - **Role filters**: excludes CTO/engineering, HR, trading, sales, product, CFO/finance, legal/compliance from all three filter lists (CryptoRank scraper, Apollo search, Apollo merge).
 - **Campaign**: hardcoded to `24acf14e-82ce-4ccd-826b-95739145d762` (configurable via `releasi_campaign_id` in settings.yaml).
