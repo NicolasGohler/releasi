@@ -90,11 +90,11 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
     update.mutate(
       {
         message_1: seqMsg1.trim(),
-        message_2: showSeqMsg2 && seqMsg2.trim() ? seqMsg2.trim() : null,
-        message_3: showSeqMsg2 && showSeqMsg3 && seqMsg3.trim() ? seqMsg3.trim() : null,
+        message_2: showSeqMsg2 && seqMsg2.trim() ? seqMsg2.trim() : undefined,
+        message_3: showSeqMsg2 && showSeqMsg3 && seqMsg3.trim() ? seqMsg3.trim() : undefined,
         delay_between_hours: seqDelay,
         conversation_routing: seqRouting,
-        message_prior_only: seqRouting === "branch" && seqPriorOnly.trim() ? seqPriorOnly.trim() : null,
+        message_prior_only: seqRouting === "branch" && seqPriorOnly.trim() ? seqPriorOnly.trim() : undefined,
       },
       {
         onSuccess: () => { toast.success("Sequence updated"); setEditingSeq(false); },
