@@ -824,6 +824,8 @@ def _parse_team_from_cryptorank_soup(soup, team_url):
         'compliance', 'regulatory', 'counsel', 'attorney', 'lawyer',
         # Design roles
         'design', 'designer', 'ux', 'ui ', 'creative director', 'art director', 'graphic',
+        # Analytics roles
+        'analytic', 'analytics', 'data analyst',
     ]
     name_pattern = re.compile(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+){1,3}$')
 
@@ -1286,6 +1288,8 @@ def fetch_team_from_apollo(company_name, company_website=None, credit_cache=None
                 'compliance', 'regulatory', 'counsel', 'attorney', 'lawyer',
                 # Design roles
                 'design', 'designer', 'ux', 'ui ', 'creative director', 'art director', 'graphic',
+                # Analytics roles
+                'analytic', 'analytics', 'data analyst',
             }
             for person in people:
                 title = person.get('title', '')
@@ -2057,6 +2061,8 @@ def _merge_apollo_into_team(team: list, apollo_team: list) -> list:
         'compliance', 'regulatory', 'counsel', 'attorney', 'lawyer',
         # Design roles
         'design', 'designer', 'ux', 'ui ', 'creative director', 'art director', 'graphic',
+        # Analytics roles
+        'analytic', 'analytics', 'data analyst',
     ]
     existing_names = {m['name'].lower() for m in team}
 
