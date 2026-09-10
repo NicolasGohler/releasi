@@ -67,21 +67,45 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
   const [seqMsg1, setSeqMsg1] = useState("");
   const [seqMsg2, setSeqMsg2] = useState("");
   const [seqMsg3, setSeqMsg3] = useState("");
-  const [seqDelay, setSeqDelay] = useState(24);
+  // Delay: stored as float hours; 0 = none; fractional = minutes.
+  const [seqDelayMode, setSeqDelayMode] = useState<"none" | "minutes" | "hours">("hours");
+  const [seqDelayValue, setSeqDelayValue] = useState(24);
   const [seqRouting, setSeqRouting] = useState<"skip" | "branch">("skip");
   const [seqPriorOnly, setSeqPriorOnly] = useState("");
+  const [seqPriorOnly2, setSeqPriorOnly2] = useState("");
+  const [seqPriorOnly3, setSeqPriorOnly3] = useState("");
   const [showSeqMsg2, setShowSeqMsg2] = useState(false);
   const [showSeqMsg3, setShowSeqMsg3] = useState(false);
+  const [showSeqPrior2, setShowSeqPrior2] = useState(false);
+  const [showSeqPrior3, setShowSeqPrior3] = useState(false);
+
+  function decodeDelay(h: number): { mode: "none" | "minutes" | "hours"; value: number } {
+    if (h === 0) return { mode: "none", value: 0 };
+    if (h < 1) return { mode: "minutes", value: Math.round(h * 60) };
+    return { mode: "hours", value: h };
+  }
+
+  function encodeDelay(mode: "none" | "minutes" | "hours", value: number): number {
+    if (mode === "none") return 0;
+    if (mode === "minutes") return value / 60;
+    return value;
+  }
 
   function openSeqEditor() {
     setSeqMsg1(bc?.message_1 ?? "");
     setSeqMsg2(bc?.message_2 ?? "");
     setSeqMsg3(bc?.message_3 ?? "");
-    setSeqDelay(bc?.delay_between_hours ?? 24);
+    const { mode, value } = decodeDelay(bc?.delay_between_hours ?? 24);
+    setSeqDelayMode(mode);
+    setSeqDelayValue(value);
     setSeqRouting((bc?.conversation_routing ?? "skip") as "skip" | "branch");
     setSeqPriorOnly(bc?.message_prior_only ?? "");
+    setSeqPriorOnly2(bc?.message_prior_only_2 ?? "");
+    setSeqPriorOnly3(bc?.message_prior_only_3 ?? "");
     setShowSeqMsg2(!!bc?.message_2);
     setShowSeqMsg3(!!bc?.message_3);
+    setShowSeqPrior2(!!bc?.message_prior_only_2);
+    setShowSeqPrior3(!!bc?.message_prior_only_3);
     setEditingSeq(true);
   }
 
@@ -92,9 +116,11 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
         message_1: seqMsg1.trim(),
         message_2: showSeqMsg2 && seqMsg2.trim() ? seqMsg2.trim() : undefined,
         message_3: showSeqMsg2 && showSeqMsg3 && seqMsg3.trim() ? seqMsg3.trim() : undefined,
-        delay_between_hours: seqDelay,
+        delay_between_hours: encodeDelay(seqDelayMode, seqDelayValue),
         conversation_routing: seqRouting,
-        message_prior_only: seqRouting === "branch" && seqPriorOnly.trim() ? seqPriorOnly.trim() : undefined,
+        message_prior_only: seqRouting === "branch" && seqPriorOnly.trim() ? seqPriorOnly.trim() : null,
+        message_prior_only_2: seqRouting === "branch" && showSeqPrior2 && seqPriorOnly2.trim() ? seqPriorOnly2.trim() : null,
+        message_prior_only_3: seqRouting === "branch" && showSeqPrior2 && showSeqPrior3 && seqPriorOnly3.trim() ? seqPriorOnly3.trim() : null,
       },
       {
         onSuccess: () => { toast.success("Sequence updated"); setEditingSeq(false); },
@@ -321,9 +347,33 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
               ))}
 
               {showSeqMsg2 && (
-                <div className="space-y-1.5 max-w-xs">
-                  <Label className="text-xs">Delay between messages (hours)</Label>
-                  <Input type="number" min={1} max={720} value={seqDelay} onChange={(e) => setSeqDelay(parseInt(e.target.value) || 24)} />
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Delay between messages</Label>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {(["none", "minutes", "hours"] as const).map((m) => (
+                      <button key={m} type="button" onClick={() => {
+                        setSeqDelayMode(m);
+                        if (m === "minutes" && seqDelayValue === 0) setSeqDelayValue(30);
+                        if (m === "hours" && seqDelayValue === 0) setSeqDelayValue(24);
+                      }}
+                        className={`rounded border px-2.5 py-1 text-xs transition-colors capitalize ${seqDelayMode === m ? "border-primary bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:border-muted-foreground/40"}`}>
+                        {m}
+                      </button>
+                    ))}
+                    {seqDelayMode !== "none" && (
+                      <Input
+                        type="number"
+                        min={1}
+                        max={seqDelayMode === "minutes" ? 1440 : 720}
+                        value={seqDelayValue}
+                        onChange={(e) => setSeqDelayValue(parseInt(e.target.value) || 1)}
+                        className="w-24 h-7 text-xs"
+                      />
+                    )}
+                    {seqDelayMode === "none" && (
+                      <span className="text-xs text-muted-foreground">Messages send back-to-back (~5 s apart)</span>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -342,15 +392,39 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
                 {seqRouting === "branch" && (
                   <div className="rounded-md border border-border/60 bg-muted/20 p-3 space-y-3">
                     <div className="grid gap-1 text-xs text-muted-foreground">
-                      <div className="flex items-center gap-2"><span className="rounded bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 font-medium">Fresh</span><span>No prior messages → msg 1</span></div>
-                      <div className="flex items-center gap-2"><span className="rounded bg-blue-500/20 text-blue-400 px-1.5 py-0.5 font-medium">Sent, no reply</span><span>→ warm message below</span></div>
+                      <div className="flex items-center gap-2"><span className="rounded bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 font-medium">Fresh</span><span>No prior messages → msg 1 sequence above</span></div>
+                      <div className="flex items-center gap-2"><span className="rounded bg-blue-500/20 text-blue-400 px-1.5 py-0.5 font-medium">Sent, no reply</span><span>→ prior-branch sequence below (shares the same delay)</span></div>
                       <div className="flex items-center gap-2"><span className="rounded bg-amber-500/20 text-amber-400 px-1.5 py-0.5 font-medium">They replied</span><span>→ manual outreach</span></div>
                     </div>
                     <div className="space-y-1.5">
-                      <Label className="text-xs">Warm message (sent if no reply yet)</Label>
-                      <MessageTemplateEditor value={seqPriorOnly} onChange={setSeqPriorOnly} placeholder="Hey {{first_name}}, just following up…" showCharLimit minHeight={80} />
-                      <p className="text-xs text-muted-foreground">Leave blank to skip &quot;sent, no reply&quot; leads.</p>
+                      <Label className="text-xs">Prior-branch message 1</Label>
+                      <MessageTemplateEditor value={seqPriorOnly} onChange={setSeqPriorOnly} placeholder="Hey {{first_name}}, just following up on my earlier message…" showCharLimit minHeight={80} />
+                      <p className="text-xs text-muted-foreground">Leave blank to skip these leads entirely.</p>
                     </div>
+
+                    {showSeqPrior2 ? (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs">Prior-branch message 2</Label>
+                          <button type="button" onClick={() => { setShowSeqPrior2(false); setShowSeqPrior3(false); setSeqPriorOnly2(""); setSeqPriorOnly3(""); }} className="text-xs text-muted-foreground hover:text-foreground">remove</button>
+                        </div>
+                        <MessageTemplateEditor value={seqPriorOnly2} onChange={setSeqPriorOnly2} placeholder="Optional second follow-up…" showCharLimit minHeight={70} />
+                      </div>
+                    ) : (
+                      seqPriorOnly.trim() && <Button type="button" variant="outline" size="sm" onClick={() => setShowSeqPrior2(true)}>+ Add prior-branch msg 2</Button>
+                    )}
+
+                    {showSeqPrior2 && (showSeqPrior3 ? (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs">Prior-branch message 3</Label>
+                          <button type="button" onClick={() => { setShowSeqPrior3(false); setSeqPriorOnly3(""); }} className="text-xs text-muted-foreground hover:text-foreground">remove</button>
+                        </div>
+                        <MessageTemplateEditor value={seqPriorOnly3} onChange={setSeqPriorOnly3} placeholder="Optional third follow-up…" showCharLimit minHeight={70} />
+                      </div>
+                    ) : (
+                      seqPriorOnly2.trim() && <Button type="button" variant="outline" size="sm" onClick={() => setShowSeqPrior3(true)}>+ Add prior-branch msg 3</Button>
+                    ))}
                   </div>
                 )}
               </div>
@@ -363,15 +437,23 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
           ) : (
             /* ── Read-only view ───────────────────────────────────────── */
             <>
-              {messages.map((m, i) => (
-                <div key={i} className="rounded-md border border-border/50 bg-muted/20 p-3">
-                  <div className="text-xs text-muted-foreground mb-1">
-                    Message {i + 1}
-                    {i > 0 && <span className="ml-2">· sent {bc.delay_between_hours}h after msg {i}</span>}
+              {(() => {
+                const dh = bc.delay_between_hours;
+                const delayLabel = dh === 0
+                  ? "back-to-back (~5 s)"
+                  : dh < 1
+                  ? `${Math.round(dh * 60)} min`
+                  : `${dh}h`;
+                return messages.map((m, i) => (
+                  <div key={i} className="rounded-md border border-border/50 bg-muted/20 p-3">
+                    <div className="text-xs text-muted-foreground mb-1">
+                      Message {i + 1}
+                      {i > 0 && <span className="ml-2">· sent {delayLabel} after msg {i}</span>}
+                    </div>
+                    <div className="whitespace-pre-wrap text-sm">{m}</div>
                   </div>
-                  <div className="whitespace-pre-wrap text-sm">{m}</div>
-                </div>
-              ))}
+                ));
+              })()}
               {bc.conversation_routing === "branch" && (
                 <div className="mt-2 space-y-2">
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -379,10 +461,21 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
                     <span>Fresh → msg 1 · Replied → manual outreach</span>
                   </div>
                   {bc.message_prior_only ? (
-                    <div className="rounded-md border border-purple-500/20 bg-purple-500/5 p-3">
-                      <div className="text-xs text-muted-foreground mb-1">If previously messaged, no reply</div>
-                      <div className="whitespace-pre-wrap text-sm">{bc.message_prior_only}</div>
-                    </div>
+                    [bc.message_prior_only, bc.message_prior_only_2, bc.message_prior_only_3]
+                      .filter(Boolean)
+                      .map((m, i) => (
+                        <div key={i} className="rounded-md border border-purple-500/20 bg-purple-500/5 p-3">
+                          <div className="text-xs text-muted-foreground mb-1">
+                            Prior-branch msg {i + 1}
+                            {i > 0 && (() => {
+                              const dh = bc.delay_between_hours;
+                              const dl = dh === 0 ? "back-to-back" : dh < 1 ? `${Math.round(dh * 60)} min` : `${dh}h`;
+                              return <span className="ml-2">· {dl} after prior-branch msg {i}</span>;
+                            })()}
+                          </div>
+                          <div className="whitespace-pre-wrap text-sm">{m}</div>
+                        </div>
+                      ))
                   ) : (
                     <p className="text-xs text-muted-foreground">No warm message — &quot;sent, no reply&quot; leads will be skipped.</p>
                   )}

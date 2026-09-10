@@ -2779,10 +2779,12 @@ class Repository:
         message_2: Optional[str] = None,
         message_3: Optional[str] = None,
         source_list_id: Optional[str] = None,
-        delay_between_hours: int = 24,
+        delay_between_hours: float = 24,
         weekend_enabled: bool = False,
         conversation_routing: str = "skip",
         message_prior_only: Optional[str] = None,
+        message_prior_only_2: Optional[str] = None,
+        message_prior_only_3: Optional[str] = None,
         status: BroadcastStatus = BroadcastStatus.DRAFT,
     ) -> Broadcast:
         broadcast = Broadcast(
@@ -2796,6 +2798,8 @@ class Repository:
             weekend_enabled=weekend_enabled,
             conversation_routing=conversation_routing,
             message_prior_only=message_prior_only,
+            message_prior_only_2=message_prior_only_2,
+            message_prior_only_3=message_prior_only_3,
             status=status,
         )
         self.session.add(broadcast)

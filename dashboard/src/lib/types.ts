@@ -93,12 +93,15 @@ export interface Broadcast {
   message_1: string | null;
   message_2: string | null;
   message_3: string | null;
+  /** 0 = no delay (5 s); positive = hours (fractional values = minutes). */
   delay_between_hours: number;
   weekend_enabled: boolean;
   /** "skip" = original behaviour; "branch" = route on conversation history. */
   conversation_routing: string;
-  /** Message used in branch mode when prior outgoing-only conversation detected. */
+  /** Messages used in branch mode when prior outgoing-only conversation detected. */
   message_prior_only: string | null;
+  message_prior_only_2: string | null;
+  message_prior_only_3: string | null;
   total_leads: number;
   archived: boolean;
   paused_at: string | null;

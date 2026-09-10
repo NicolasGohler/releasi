@@ -74,12 +74,23 @@ function NewBroadcastPageInner() {
   const [message1, setMessage1] = useState("");
   const [message2, setMessage2] = useState("");
   const [message3, setMessage3] = useState("");
-  const [delayHours, setDelayHours] = useState(24);
+  const [delayMode, setDelayMode] = useState<"none" | "minutes" | "hours">("hours");
+  const [delayValue, setDelayValue] = useState(24);
   const [showMsg2, setShowMsg2] = useState(false);
   const [showMsg3, setShowMsg3] = useState(false);
   // Conversation routing
   const [conversationRouting, setConversationRouting] = useState<"skip" | "branch">("skip");
   const [messagePriorOnly, setMessagePriorOnly] = useState("");
+  const [messagePriorOnly2, setMessagePriorOnly2] = useState("");
+  const [messagePriorOnly3, setMessagePriorOnly3] = useState("");
+  const [showPrior2, setShowPrior2] = useState(false);
+  const [showPrior3, setShowPrior3] = useState(false);
+
+  function encodeDelay(mode: "none" | "minutes" | "hours", value: number): number {
+    if (mode === "none") return 0;
+    if (mode === "minutes") return value / 60;
+    return value;
+  }
 
   // Clean up sessionStorage after we've read it, so a later manual open
   // doesn't re-populate from a stale selection.
@@ -132,9 +143,11 @@ function NewBroadcastPageInner() {
         message_1: message1,
         message_2: showMsg2 && message2 ? message2 : null,
         message_3: showMsg3 && message3 ? message3 : null,
-        delay_between_hours: delayHours,
+        delay_between_hours: encodeDelay(delayMode, delayValue),
         conversation_routing: conversationRouting,
         message_prior_only: conversationRouting === "branch" && messagePriorOnly.trim() ? messagePriorOnly.trim() : null,
+        message_prior_only_2: conversationRouting === "branch" && showPrior2 && messagePriorOnly2.trim() ? messagePriorOnly2.trim() : null,
+        message_prior_only_3: conversationRouting === "branch" && showPrior2 && showPrior3 && messagePriorOnly3.trim() ? messagePriorOnly3.trim() : null,
       },
       {
         onSuccess: (bc) => {
@@ -321,16 +334,33 @@ function NewBroadcastPageInner() {
             ))}
 
             {(showMsg2 || showMsg3) && (
-              <div className="space-y-2 max-w-xs">
-                <Label htmlFor="delay">Delay between messages (hours)</Label>
-                <Input
-                  id="delay"
-                  type="number"
-                  min={1}
-                  max={720}
-                  value={delayHours}
-                  onChange={(e) => setDelayHours(parseInt(e.target.value) || 24)}
-                />
+              <div className="space-y-2">
+                <Label>Delay between messages</Label>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {(["none", "minutes", "hours"] as const).map((m) => (
+                    <button key={m} type="button" onClick={() => {
+                      setDelayMode(m);
+                      if (m === "minutes" && delayValue === 0) setDelayValue(30);
+                      if (m === "hours" && delayValue === 0) setDelayValue(24);
+                    }}
+                      className={`rounded border px-2.5 py-1 text-sm transition-colors capitalize ${delayMode === m ? "border-primary bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:border-muted-foreground/40"}`}>
+                      {m}
+                    </button>
+                  ))}
+                  {delayMode !== "none" && (
+                    <Input
+                      type="number"
+                      min={1}
+                      max={delayMode === "minutes" ? 1440 : 720}
+                      value={delayValue}
+                      onChange={(e) => setDelayValue(parseInt(e.target.value) || 1)}
+                      className="w-24"
+                    />
+                  )}
+                  {delayMode === "none" && (
+                    <span className="text-sm text-muted-foreground">Messages send back-to-back (~5 s apart)</span>
+                  )}
+                </div>
               </div>
             )}
 
@@ -381,7 +411,7 @@ function NewBroadcastPageInner() {
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="msg-prior">Message for &quot;sent, no reply&quot; leads</Label>
+                    <Label htmlFor="msg-prior">Prior-branch message 1 (&quot;sent, no reply&quot; leads)</Label>
                     <MessageTemplateEditor
                       id="msg-prior"
                       value={messagePriorOnly}
@@ -394,6 +424,38 @@ function NewBroadcastPageInner() {
                       Leave blank to skip these leads instead of sending an alternative message.
                     </p>
                   </div>
+
+                  {showPrior2 ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label>Prior-branch message 2</Label>
+                        <button type="button" onClick={() => { setShowPrior2(false); setShowPrior3(false); setMessagePriorOnly2(""); setMessagePriorOnly3(""); }} className="text-xs text-muted-foreground hover:text-foreground">remove</button>
+                      </div>
+                      <MessageTemplateEditor value={messagePriorOnly2} onChange={setMessagePriorOnly2} placeholder={"Optional follow-up for prior-branch leads…"} showCharLimit minHeight={80} />
+                    </div>
+                  ) : (
+                    messagePriorOnly.trim() && (
+                      <Button type="button" variant="outline" size="sm" onClick={() => setShowPrior2(true)}>
+                        + Add prior-branch msg 2
+                      </Button>
+                    )
+                  )}
+
+                  {showPrior2 && (showPrior3 ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label>Prior-branch message 3</Label>
+                        <button type="button" onClick={() => { setShowPrior3(false); setMessagePriorOnly3(""); }} className="text-xs text-muted-foreground hover:text-foreground">remove</button>
+                      </div>
+                      <MessageTemplateEditor value={messagePriorOnly3} onChange={setMessagePriorOnly3} placeholder={"Optional third follow-up for prior-branch leads…"} showCharLimit minHeight={80} />
+                    </div>
+                  ) : (
+                    messagePriorOnly2.trim() && (
+                      <Button type="button" variant="outline" size="sm" onClick={() => setShowPrior3(true)}>
+                        + Add prior-branch msg 3
+                      </Button>
+                    )
+                  ))}
                 </div>
               )}
             </div>

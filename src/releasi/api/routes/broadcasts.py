@@ -149,6 +149,8 @@ async def create_broadcast(body: BroadcastCreate, repo: Repository = Depends(get
         weekend_enabled=body.weekend_enabled,
         conversation_routing=body.conversation_routing,
         message_prior_only=body.message_prior_only,
+        message_prior_only_2=body.message_prior_only_2,
+        message_prior_only_3=body.message_prior_only_3,
     )
 
     # Snapshot leads into broadcast_leads NOW so total_leads is accurate

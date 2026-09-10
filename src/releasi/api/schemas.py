@@ -188,11 +188,14 @@ class BroadcastOut(BaseModel):
     message_1: Optional[str] = None
     message_2: Optional[str] = None
     message_3: Optional[str] = None
-    delay_between_hours: int
+    # 0 = no delay (5 s in backend); positive float = hours (fractional → minutes).
+    delay_between_hours: float
     weekend_enabled: bool = False
     # "skip" = existing behaviour; "branch" = route on conversation history.
     conversation_routing: str = "skip"
     message_prior_only: Optional[str] = None
+    message_prior_only_2: Optional[str] = None
+    message_prior_only_3: Optional[str] = None
     total_leads: int
     archived: bool = False
     paused_at: Optional[datetime] = None
@@ -224,12 +227,15 @@ class BroadcastCreate(BaseModel):
     message_1: str
     message_2: Optional[str] = None
     message_3: Optional[str] = None
-    delay_between_hours: int = 24
+    # 0 = no delay (5 s in backend); positive float = hours (fractional for minutes).
+    delay_between_hours: float = 24
     weekend_enabled: bool = False
     # Conversation routing: "skip" (default) or "branch".
     conversation_routing: str = "skip"
-    # Message sent in branch mode when a prior outgoing-only conversation exists.
+    # Messages sent in branch mode when a prior outgoing-only conversation exists.
     message_prior_only: Optional[str] = None
+    message_prior_only_2: Optional[str] = None
+    message_prior_only_3: Optional[str] = None
     source_list_id: Optional[str] = None
     source_list_ids: Optional[List[str]] = None
     lead_ids: Optional[List[str]] = None
@@ -240,10 +246,12 @@ class BroadcastUpdate(BaseModel):
     message_1: Optional[str] = None
     message_2: Optional[str] = None
     message_3: Optional[str] = None
-    delay_between_hours: Optional[int] = None
+    delay_between_hours: Optional[float] = None
     weekend_enabled: Optional[bool] = None
     conversation_routing: Optional[str] = None
     message_prior_only: Optional[str] = None
+    message_prior_only_2: Optional[str] = None
+    message_prior_only_3: Optional[str] = None
 
 
 class BroadcastAddLeadsRequest(BaseModel):

@@ -38,6 +38,8 @@ class ActionResult:
     status: ActionStatus
     reason: Optional[str] = None
     details: dict = field(default_factory=dict)
+    # True when branch-mode routing swapped in message_prior_only for a sent_only lead.
+    prior_branch_used: bool = False
 
 
 @dataclass
@@ -1053,6 +1055,7 @@ class LinkedInActions:
         #   "has_reply"→ they replied → return SKIPPED("existing_conversation_replied")
         #                 so the executor can mark manual_outreach.
         # Detection fails open: unknown/error → treat as "fresh" and send.
+        _prior_branch_used = False
         if not skip_prior_conversation_check:
             try:
                 conv_state = await self.page.evaluate("""
@@ -1091,6 +1094,7 @@ class LinkedInActions:
                             if message_prior_only:
                                 # Swap in the warm message and continue to the send step.
                                 message = message_prior_only
+                                _prior_branch_used = True
                                 logger.info(
                                     "action.message_routing_prior_only",
                                     url=profile_url,
@@ -1257,7 +1261,7 @@ class LinkedInActions:
             input_cleared=input_cleared,
             bubble_found=bubble_found,
         )
-        return ActionResult(ActionStatus.SUCCESS)
+        return ActionResult(ActionStatus.SUCCESS, prior_branch_used=_prior_branch_used)
 
     async def check_connection_status(self, profile_url: str) -> str:
         """

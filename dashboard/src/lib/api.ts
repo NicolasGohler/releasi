@@ -646,6 +646,8 @@ export const createBroadcast = (data: {
   weekend_enabled?: boolean;
   conversation_routing?: string;
   message_prior_only?: string | null;
+  message_prior_only_2?: string | null;
+  message_prior_only_3?: string | null;
   source_list_id?: string | null;
   source_list_ids?: string[] | null;
   lead_ids?: string[] | null;
@@ -664,6 +666,8 @@ export const updateBroadcast = (id: string, data: Partial<{
   weekend_enabled: boolean;
   conversation_routing: string;
   message_prior_only: string | null;
+  message_prior_only_2: string | null;
+  message_prior_only_3: string | null;
 }>) =>
   apiFetch<import("./types").Broadcast>(`/broadcasts/${id}`, {
     method: "PATCH",

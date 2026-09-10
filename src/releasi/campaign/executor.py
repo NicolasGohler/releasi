@@ -562,7 +562,16 @@ class CampaignExecutor:
         last_index = broadcast_lead.last_message_index or 0
         next_index = last_index + 1
 
-        messages = [broadcast.message_1, broadcast.message_2, broadcast.message_3]
+        # Select the right message pool: prior-branch leads use the prior_only
+        # sequence for all their messages; main-branch leads use message_1/2/3.
+        if broadcast_lead.is_prior_branch:
+            messages = [
+                broadcast.message_prior_only,
+                broadcast.message_prior_only_2,
+                broadcast.message_prior_only_3,
+            ]
+        else:
+            messages = [broadcast.message_1, broadcast.message_2, broadcast.message_3]
         available_messages = [m for m in messages if m]
 
         if next_index > len(available_messages):
@@ -645,7 +654,16 @@ class CampaignExecutor:
                 new_status = "sequence_complete" if is_last else "sent"
                 if not is_last:
                     from datetime import timedelta as _td
-                    next_at = now + _td(hours=broadcast.delay_between_hours)
+                    delay_h = broadcast.delay_between_hours
+                    if delay_h == 0:
+                        delay_secs = 5
+                    else:
+                        delay_secs = delay_h * 3600
+                    next_at = now + _td(seconds=delay_secs)
+
+                # Mark is_prior_branch on the lead row when branch routing swapped
+                # in message_prior_only — subsequent messages must also follow that pool.
+                is_prior = broadcast_lead.is_prior_branch or action_result.prior_branch_used
 
                 await self.repo.update_broadcast_lead(
                     broadcast_lead,
@@ -654,6 +672,7 @@ class CampaignExecutor:
                     last_message_index=next_index,
                     next_message_at=next_at,
                     error_message=None,
+                    is_prior_branch=is_prior,
                 )
                 await self.repo.log_action(
                     account_id=account.id,
