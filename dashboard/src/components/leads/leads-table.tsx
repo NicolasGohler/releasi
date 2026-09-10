@@ -53,7 +53,7 @@ interface LeadsTableProps {
   campaignName?: string;
 }
 
-type SortKey = "name" | "company" | "status" | "requested_at" | "created_at";
+type SortKey = "name" | "company" | "status" | "last_activity_at" | "created_at";
 
 const ALL_ACTIVE = "__all_active__";
 
@@ -201,8 +201,8 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
   const [statusFilter, setStatusFilter] = useState<string>(ALL_ACTIVE);
   const [listFilter, setListFilter] = useState<string>("");
   const [skipReasonFilter, setSkipReasonFilter] = useState<string>("");
-  const [requestedAfter, setRequestedAfter] = useState<string>("");
-  const [requestedBefore, setRequestedBefore] = useState<string>("");
+  const [lastActivityAfter, setLastActivityAfter] = useState<string>("");
+  const [lastActivityBefore, setLastActivityBefore] = useState<string>("");
   const [sortBy, setSortBy] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -226,8 +226,8 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
     leadListId: listFilter || undefined,
     sortBy: sortBy ?? undefined,
     sortDir,
-    requestedAfter: requestedAfter || undefined,
-    requestedBefore: requestedBefore || undefined,
+    lastActivityAfter: lastActivityAfter || undefined,
+    lastActivityBefore: lastActivityBefore || undefined,
     skipReason: skipReasonFilter || undefined,
   });
 
@@ -243,11 +243,11 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
 
   function resetFilters() {
     setSearch(""); setStatusFilter(ALL_ACTIVE); setListFilter(""); setSkipReasonFilter("");
-    setRequestedAfter(""); setRequestedBefore(""); setSortBy(null); setSortDir("asc"); setPage(1);
+    setLastActivityAfter(""); setLastActivityBefore(""); setSortBy(null); setSortDir("asc"); setPage(1);
     setSelected(new Set());
   }
 
-  const hasActiveFilters = search || statusFilter !== ALL_ACTIVE || listFilter || skipReasonFilter || requestedAfter || requestedBefore || sortBy;
+  const hasActiveFilters = search || statusFilter !== ALL_ACTIVE || listFilter || skipReasonFilter || lastActivityAfter || lastActivityBefore || sortBy;
 
   function toggleSelect(id: string) {
     setSelected((prev) => {
@@ -332,18 +332,18 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
         <div className="flex items-center gap-1">
           <Input
             type="date"
-            value={requestedAfter}
-            onChange={(e) => { setRequestedAfter(e.target.value); setPage(1); }}
+            value={lastActivityAfter}
+            onChange={(e) => { setLastActivityAfter(e.target.value); setPage(1); }}
             className="h-9 w-36 text-sm"
-            title="Requested after"
+            title="Last activity after"
           />
           <span className="text-muted-foreground text-xs">–</span>
           <Input
             type="date"
-            value={requestedBefore}
-            onChange={(e) => { setRequestedBefore(e.target.value); setPage(1); }}
+            value={lastActivityBefore}
+            onChange={(e) => { setLastActivityBefore(e.target.value); setPage(1); }}
             className="h-9 w-36 text-sm"
-            title="Requested before"
+            title="Last activity before"
           />
         </div>
         {hasActiveFilters && (
@@ -432,8 +432,8 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
               <TableHead className="cursor-pointer select-none" onClick={() => toggleSort("status")}>
                 Status <SortIcon col="status" sortBy={sortBy} sortDir={sortDir} />
               </TableHead>
-              <TableHead className="cursor-pointer select-none" onClick={() => toggleSort("requested_at")}>
-                Requested <SortIcon col="requested_at" sortBy={sortBy} sortDir={sortDir} />
+              <TableHead className="cursor-pointer select-none" onClick={() => toggleSort("last_activity_at")}>
+                Last Activity <SortIcon col="last_activity_at" sortBy={sortBy} sortDir={sortDir} />
               </TableHead>
               <TableHead className="w-8 text-center" title="Follow-up sent">
                 <MessageSquare className="h-3.5 w-3.5 mx-auto text-muted-foreground" />
@@ -460,8 +460,8 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
             ) : null}
 
             {data?.items.map((lead) => {
-              const requestedAt = lead.connection_requested_at
-                ? relativeDate(lead.connection_requested_at, timezone)
+              const lastActivityAt = lead.last_activity_at
+                ? relativeDate(lead.last_activity_at, timezone)
                 : null;
               const isSelected = selected.has(lead.id);
 
@@ -530,13 +530,13 @@ export function LeadsTable({ campaignId, timezone, assignedLists, campaignName }
                     )}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                    {requestedAt ? (
+                    {lastActivityAt ? (
                       <TooltipProvider delayDuration={200}>
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <span className="cursor-default">{requestedAt.label}</span>
+                            <span className="cursor-default">{lastActivityAt.label}</span>
                           </TooltipTrigger>
-                          <TooltipContent side="top" className="text-xs">{requestedAt.title}</TooltipContent>
+                          <TooltipContent side="top" className="text-xs">{lastActivityAt.title}</TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
                     ) : "—"}

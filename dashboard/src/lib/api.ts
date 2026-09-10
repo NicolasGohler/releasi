@@ -204,7 +204,7 @@ export const fetchLeads = (
     page?: number; per_page?: number; status?: string; search?: string;
     excludeRemoved?: boolean; leadListId?: string;
     sortBy?: string; sortDir?: "asc" | "desc";
-    requestedAfter?: string; requestedBefore?: string;
+    lastActivityAfter?: string; lastActivityBefore?: string;
     skipReason?: string;
   }
 ) => {
@@ -217,8 +217,8 @@ export const fetchLeads = (
   if (params?.leadListId) sp.set("lead_list_id", params.leadListId);
   if (params?.sortBy) sp.set("sort_by", params.sortBy);
   if (params?.sortDir) sp.set("sort_dir", params.sortDir);
-  if (params?.requestedAfter) sp.set("requested_after", params.requestedAfter);
-  if (params?.requestedBefore) sp.set("requested_before", params.requestedBefore);
+  if (params?.lastActivityAfter) sp.set("last_activity_after", params.lastActivityAfter);
+  if (params?.lastActivityBefore) sp.set("last_activity_before", params.lastActivityBefore);
   if (params?.skipReason) sp.set("skip_reason", params.skipReason);
   const qs = sp.toString();
   return apiFetch<LeadPage>(`/campaigns/${campaignId}/leads${qs ? `?${qs}` : ""}`);
@@ -363,7 +363,7 @@ export const fetchGlobalLeads = (params?: {
   // status accepts a comma-separated list of status values for multi-select filtering.
   status?: string; search?: string;
   sort_by?: string; sort_dir?: "asc" | "desc";
-  requested_after?: string; requested_before?: string;
+  last_activity_after?: string; last_activity_before?: string;
   skip_reason?: string;
   has_telegram?: boolean;
   has_twitter?: boolean;
@@ -388,8 +388,8 @@ export const fetchGlobalLeads = (params?: {
   if (params?.search) sp.set("search", params.search);
   if (params?.sort_by) sp.set("sort_by", params.sort_by);
   if (params?.sort_dir) sp.set("sort_dir", params.sort_dir);
-  if (params?.requested_after) sp.set("requested_after", params.requested_after);
-  if (params?.requested_before) sp.set("requested_before", params.requested_before);
+  if (params?.last_activity_after) sp.set("last_activity_after", params.last_activity_after);
+  if (params?.last_activity_before) sp.set("last_activity_before", params.last_activity_before);
   if (params?.skip_reason) sp.set("skip_reason", params.skip_reason);
   if (params?.has_telegram !== undefined) sp.set("has_telegram", String(params.has_telegram));
   if (params?.has_twitter !== undefined) sp.set("has_twitter", String(params.has_twitter));

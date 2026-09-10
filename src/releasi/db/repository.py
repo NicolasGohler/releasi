@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional, Sequence
 
-from sqlalchemy import case, select, func, update, or_, not_, exists, and_
+from sqlalchemy import case, select, func, update, or_, not_, exists, and_, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from releasi.db.models import (
@@ -15,12 +15,38 @@ from releasi.db.models import (
     DailyStat,
     LeadList, CampaignLeadList,
     LeadListMembership, CampaignLeadAssignment,
-    LeadEvent,
+    LeadEvent, LeadNote,
     ScraperCookie,
     SessionEvent,
     User,
     Broadcast, BroadcastLead, BroadcastStatus,
 )
+
+
+def _last_activity_subquery():
+    """Per-lead most-recent-activity timestamp across events, notes, and action log.
+
+    Built as a UNION of individual timestamped rows (rather than a
+    multi-argument MAX across three columns) so NULLs on any one side don't
+    contaminate the result — SQLite's scalar max(a, b, c) returns NULL if
+    any argument is NULL, but the aggregate MAX() used here over unioned
+    rows correctly ignores leads with no rows in a given table.
+    """
+    events_ts = select(LeadEvent.lead_id.label("lead_id"), LeadEvent.created_at.label("ts"))
+    notes_ts = select(LeadNote.lead_id.label("lead_id"), LeadNote.created_at.label("ts"))
+    actionlog_ts = (
+        select(ActionLog.lead_id.label("lead_id"), ActionLog.created_at.label("ts"))
+        .where(ActionLog.lead_id.isnot(None))
+    )
+    union_sq = union_all(events_ts, notes_ts, actionlog_ts).subquery()
+    return (
+        select(
+            union_sq.c.lead_id.label("lead_id"),
+            func.max(union_sq.c.ts).label("last_activity_at"),
+        )
+        .group_by(union_sq.c.lead_id)
+        .subquery()
+    )
 
 
 # Phase 1 of the lead-centric refactor: every Lead mutation also writes
@@ -1148,13 +1174,23 @@ class Repository:
         lead_list_id: str | None = None,
         sort_by: str | None = None,
         sort_dir: str = "asc",
-        requested_after: str | None = None,
-        requested_before: str | None = None,
+        last_activity_after: str | None = None,
+        last_activity_before: str | None = None,
         skip_reason: str | None = None,
     ) -> tuple:
         """Return (leads, total_count) with pagination, optional status filter and search."""
-        stmt = select(Lead).where(Lead.campaign_id == campaign_id)
-        count_stmt = select(func.count()).select_from(Lead).where(Lead.campaign_id == campaign_id)
+        last_activity_sq = _last_activity_subquery()
+        stmt = (
+            select(Lead)
+            .outerjoin(last_activity_sq, last_activity_sq.c.lead_id == Lead.id)
+            .where(Lead.campaign_id == campaign_id)
+        )
+        count_stmt = (
+            select(func.count())
+            .select_from(Lead)
+            .outerjoin(last_activity_sq, last_activity_sq.c.lead_id == Lead.id)
+            .where(Lead.campaign_id == campaign_id)
+        )
 
         if status_filter:
             stmt = stmt.where(Lead.status == status_filter)
@@ -1181,12 +1217,12 @@ class Repository:
             stmt = stmt.where(search_filter)
             count_stmt = count_stmt.where(search_filter)
 
-        if requested_after:
-            stmt = stmt.where(Lead.connection_requested_at >= requested_after)
-            count_stmt = count_stmt.where(Lead.connection_requested_at >= requested_after)
-        if requested_before:
-            stmt = stmt.where(Lead.connection_requested_at <= requested_before)
-            count_stmt = count_stmt.where(Lead.connection_requested_at <= requested_before)
+        if last_activity_after:
+            stmt = stmt.where(last_activity_sq.c.last_activity_at >= last_activity_after)
+            count_stmt = count_stmt.where(last_activity_sq.c.last_activity_at >= last_activity_after)
+        if last_activity_before:
+            stmt = stmt.where(last_activity_sq.c.last_activity_at <= last_activity_before)
+            count_stmt = count_stmt.where(last_activity_sq.c.last_activity_at <= last_activity_before)
 
         if skip_reason:
             stmt = stmt.where(Lead.error_message == skip_reason)
@@ -1198,14 +1234,23 @@ class Repository:
             "name": Lead.first_name,
             "company": Lead.company,
             "status": Lead.status,
-            "requested_at": Lead.connection_requested_at,
+            "last_activity_at": last_activity_sq.c.last_activity_at,
             "created_at": Lead.created_at,
         }
         col = _SORT_COLS.get(sort_by or "created_at", Lead.created_at)
         order_col = col.desc() if sort_dir == "desc" else col.asc()
-        stmt = stmt.order_by(order_col).offset((page - 1) * per_page).limit(per_page)
+        stmt = (
+            stmt.add_columns(last_activity_sq.c.last_activity_at)
+            .order_by(order_col)
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+        )
         result = await self.session.execute(stmt)
-        return result.scalars().all(), total
+        leads = []
+        for lead, last_activity_at in result.all():
+            lead.last_activity_at = last_activity_at
+            leads.append(lead)
+        return leads, total
 
     # ── Phase 2 read cutover: campaign-scoped lead listing via assignments ──
     # Same filters and sort options as `list_leads_paginated`, but the
@@ -1224,8 +1269,8 @@ class Repository:
         lead_list_id: str | None = None,
         sort_by: str | None = None,
         sort_dir: str = "asc",
-        requested_after: str | None = None,
-        requested_before: str | None = None,
+        last_activity_after: str | None = None,
+        last_activity_before: str | None = None,
         skip_reason: str | None = None,
     ) -> tuple:
         """Mirror of list_leads_paginated reading from CampaignLeadAssignment.
@@ -1246,6 +1291,7 @@ class Repository:
                 "status", "scheduled_at",
                 "connection_requested_at", "connection_accepted_at",
                 "followup_sent_at", "error_message", "retry_count",
+                "last_activity_at",
             )
 
             def __init__(self, **kwargs):
@@ -1257,6 +1303,7 @@ class Repository:
         # while assignments stores lower-case ("connection_requested").
         # We normalise inputs to lower-case for the assignment table.
 
+        last_activity_sq = _last_activity_subquery()
         stmt = (
             select(
                 CampaignLeadAssignment.id.label("assignment_id"),
@@ -1280,14 +1327,17 @@ class Repository:
                 Lead.campaign_id,
                 Lead.lead_list_id,
                 Lead.created_at,
+                last_activity_sq.c.last_activity_at,
             )
             .join(Lead, Lead.id == CampaignLeadAssignment.lead_id)
+            .outerjoin(last_activity_sq, last_activity_sq.c.lead_id == Lead.id)
             .where(CampaignLeadAssignment.campaign_id == campaign_id)
         )
         count_stmt = (
             select(func.count())
             .select_from(CampaignLeadAssignment)
             .join(Lead, Lead.id == CampaignLeadAssignment.lead_id)
+            .outerjoin(last_activity_sq, last_activity_sq.c.lead_id == Lead.id)
             .where(CampaignLeadAssignment.campaign_id == campaign_id)
         )
 
@@ -1319,19 +1369,19 @@ class Repository:
             stmt = stmt.where(search_filter)
             count_stmt = count_stmt.where(search_filter)
 
-        if requested_after:
+        if last_activity_after:
             stmt = stmt.where(
-                CampaignLeadAssignment.connection_requested_at >= requested_after
+                last_activity_sq.c.last_activity_at >= last_activity_after
             )
             count_stmt = count_stmt.where(
-                CampaignLeadAssignment.connection_requested_at >= requested_after
+                last_activity_sq.c.last_activity_at >= last_activity_after
             )
-        if requested_before:
+        if last_activity_before:
             stmt = stmt.where(
-                CampaignLeadAssignment.connection_requested_at <= requested_before
+                last_activity_sq.c.last_activity_at <= last_activity_before
             )
             count_stmt = count_stmt.where(
-                CampaignLeadAssignment.connection_requested_at <= requested_before
+                last_activity_sq.c.last_activity_at <= last_activity_before
             )
 
         if skip_reason:
@@ -1346,7 +1396,7 @@ class Repository:
             "name": Lead.first_name,
             "company": Lead.company,
             "status": CampaignLeadAssignment.status,
-            "requested_at": CampaignLeadAssignment.connection_requested_at,
+            "last_activity_at": last_activity_sq.c.last_activity_at,
             "created_at": Lead.created_at,
         }
         col = _SORT_COLS.get(sort_by or "created_at", Lead.created_at)
@@ -1380,6 +1430,7 @@ class Repository:
                 followup_sent_at=m["followup_sent_at"],
                 error_message=m["error_message"],
                 retry_count=m["retry_count"],
+                last_activity_at=m["last_activity_at"],
             ))
         return views, total
 
@@ -2098,8 +2149,8 @@ class Repository:
         search: str | None = None,
         sort_by: str | None = None,
         sort_dir: str = "desc",
-        requested_after: str | None = None,
-        requested_before: str | None = None,
+        last_activity_after: str | None = None,
+        last_activity_before: str | None = None,
         skip_reason: str | None = None,
         unassigned_campaign: bool = False,
         unassigned_list: bool = False,
@@ -2110,8 +2161,15 @@ class Repository:
         tg_contacted: Optional[bool] = None,
     ) -> tuple:
         """Return (leads, total_count) across all lists/campaigns."""
-        stmt = select(Lead)
-        count_stmt = select(func.count()).select_from(Lead)
+        last_activity_sq = _last_activity_subquery()
+        stmt = select(Lead).outerjoin(
+            last_activity_sq, last_activity_sq.c.lead_id == Lead.id
+        )
+        count_stmt = (
+            select(func.count())
+            .select_from(Lead)
+            .outerjoin(last_activity_sq, last_activity_sq.c.lead_id == Lead.id)
+        )
 
         list_ids = [s.strip() for s in lead_list_id.split(",") if s.strip()] if lead_list_id else []
 
@@ -2146,12 +2204,12 @@ class Repository:
             stmt = stmt.where(search_filter)
             count_stmt = count_stmt.where(search_filter)
 
-        if requested_after:
-            stmt = stmt.where(Lead.connection_requested_at >= requested_after)
-            count_stmt = count_stmt.where(Lead.connection_requested_at >= requested_after)
-        if requested_before:
-            stmt = stmt.where(Lead.connection_requested_at <= requested_before)
-            count_stmt = count_stmt.where(Lead.connection_requested_at <= requested_before)
+        if last_activity_after:
+            stmt = stmt.where(last_activity_sq.c.last_activity_at >= last_activity_after)
+            count_stmt = count_stmt.where(last_activity_sq.c.last_activity_at >= last_activity_after)
+        if last_activity_before:
+            stmt = stmt.where(last_activity_sq.c.last_activity_at <= last_activity_before)
+            count_stmt = count_stmt.where(last_activity_sq.c.last_activity_at <= last_activity_before)
 
         if skip_reason:
             stmt = stmt.where(Lead.error_message == skip_reason)
@@ -2216,14 +2274,23 @@ class Repository:
             "name": Lead.first_name,
             "company": Lead.company,
             "status": Lead.status,
-            "requested_at": Lead.connection_requested_at,
+            "last_activity_at": last_activity_sq.c.last_activity_at,
             "created_at": Lead.created_at,
         }
         col = _SORT_COLS.get(sort_by or "created_at", Lead.created_at)
         order_col = col.desc() if sort_dir == "desc" else col.asc()
-        stmt = stmt.order_by(order_col).offset((page - 1) * per_page).limit(per_page)
+        stmt = (
+            stmt.add_columns(last_activity_sq.c.last_activity_at)
+            .order_by(order_col)
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+        )
         result = await self.session.execute(stmt)
-        return result.scalars().all(), total
+        leads = []
+        for lead, last_activity_at in result.all():
+            lead.last_activity_at = last_activity_at
+            leads.append(lead)
+        return leads, total
 
     async def get_lead_list_stats(self, list_id: str) -> dict:
         """Return quality/coverage stats for all leads in a list."""
@@ -3170,6 +3237,18 @@ class Repository:
             .order_by(BroadcastLead.created_at.desc())
         )
         return result.scalars().all()
+
+    async def count_broadcast_sent_leads(self, broadcast_id: str) -> int:
+        """Count broadcast_leads that have had at least one message sent."""
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(BroadcastLead)
+            .where(
+                BroadcastLead.broadcast_id == broadcast_id,
+                BroadcastLead.status.in_(["sent", "sequence_complete", "manual_outreach"]),
+            )
+        )
+        return result.scalar_one() or 0
 
     async def mark_broadcast_completed_if_done(self, broadcast_id: str) -> bool:
         """Flip broadcast to COMPLETED when every lead has terminated.

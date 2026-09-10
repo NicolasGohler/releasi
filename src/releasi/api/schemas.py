@@ -326,6 +326,7 @@ class LeadOut(BaseModel):
     connection_requested_at: Optional[datetime] = None
     connection_accepted_at: Optional[datetime] = None
     followup_sent_at: Optional[datetime] = None
+    last_activity_at: Optional[datetime] = None
     error_message: Optional[str] = None
     retry_count: int
     scheduled_at: Optional[datetime] = None

@@ -32,7 +32,7 @@ import {
   ChevronUp, ChevronDown, ChevronsUpDown, X, Send, CheckCircle2,
 } from "lucide-react";
 
-type SortKey = "name" | "company" | "status" | "requested_at" | "created_at";
+type SortKey = "name" | "company" | "status" | "last_activity_at" | "created_at";
 
 const STATUS_LABELS: Record<string, string> = {
   connection_requested: "requested",
@@ -188,8 +188,8 @@ export default function GlobalLeadsPage() {
   const [listFilter, setListFilter] = useState<Set<string>>(new Set());
   const [campaignFilter, setCampaignFilter] = useState<string | undefined>();
   const [skipReasonFilter, setSkipReasonFilter] = useState<string>("");
-  const [requestedAfter, setRequestedAfter] = useState<string>("");
-  const [requestedBefore, setRequestedBefore] = useState<string>("");
+  const [lastActivityAfter, setLastActivityAfter] = useState<string>("");
+  const [lastActivityBefore, setLastActivityBefore] = useState<string>("");
   const [sortBy, setSortBy] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -231,8 +231,8 @@ export default function GlobalLeadsPage() {
     campaign_id: campaignFilter,
     sort_by: sortBy ?? undefined,
     sort_dir: sortDir,
-    requested_after: requestedAfter || undefined,
-    requested_before: requestedBefore || undefined,
+    last_activity_after: lastActivityAfter || undefined,
+    last_activity_before: lastActivityBefore || undefined,
     skip_reason: skipReasonFilter || undefined,
     has_telegram: hasTelegram,
     has_twitter: hasTwitter,
@@ -259,11 +259,11 @@ export default function GlobalLeadsPage() {
     setPage(1);
   }
 
-  const hasActiveFilters = Boolean(debouncedSearch) || !setsEqual(statusFilter, DEFAULT_STATUSES) || listFilter.size > 0 || campaignFilter || skipReasonFilter || requestedAfter || requestedBefore || sortBy || hasTelegram !== undefined || hasTwitter !== undefined || hasEmail !== undefined || tgContacted !== undefined;
+  const hasActiveFilters = Boolean(debouncedSearch) || !setsEqual(statusFilter, DEFAULT_STATUSES) || listFilter.size > 0 || campaignFilter || skipReasonFilter || lastActivityAfter || lastActivityBefore || sortBy || hasTelegram !== undefined || hasTwitter !== undefined || hasEmail !== undefined || tgContacted !== undefined;
 
   function resetFilters() {
     setSearch(""); setStatusFilter(new Set(DEFAULT_STATUSES)); setListFilter(new Set()); setCampaignFilter(undefined);
-    setSkipReasonFilter(""); setRequestedAfter(""); setRequestedBefore(""); setSortBy(null); setSortDir("desc"); setPage(1);
+    setSkipReasonFilter(""); setLastActivityAfter(""); setLastActivityBefore(""); setSortBy(null); setSortDir("desc"); setPage(1);
     setSelected(new Set());
     setHasTelegram(undefined); setHasTwitter(undefined); setHasEmail(undefined); setTgContacted(undefined);
   }
@@ -337,18 +337,18 @@ export default function GlobalLeadsPage() {
         <div className="flex items-center gap-1">
           <Input
             type="date"
-            value={requestedAfter}
-            onChange={(e) => { setRequestedAfter(e.target.value); setPage(1); }}
+            value={lastActivityAfter}
+            onChange={(e) => { setLastActivityAfter(e.target.value); setPage(1); }}
             className="h-9 w-36 text-sm"
-            title="Requested after"
+            title="Last activity after"
           />
           <span className="text-muted-foreground text-xs">–</span>
           <Input
             type="date"
-            value={requestedBefore}
-            onChange={(e) => { setRequestedBefore(e.target.value); setPage(1); }}
+            value={lastActivityBefore}
+            onChange={(e) => { setLastActivityBefore(e.target.value); setPage(1); }}
             className="h-9 w-36 text-sm"
-            title="Requested before"
+            title="Last activity before"
           />
         </div>
         {hasActiveFilters && (
@@ -451,15 +451,15 @@ export default function GlobalLeadsPage() {
                       <th className="pb-2 font-medium cursor-pointer select-none" onClick={() => toggleSort("status")}>
                         Status <SortIcon col="status" sortBy={sortBy} sortDir={sortDir} />
                       </th>
-                      <th className="pb-2 font-medium cursor-pointer select-none" onClick={() => toggleSort("requested_at")}>
-                        Requested <SortIcon col="requested_at" sortBy={sortBy} sortDir={sortDir} />
+                      <th className="pb-2 font-medium cursor-pointer select-none" onClick={() => toggleSort("last_activity_at")}>
+                        Last Activity <SortIcon col="last_activity_at" sortBy={sortBy} sortDir={sortDir} />
                       </th>
                       <th className="pb-2 font-medium text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {leadsData.items.map((lead) => {
-                      const requestedAt = lead.connection_requested_at ? relativeDate(lead.connection_requested_at) : null;
+                      const lastActivityAt = lead.last_activity_at ? relativeDate(lead.last_activity_at) : null;
                       const isSelected = selected.has(lead.id);
                       return (
                         <tr key={lead.id} className={`border-b last:border-0 ${isSelected ? "bg-muted/30" : ""}`}>
@@ -522,13 +522,13 @@ export default function GlobalLeadsPage() {
                             )}
                           </td>
                           <td className="py-2 text-muted-foreground text-xs whitespace-nowrap">
-                            {requestedAt ? (
+                            {lastActivityAt ? (
                               <TooltipProvider delayDuration={200}>
                                 <Tooltip>
                                   <TooltipTrigger asChild>
-                                    <span className="cursor-default">{requestedAt.label}</span>
+                                    <span className="cursor-default">{lastActivityAt.label}</span>
                                   </TooltipTrigger>
-                                  <TooltipContent side="top" className="text-xs">{requestedAt.title}</TooltipContent>
+                                  <TooltipContent side="top" className="text-xs">{lastActivityAt.title}</TooltipContent>
                                 </Tooltip>
                               </TooltipProvider>
                             ) : "—"}

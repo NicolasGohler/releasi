@@ -174,7 +174,7 @@ export function useLeads(
     page?: number; per_page?: number; status?: string; search?: string;
     excludeRemoved?: boolean; leadListId?: string;
     sortBy?: string; sortDir?: "asc" | "desc";
-    requestedAfter?: string; requestedBefore?: string;
+    lastActivityAfter?: string; lastActivityBefore?: string;
     skipReason?: string;
   }
 ) {
@@ -357,7 +357,7 @@ export function useGlobalLeads(params?: {
   lead_list_id?: string; campaign_id?: string;
   status?: string; search?: string;
   sort_by?: string; sort_dir?: "asc" | "desc";
-  requested_after?: string; requested_before?: string;
+  last_activity_after?: string; last_activity_before?: string;
   skip_reason?: string;
   has_telegram?: boolean;
   has_twitter?: boolean;

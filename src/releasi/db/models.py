@@ -248,6 +248,7 @@ class ActionLog(Base):
             "ix_actionlog_account_type_created",
             "account_id", "action_type", "created_at",
         ),
+        Index("ix_actionlog_lead_created", "lead_id", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
@@ -467,6 +468,9 @@ class Broadcast(Base):
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     # Mirrors Campaign.paused_at semantics for completeness / future work.
     paused_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # When set, the dispatcher auto-pauses this broadcast after this many
+    # successful sends and clears the field. Used for trial/test runs.
+    trial_sends_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, onupdate=_utcnow

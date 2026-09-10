@@ -233,6 +233,7 @@ export interface Lead {
   connection_requested_at: string | null;
   connection_accepted_at: string | null;
   followup_sent_at: string | null;
+  last_activity_at: string | null;
   error_message: string | null;
   retry_count: number;
   scheduled_at: string | null;
