@@ -46,10 +46,12 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
   const { id } = use(params);
   const router = useRouter();
   const { data: bc, isLoading } = useBroadcast(id);
+  const PAGE_SIZE = 50;
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
+  const [leadsOffset, setLeadsOffset] = useState(0);
   const { data: leadsPage } = useBroadcastLeads(id, {
-    limit: 50,
-    offset: 0,
+    limit: PAGE_SIZE,
+    offset: leadsOffset,
     status: statusFilter,
   });
 
@@ -277,9 +279,10 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
           return (
             <button
               key={s}
-              onClick={() =>
-                setStatusFilter(statusFilter === s ? undefined : s)
-              }
+              onClick={() => {
+                setStatusFilter(statusFilter === s ? undefined : s);
+                setLeadsOffset(0);
+              }}
               className={`rounded-md border px-3 py-2 text-left transition-colors ${
                 statusFilter === s
                   ? "border-foreground bg-muted"
@@ -495,9 +498,10 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
             </CardTitle>
             <Tabs
               value={statusFilter ?? "all"}
-              onValueChange={(v) =>
-                setStatusFilter(v === "all" ? undefined : v)
-              }
+              onValueChange={(v) => {
+                setStatusFilter(v === "all" ? undefined : v);
+                setLeadsOffset(0);
+              }}
             >
               <TabsList>
                 <TabsTrigger value="all">All</TabsTrigger>
@@ -575,10 +579,32 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
                   ))}
                 </tbody>
               </table>
-              {leadsPage.total > leadsPage.items.length && (
-                <p className="mt-3 text-xs text-muted-foreground text-center">
-                  Showing {leadsPage.items.length} of {leadsPage.total}. Pagination coming soon.
-                </p>
+              {leadsPage.total > PAGE_SIZE && (
+                <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+                  <span>
+                    {leadsOffset + 1}–{Math.min(leadsOffset + leadsPage.items.length, leadsPage.total)} of {leadsPage.total}
+                  </span>
+                  <div className="flex gap-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      disabled={leadsOffset === 0}
+                      onClick={() => setLeadsOffset(Math.max(0, leadsOffset - PAGE_SIZE))}
+                    >
+                      ← Prev
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      disabled={leadsOffset + PAGE_SIZE >= leadsPage.total}
+                      onClick={() => setLeadsOffset(leadsOffset + PAGE_SIZE)}
+                    >
+                      Next →
+                    </Button>
+                  </div>
+                </div>
               )}
             </div>
           )}
@@ -589,7 +615,7 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
       <div className="text-xs text-muted-foreground flex flex-wrap gap-x-6 gap-y-1">
         <span>Total leads: {total}</span>
         <span>Messages sent: {bc.messages_sent ?? 0}</span>
-        <span>Delay: {bc.delay_between_hours}h between messages</span>
+        <span>Delay: {bc.delay_between_hours === 0 ? "none (~5 s)" : bc.delay_between_hours < 1 ? `${Math.round(bc.delay_between_hours * 60)} min` : `${bc.delay_between_hours}h`} between messages</span>
         <span>Created: {new Date(bc.created_at.endsWith("Z") ? bc.created_at : bc.created_at + "Z").toLocaleDateString()}</span>
       </div>
     </div>
