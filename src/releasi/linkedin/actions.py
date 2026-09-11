@@ -1040,8 +1040,14 @@ class LinkedInActions:
         except Exception as e:
             return ActionResult(ActionStatus.ERROR, reason=f"compose_nav_failed: {e}")
 
-        # Wait for the messaging app to hydrate (it's a JS-heavy widget)
-        await self.delay.micro_delay(3.5, 5.0)
+        # Wait for the messaging app to hydrate. The compose page is a heavy
+        # JS SPA; networkidle is the most reliable signal that the form has
+        # rendered. Cap at 12 s — if it's still loading by then we let the
+        # element-wait timeout below handle it rather than aborting early.
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=12000)
+        except Exception:
+            pass  # timeout is fine — fall through to the element wait
 
         # ── 3a. Conversation history check ──
         # LinkedIn renders prior message bubbles in the thread area below the
@@ -1063,17 +1069,14 @@ class LinkedInActions:
     const items = document.querySelectorAll('.msg-s-event-listitem');
     if (items.length === 0) return 'fresh';
     for (const item of items) {
-        // Class-based: LinkedIn often adds a modifier such as --other for
-        // messages from the other person.
+        // Class-based: LinkedIn adds a BEM modifier (--other, -incoming, -received)
+        // to list items that are inbound messages from the other person.
+        // Note: do NOT use link-based detection (a[href*="/in/"]) — outgoing message
+        // bubbles also contain /in/ links (recipient hover-cards), causing false positives.
         for (const cls of item.classList) {
             if (cls.includes('--other') || cls.includes('-incoming') || cls.includes('-received')) {
                 return 'has_reply';
             }
-        }
-        // Link-based: received messages contain the sender's /in/ profile link;
-        // outgoing messages from the current user do not.
-        if (item.querySelector('a[href*="/in/"]')) {
-            return 'has_reply';
         }
     }
     return 'sent_only';
@@ -1123,8 +1126,44 @@ class LinkedInActions:
                 pass  # Fail open — don't block the send if the check errors
 
         # ── 3. Find message input ──
-        msg_input = await self._find_element(selectors.MESSAGE_INPUT, timeout_ms=8000)
+        # Increase timeout: the compose form can take several more seconds to
+        # fully render after networkidle fires, especially on slower proxy routes.
+        msg_input = await self._find_element(selectors.MESSAGE_INPUT, timeout_ms=15000)
         if not msg_input:
+            # JS broad fallback: any visible contenteditable textbox on the page
+            # (catches LinkedIn UI variants that dropped the msg-form__ class names).
+            try:
+                js_found = await self.page.evaluate("""() => {
+                    const candidates = document.querySelectorAll(
+                        '[contenteditable="true"][role="textbox"], [contenteditable="true"][aria-label]'
+                    );
+                    for (const el of candidates) {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) return true;
+                    }
+                    return false;
+                }""")
+                if js_found:
+                    msg_input = self.page.locator(
+                        '[contenteditable="true"][role="textbox"], [contenteditable="true"][aria-label]'
+                    ).first
+                    await msg_input.wait_for(state="visible", timeout=3000)
+            except Exception:
+                pass
+
+        if not msg_input:
+            # Log the current URL and title for selector debugging.
+            try:
+                page_url = self.page.url
+                page_title = await self.page.title()
+            except Exception:
+                page_url, page_title = "unknown", "unknown"
+            logger.warning(
+                "action.message_input_not_found",
+                url=profile_url,
+                page_url=page_url,
+                page_title=page_title,
+            )
             return ActionResult(ActionStatus.ERROR, reason="message_input_not_found")
 
         await msg_input.click()
