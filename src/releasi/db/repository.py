@@ -3239,13 +3239,18 @@ class Repository:
         return result.scalars().all()
 
     async def count_broadcast_sent_leads(self, broadcast_id: str) -> int:
-        """Count broadcast_leads that have had at least one message sent."""
+        """Count broadcast_leads that have had at least one message successfully sent.
+
+        Uses last_message_index IS NOT NULL as the signal — this survives status
+        resets (error→pending, manual_outreach→pending) that would otherwise make
+        the trial counter think these leads were never contacted.
+        """
         result = await self.session.execute(
             select(func.count())
             .select_from(BroadcastLead)
             .where(
                 BroadcastLead.broadcast_id == broadcast_id,
-                BroadcastLead.status.in_(["sent", "sequence_complete", "manual_outreach"]),
+                BroadcastLead.last_message_index.isnot(None),
             )
         )
         return result.scalar_one() or 0
