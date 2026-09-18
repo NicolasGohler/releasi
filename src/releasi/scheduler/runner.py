@@ -17,7 +17,7 @@ from releasi.config import get_settings
 from releasi.db.engine import init_db, get_session_factory, close_db
 from releasi.db.models import (
     Account, AccountStatus, Campaign, CampaignStatus,
-    Lead, LeadStatus, ActionType, ActionLogStatus,
+    Lead, LeadStatus, ActionType, ActionLogStatus, BroadcastStatus,
 )
 from releasi.db.repository import Repository
 from releasi.linkedin.pool import get_browser_pool, init_pool, shutdown_pool
@@ -1886,6 +1886,13 @@ async def dispatch_broadcasts():
                     # blasted at cap in one cycle.
                     per_cycle_target = min(random.randint(2, 5), remaining_cap)
 
+                    # Trial-sends baseline: count leads (not messages) contacted
+                    # before this cycle so we can auto-pause after trial_sends_limit leads.
+                    trial_prior_sent = 0
+                    trial_first_sends_this_cycle = 0
+                    if broadcast.trial_sends_limit is not None:
+                        trial_prior_sent = await repo.count_broadcast_sent_leads(broadcast.id)
+
                     pending = await repo.get_pending_broadcast_leads(
                         broadcast.id, limit=per_cycle_target * 2  # oversample for skips
                     )
@@ -1994,6 +2001,34 @@ async def dispatch_broadcasts():
                             if bc_result.get("message_index") == 1:
                                 remaining_cap -= 1
                             await repo.add_proxy_mb(account.id, 1.0)  # messaging page
+
+                            # Trial sends auto-pause: count leads (first messages only),
+                            # not individual messages. Pause when trial_sends_limit
+                            # leads have been contacted. Clears the limit so
+                            # re-activating runs the full list without the cap.
+                            if broadcast.trial_sends_limit is not None:
+                                if bc_result.get("message_index") == 1:
+                                    trial_first_sends_this_cycle += 1
+                                total_leads_contacted = trial_prior_sent + trial_first_sends_this_cycle
+                                if total_leads_contacted >= broadcast.trial_sends_limit:
+                                    await repo.update_broadcast(
+                                        broadcast,
+                                        status=BroadcastStatus.PAUSED,
+                                        trial_sends_limit=None,
+                                    )
+                                    await slack_notify(
+                                        f":test_tube: *Broadcast trial paused* — "
+                                        f"*{broadcast.name}* auto-paused after "
+                                        f"{total_leads_contacted} trial lead(s). "
+                                        f"Review the messages and re-activate when ready."
+                                    )
+                                    logger.info(
+                                        "broadcast_dispatch.trial_pause",
+                                        broadcast=broadcast.name,
+                                        leads_contacted=total_leads_contacted,
+                                    )
+                                    stop_account = True
+                                    break
 
                         # Small delay between sends (human-like)
                         await asyncio.sleep(random.uniform(3, 8))
@@ -2671,7 +2706,7 @@ async def start_scheduler():
                     f"{_DISPATCHER_SKIP_ALERT_THRESHOLD} consecutive ticks "
                     f"(~{_DISPATCHER_SKIP_ALERT_THRESHOLD * 5} min). "
                     f"A coroutine is holding the lock. Restart the container to recover: "
-                    f"`ssh root@REDACTED 'cd /root/linauto && bash scripts/deploy.sh'`"
+                    f"`ssh <server> 'cd /root/linauto && bash scripts/deploy.sh'`"
                 )
             )
 

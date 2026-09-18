@@ -2422,7 +2422,7 @@ def send_error_to_slack(error_message):
         print(f" Failed to send error notification: {str(e)}")
         return False
 
-RELEASI_BASE_URL    = _SETTINGS.get('releasi_base_url')    or os.getenv("RELEASI_BASE_URL")    or "http://REDACTED:8000/api/v1"
+RELEASI_BASE_URL    = _SETTINGS.get('releasi_base_url')    or os.getenv("RELEASI_BASE_URL")
 RELEASI_API_KEY     = _SETTINGS.get('releasi_api_key')     or os.getenv("RELEASI_API_KEY")     or os.getenv("LINAUTO_API_KEY")
 RELEASI_CAMPAIGN_ID = _SETTINGS.get('releasi_campaign_id') or os.getenv("RELEASI_CAMPAIGN_ID") or "24acf14e-82ce-4ccd-826b-95739145d762"
 

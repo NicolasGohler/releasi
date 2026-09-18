@@ -104,46 +104,29 @@ async def main(account_name: str, send: bool, url) -> None:
         page = await browser.new_page()
         page.on("request", lambda req: asyncio.ensure_future(capture_request(req)))
 
+        from releasi.linkedin.navigator import LinkedInNavigator as Navigator
+        nav = Navigator(page)
+
         print(f"[+] Navigating to profile: {profile_url}")
-        await page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(3)
+        nav_result = await nav.go_to_profile(profile_url)
+        if not nav_result.session_valid:
+            print("[ERROR] Session expired during navigation")
+            return
+        if not nav_result.success:
+            print(f"[ERROR] Navigation failed: {nav_result.error}")
+            return
+        print("[+] Profile rendered")
 
-        print("[+] Looking for Connect button...")
+        print("[+] Looking for Connect button (using _find_connect_button)...")
+        from releasi.linkedin.actions import LinkedInActions
+        actions_helper = LinkedInActions(page)
+        connect_btn = await actions_helper._find_connect_button(profile_url)
 
-        # Look for Connect button using the same multi-strategy as actions.py
-        connect_btn = None
-        selectors = [
-            'button:has-text("Connect")',
-            '[aria-label*="Connect"]',
-            'button[data-control-name*="connect"]',
-        ]
-        for sel in selectors:
-            try:
-                btn = page.locator(sel).first
-                if await btn.is_visible(timeout=3000):
-                    connect_btn = btn
-                    print(f"[+] Found Connect button via selector: {sel}")
-                    break
-            except Exception:
-                continue
-
+        if connect_btn == "already_connected":
+            print("[INFO] Profile shows 'Remove connection' — already connected, no Connect button")
+            return
         if not connect_btn:
-            # Try More dropdown
-            print("[~] Connect not visible directly, trying More dropdown...")
-            try:
-                more_btn = page.locator('button:has-text("More")').first
-                if await more_btn.is_visible(timeout=3000):
-                    await more_btn.click()
-                    await asyncio.sleep(1)
-                    connect_btn = page.locator('[role="menuitem"]:has-text("Connect")').first
-                    if not await connect_btn.is_visible(timeout=2000):
-                        connect_btn = None
-                        print("[-] Connect not in More dropdown")
-            except Exception as e:
-                print(f"[-] More dropdown failed: {e}")
-
-        if not connect_btn:
-            print("[ERROR] Could not find Connect button — profile may already be connected")
+            print("[ERROR] Could not find Connect button")
             print("[INFO] Taking screenshot...")
             await page.screenshot(path="/tmp/diag_connect_intercept.png")
             print("[INFO] Screenshot saved to /tmp/diag_connect_intercept.png")

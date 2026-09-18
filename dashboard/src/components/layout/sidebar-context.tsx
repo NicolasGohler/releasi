@@ -20,8 +20,8 @@ export function SidebarProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 768px)");
-    setIsOpen(mq.matches);
-    const handler = (e: MediaQueryListEvent) => setIsOpen(e.matches);
+    // Collapsed by default on all screen sizes; auto-close on mobile resize
+    const handler = (e: MediaQueryListEvent) => { if (!e.matches) setIsOpen(false); };
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
   }, []);

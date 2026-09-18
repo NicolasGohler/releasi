@@ -12,7 +12,7 @@ import {
 // carries no authority (the signed cookie is the only thing the middleware
 // trusts).
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://REDACTED:8000";
+const BACKEND_URL = process.env.BACKEND_URL || "";
 const BACKEND_API_KEY = process.env.BACKEND_API_KEY || "";
 
 interface BackendUser {

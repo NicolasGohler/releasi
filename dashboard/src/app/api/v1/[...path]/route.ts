@@ -9,7 +9,7 @@ import { COOKIE_NAME, verifySessionToken } from "@/lib/session";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://REDACTED:8000";
+const BACKEND_URL = process.env.BACKEND_URL || "";
 const BACKEND_API_KEY = process.env.BACKEND_API_KEY || "";
 const DASHBOARD_SECRET = process.env.DASHBOARD_SECRET || "";
 

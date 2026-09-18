@@ -119,7 +119,7 @@ class Settings(BaseSettings):
     log_file: str = "data/logs/releasi.log"
 
     # Slack notifications
-    slack_bot_token: str = "xoxb-5736340339410-9698047778609-dqUa7c0cxcQyM7zdz2bcUPnm"
+    slack_bot_token: str = ""
     slack_user_id: str = "U08RKK348P4"
 
     # API

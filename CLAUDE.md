@@ -1,12 +1,12 @@
 # Releasi — LinkedIn Automation Tool
 
 ## Server
-- **IP**: REDACTED
-- **SSH**: `ssh root@REDACTED`
+- **IP**: <your-server-ip>
+- **SSH**: `ssh root@<your-server-ip>`
 - **Docker container**: `releasi`
 - **Live DB**: `/app/data/releasi.db` inside container
 - **Query DB**: `docker exec releasi python3 -c "import sqlite3; ..."` (no sqlite3 binary in container)
-- **Claude can always SSH and restart the server autonomously** — no need to ask for permission. If diagnosing an issue requires a restart (stuck pool, hung process, post-deploy), just do it: `ssh root@REDACTED 'docker restart releasi'`
+- **Claude can always SSH and restart the server autonomously** — no need to ask for permission. If diagnosing an issue requires a restart (stuck pool, hung process, post-deploy), just do it: `ssh root@<your-server-ip> 'docker restart releasi'`
 
 ## Critical Rules (AI assistant must follow)
 - **Never activate or resume a campaign** unless the user explicitly asks. Campaigns may be paused intentionally. Activating them uninvited can fire connection requests the user hasn't approved.
@@ -17,11 +17,11 @@
 `src/` is volume-mounted from `/root/linauto/src` — but **Python caches imported modules in `sys.modules`**. A `git pull` updates files on disk but the running process keeps old code. **Always restart the container after pulling**:
 
 ```bash
-ssh root@REDACTED
+ssh root@<your-server-ip>
 cd /root/linauto && git pull && docker restart releasi
 ```
 
-Or use the deploy script: `ssh root@REDACTED 'cd /root/linauto && bash scripts/deploy.sh'`
+Or use the deploy script: `ssh root@<your-server-ip> 'cd /root/linauto && bash scripts/deploy.sh'`
 
 The deploy script automatically pauses active accounts before the restart and resumes exactly those accounts after the container is healthy. This prevents missed dispatches mid-deploy.
 
@@ -30,7 +30,7 @@ Only rebuild the image when changing **dependencies** (`pyproject.toml`) or **`c
 **Secrets are stored in `/root/linauto/.env`** (not inline in the command — keeps them out of `ps aux`). Create/update it once:
 ```bash
 cat > /root/linauto/.env << 'EOF'
-RELEASI_API_KEY=REDACTED
+RELEASI_API_KEY=<your-api-key>
 RELEASI_TELEGRAM_API_ID=<api_id>
 RELEASI_TELEGRAM_API_HASH=<api_hash>
 RELEASI_TELEGRAM_SESSION=<telethon_string_session>
@@ -66,10 +66,10 @@ The dashboard (`dashboard/`) is deployed on Vercel and **is git-connected** — 
 
 ## Dashboard → API security model
 
-The dashboard (Vercel, Next.js) and backend API (FastAPI on `REDACTED:8000`) are gated as follows. **Do not regress any of this.**
+The dashboard (Vercel, Next.js) and backend API (FastAPI on `<your-server-ip>:8000`) are gated as follows. **Do not regress any of this.**
 
 1. **Server-side key injection.** The dashboard never ships the API key to the browser. Browser calls go to same-origin `/api/v1/*`, which is handled by the Next.js route at `dashboard/src/app/api/v1/[...path]/route.ts`. That route forwards to `BACKEND_URL`, injects `Authorization: Bearer ${BACKEND_API_KEY}` server-side, and streams request/response bodies (CSV upload + export both depend on this).
-   - **Vercel env vars**: `BACKEND_URL` (e.g. `http://REDACTED:8000`) and `BACKEND_API_KEY` (matches `RELEASI_API_KEY` on the server). Both are **server-only** — do NOT prefix with `NEXT_PUBLIC_`.
+   - **Vercel env vars**: `BACKEND_URL` (e.g. `http://<your-server-ip>:8000`) and `BACKEND_API_KEY` (matches `RELEASI_API_KEY` on the server). Both are **server-only** — do NOT prefix with `NEXT_PUBLIC_`.
    - **Never add `NEXT_PUBLIC_API_KEY`** back to `dashboard/.env*` or `lib/api.ts`. That was the old model and leaked the key to every visitor.
    - **Never add a `/api/v1/:path*` rewrite back to `next.config.ts`**. Rewrites bypass the route handler, so the key injection would be skipped.
 
@@ -83,7 +83,7 @@ The dashboard (Vercel, Next.js) and backend API (FastAPI on `REDACTED:8000`) are
 
 6. **User-identity forwarding for attribution.** The Next proxy verifies the signed session cookie **server-side** and forwards the resolved user id to the backend as `X-Releasi-User-Id` (it strips any inbound copy first, so the browser can't spoof it). The backend `get_current_user_id` dependency (`api/deps.py`) reads that header; API-key-only callers and the scheduler don't set it → `None` → attributed to "System". This is how manual actions get stamped — see "Manual-Action Attribution" below. Do **not** trust a client-supplied `X-Releasi-User-Id`.
 
-7. **Adding a new API call in `lib/api.ts`**: use the existing `apiFetch` helper or fetch to `/api/v1/...` (same-origin). Never build absolute URLs to `REDACTED:8000` — that bypasses the proxy and would require re-exposing the key.
+7. **Adding a new API call in `lib/api.ts`**: use the existing `apiFetch` helper or fetch to `/api/v1/...` (same-origin). Never build absolute URLs to `<your-server-ip>:8000` — that bypasses the proxy and would require re-exposing the key.
 
 ## Testing & Diagnostics on LinkedIn (CRITICAL)
 
@@ -454,7 +454,7 @@ A manual withdrawal panel lives in the account Settings tab. It lets you:
 - **Weekly offsite backup to Google Drive**: pass `--offsite` flag → `rclone copyto` uploads to `gdrive:releasi-backups/`. Cron on server: `0 3 * * 6` (Saturday 03:00 UTC).
 - rclone config lives at `/root/linauto/.config/rclone/rclone.conf` (server only, not in repo). Remote is named `gdrive`.
 
-To run a one-off offsite backup: `ssh root@REDACTED 'bash /root/linauto/scripts/backup_db.sh --offsite'`
+To run a one-off offsite backup: `ssh root@<your-server-ip> 'bash /root/linauto/scripts/backup_db.sh --offsite'`
 
 
 ## Fundraising Agent
