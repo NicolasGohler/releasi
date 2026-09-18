@@ -1,7 +1,7 @@
 #!/bin/bash
 # Deploy code changes to the releasi server.
-# Usage: ssh root@REDACTED 'bash -s' < scripts/deploy.sh
-#    or: ssh root@REDACTED 'cd /root/linauto && bash scripts/deploy.sh'
+# Usage: ssh root@<server-ip> 'bash -s' < scripts/deploy.sh
+#    or: ssh root@<server-ip> 'cd /root/linauto && bash scripts/deploy.sh'
 
 set -e
 

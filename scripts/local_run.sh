@@ -14,14 +14,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SERVER="root@REDACTED"
-REMOTE_DB="/root/releasi/data/releasi.db"
+SERVER="root@${RELEASI_SERVER:?Set RELEASI_SERVER to your server hostname/IP}"
+REMOTE_DB="/root/linauto/data/releasi.db"
 LOCAL_DB="data/releasi.db"
-REMOTE_BROWSER_DATA="/root/releasi/data/browser_data"
+REMOTE_BROWSER_DATA="/root/linauto/data/browser_data"
 LOCAL_BROWSER_DATA="data/browser_data"
 PID_FILE=".local_run.pid"
 CONTAINER="releasi"
-ACCOUNT_ID="REDACTED"  # Nicolas Goehler
+ACCOUNT_ID="${RELEASI_ACCOUNT_ID:?Set RELEASI_ACCOUNT_ID to your account UUID}"
 PROXY_COUNTRY="ca"  # Restore this after local run
 
 sync_from_server() {
@@ -106,7 +106,7 @@ print('  proxy_country restored to $PROXY_COUNTRY')
         -v /root/releasi/src:/app/src \
         -p 8000:8000 -p 6080:6080 \
         -e RELEASI_API_ENABLED=true \
-        -e RELEASI_API_KEY=REDACTED \
+        -e RELEASI_API_KEY="${RELEASI_API_KEY:?Set RELEASI_API_KEY}" \
         -e 'RELEASI_CORS_ORIGINS=[\"*\"]' \
         -e RELEASI_LOG_LEVEL=INFO -e TZ=Europe/Berlin \
         --memory=3g --cpus=1.5 \
