@@ -263,6 +263,13 @@ class CampaignExecutor:
                     # Leave the lead in its current status so the dispatcher
                     # can reset SCHEDULED → PENDING for re-planning after
                     # cookie renewal (same as the 3-strike path already does).
+                elif reason == "no_connect_button":
+                    # Navigation succeeded (session valid) but no Connect button
+                    # was found in the DOM — transient page-load / LinkedIn
+                    # rate-limit issue, not a session failure. Don't burn the
+                    # lead (keep it SCHEDULED for retry) and don't count toward
+                    # the 3-strike session counter that triggers COOKIE_EXPIRED.
+                    result["network_error"] = True
                 else:
                     validate_transition(lead.status, LeadStatus.ERROR)
                     await self.repo.update_lead(

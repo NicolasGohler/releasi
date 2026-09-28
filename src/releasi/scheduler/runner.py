@@ -187,8 +187,10 @@ def _acct_local_now(account):
 import re as _re
 
 
-def _normalize_li_url(url: str) -> str:
+def _normalize_li_url(url: Optional[str]) -> str:
     """Extract '/in/slug' from any LinkedIn profile URL variant for comparison."""
+    if not url:
+        return ""
     m = _re.search(r'/in/([^/?#\s]+)', url)
     if m:
         return f"/in/{m.group(1).rstrip('/')}"
