@@ -247,10 +247,24 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
         _scrape_jobs[list_id] = {"status": "done", "collected": len(items), "enriched": len(enrichment)}
         logger.info("event_scrape.done", list_id=list_id, total=len(items), enriched=len(enrichment))
 
+        from releasi.notifications.slack import notify as _slack_notify
+        ll_final = await repo.get_lead_list(list_id)
+        list_name = ll_final.name if ll_final else list_id
+        await _slack_notify(
+            f":white_check_mark: *Event scrape done* — *{list_name}*\n"
+            f"{len(items)} profiles collected, {len(enrichment)} Apollo-enriched."
+        )
+
     except Exception as e:
         logger.error("event_scrape.failed", list_id=list_id, error=str(e))
         prev = _scrape_jobs.get(list_id, {})
         _scrape_jobs[list_id] = {"status": "error", "collected": prev.get("collected", 0), "error": str(e)}
+
+        from releasi.notifications.slack import notify as _slack_notify
+        try:
+            await _slack_notify(f":x: *Event scrape failed* — list `{list_id}`\nError: {str(e)[:200]}")
+        except Exception:
+            pass
     finally:
         await browser.close()
         await session.close()

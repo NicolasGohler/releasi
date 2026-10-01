@@ -280,8 +280,11 @@ async def scrape_event_attendees(
             # Extra breather after recycle so the new context fully initialises
             await asyncio.sleep(random.uniform(3.0, 5.0))
 
-        # Adaptive inter-page delay: wider range after redirect-loop detection
-        delay = random.uniform(5.0, 9.0) if slow_mode else random.uniform(2.0, 4.0)
+        # Adaptive inter-page delay: wider range after redirect-loop detection.
+        # Search results are rate-limited more aggressively than profile pages —
+        # keep base delay high enough that LinkedIn doesn't invalidate the session
+        # mid-scrape. A 1K-attendee event is ~100 pages and can run for hours.
+        delay = random.uniform(10.0, 18.0) if slow_mode else random.uniform(6.0, 12.0)
         await asyncio.sleep(delay)
         page_num += 1
 
