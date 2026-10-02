@@ -515,9 +515,16 @@ async def start_login_session(
         raise HTTPException(status_code=404, detail="Account not found")
 
     from releasi.linkedin.login_session import LoginSessionManager
+    from releasi.api.routes.scrapers import ScraperSessionManager
     manager = LoginSessionManager.get_instance()
 
-    # Auto-cleanup any stale session before starting a new one
+    # If a scraper VNC session is active it owns port 6080 — clean it up first
+    # so the login browser gets a clean websockify on that port.
+    scraper_mgr = ScraperSessionManager.get_instance()
+    if scraper_mgr.is_active:
+        await scraper_mgr._cleanup()
+
+    # Auto-cleanup any stale login session before starting a new one
     if manager.is_active:
         await manager._cleanup()
 
