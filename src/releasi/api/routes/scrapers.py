@@ -46,6 +46,10 @@ SCRAPER_SITES = {
         "start_url": "https://www.rootdata.com/",
         "domain": "rootdata.com",
     },
+    "frontrun": {
+        "start_url": "https://frontrun.vc",
+        "domain": "frontrun.vc",
+    },
 }
 
 

@@ -12,11 +12,13 @@ import type { ScraperStatus, TgSweepStatus, TgSweepResult } from "@/lib/types";
 const SITE_LABELS: Record<string, string> = {
   cryptorank: "CryptoRank",
   rootdata: "RootData",
+  frontrun: "Frontrun",
 };
 
 const SITE_DESCRIPTIONS: Record<string, string> = {
   cryptorank: "Crypto fundraising rounds from cryptorank.io",
   rootdata: "Web3 project data from rootdata.com",
+  frontrun: "VC signal feed from frontrun.vc",
 };
 
 function cookieAge(status: ScraperStatus): {

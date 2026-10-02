@@ -620,11 +620,216 @@ def get_projects_from_defillama(context, protocols_lookup: dict):
     return projects
 
 
+# Sectors on Frontrun that are relevant to Web3/crypto outreach.
+# Case-insensitive substring match against the sector tag on each card.
+_FRONTRUN_CRYPTO_SECTORS = {
+    'defi', 'crypto', 'web3', 'blockchain', 'nft', 'l1', 'l2', 'dao',
+    'gamefi', 'gaming', 'rwa', 'stablecoin', 'trading', 'prediction',
+    'infrastructure', 'payments', 'exchange', 'wallet', 'oracle',
+}
+
+
+def get_projects_from_frontrun(context):
+    """Fetch trending crypto projects from the Frontrun VC signal feed.
+
+    Navigates to the logged-in feed (requires saved session cookies), selects
+    the broadest time window available (30D > This Month > This Week), and
+    extracts company cards filtered to Web3/crypto-relevant sectors.
+
+    Returns projects with a Twitter handle pre-populated so the rest of the
+    pipeline can do protocols-list + Apollo enrichment (same flow as DefiLlama
+    no-website projects).
+    """
+    print(f"\n{'='*60}")
+    print(f" SOURCE 4: Fetching projects from Frontrun")
+    print(f"{'='*60}")
+
+    frontrun_cookies = _load_frontrun_cookies()
+    if not frontrun_cookies:
+        print(" ⚠ No Frontrun cookies found — skipping (refresh via /scrapers dashboard)")
+        return []
+
+    page = _new_stealth_page(context)
+
+    try:
+        context.add_cookies(frontrun_cookies)
+        print(" ℹ Frontrun cookies loaded")
+    except Exception as e:
+        print(f" Could not inject Frontrun cookies: {e}")
+        page.close()
+        return []
+
+    try:
+        print(" Loading page...")
+        for attempt in range(3):
+            try:
+                page.goto("https://frontrun.vc", wait_until="domcontentloaded", timeout=30000)
+                print(" Page loaded successfully")
+                break
+            except Exception as e:
+                if attempt < 2:
+                    wait_time = (attempt + 1) * 5
+                    print(f" Attempt {attempt + 1} failed: {e}")
+                    print(f" Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    print(f" All 3 attempts failed: {e}")
+                    page.close()
+                    return []
+
+        _sleep(3)
+
+        # Check if we landed on a login/marketing page (not authenticated)
+        current_url = page.url
+        page_text = page.inner_text("body")[:500]
+        if "sign in" in page_text.lower() or "get deal flow" in page_text.lower():
+            print(" ⚠ Not logged in — Frontrun cookies expired or invalid")
+            print(" To fix: refresh login via /scrapers dashboard")
+            page.close()
+            return []
+
+        # Try to select the longest available time window (30D > This Month > This Week)
+        time_tab_selected = None
+        for label in ["30D", "This Month", "30 days", "This Week"]:
+            try:
+                btn = page.locator(f"button:has-text('{label}'), [role='tab']:has-text('{label}')")
+                if btn.count() > 0:
+                    btn.first.click()
+                    _sleep(1.5)
+                    time_tab_selected = label
+                    print(f" ℹ Selected time window: {label}")
+                    break
+            except Exception:
+                continue
+        if not time_tab_selected:
+            print(" ℹ No time-window tab found — using default feed view")
+
+        _sleep(2)
+
+        # Scroll to load more cards (feed is virtualised)
+        for _ in range(5):
+            page.keyboard.press("End")
+            _sleep(1)
+
+        # Extract all company cards via JS — robust against Tailwind class changes
+        raw_cards = page.evaluate("""() => {
+            const results = [];
+            // Find all @handle spans — they anchor each card
+            const handleSpans = [...document.querySelectorAll('span')]
+                .filter(el => el.textContent.trim().startsWith('@') && el.textContent.trim().length < 40);
+            for (const span of handleSpans) {
+                // Walk up to find the card container
+                let container = span;
+                for (let i = 0; i < 8; i++) {
+                    container = container.parentElement;
+                    if (!container) break;
+                    const r = container.getBoundingClientRect();
+                    if (r.width > 300 && r.height > 40) break;
+                }
+                if (!container) continue;
+
+                const handle = span.textContent.trim();
+
+                // Name: sibling font-semibold span
+                const nameEl = container.querySelector('span[class*="font-semibold"]')
+                    || container.querySelector('span[class*="font--semibold"]');
+                const name = nameEl ? nameEl.textContent.trim() : null;
+
+                // Sector: small text span (not the handle)
+                const sectorEl = [...container.querySelectorAll('span')]
+                    .find(el => el.textContent.trim().length > 1
+                        && el.textContent.trim().length < 40
+                        && !el.textContent.trim().startsWith('@')
+                        && el !== nameEl
+                        && (el.className.includes('text-[11px]') || el.className.includes('text-xs'))
+                        && !el.textContent.includes('follow'));
+                const sector = sectorEl ? sectorEl.textContent.trim() : null;
+
+                // Description
+                const descEl = container.querySelector('p');
+                const description = descEl ? descEl.textContent.trim() : null;
+
+                // New follows count
+                const followsEl = [...container.querySelectorAll('span')]
+                    .find(el => /\\d+\\s*(new\\s*)?follow/i.test(el.textContent));
+                const follows = followsEl ? followsEl.textContent.trim() : null;
+
+                if (name && handle && name !== 'frontrun') {
+                    results.push({name, handle, sector, description, follows});
+                }
+            }
+            return results;
+        }""")
+
+        print(f" Found {len(raw_cards)} company cards")
+
+        projects = []
+        seen_names = set()
+        skipped_sector = 0
+
+        for card in raw_cards:
+            name = (card.get('name') or '').strip()
+            handle = (card.get('handle') or '').strip().lstrip('@')
+            sector = (card.get('sector') or '').strip()
+            description = (card.get('description') or '').strip()
+
+            if not name or not handle or name.lower() in seen_names:
+                continue
+
+            # Filter to crypto-relevant sectors
+            sector_lower = sector.lower()
+            is_crypto = any(kw in sector_lower for kw in _FRONTRUN_CRYPTO_SECTORS)
+            if sector and not is_crypto:
+                skipped_sector += 1
+                continue
+
+            seen_names.add(name.lower())
+            twitter_url = f"https://x.com/{handle}" if handle else None
+
+            projects.append({
+                'name': name,
+                'url': f"https://x.com/{handle}",
+                'source': 'frontrun_feed',
+                'source_url': 'https://frontrun.vc',
+                'source_type': 'vc_signal_feed',
+                'twitter': twitter_url,
+                'website': None,
+                'stage': None,
+                'amount': None,
+                'category': sector or None,
+                'description': description or None,
+                'lead_investors': [],
+                'other_investors': [],
+                'chains': [],
+            })
+
+            if len(projects) >= MAX_PROJECTS:
+                print(f"  Collected {MAX_PROJECTS} projects, stopping")
+                break
+
+        if skipped_sector:
+            print(f" ℹ Skipped {skipped_sector} non-crypto sector cards (AI, Robotics, etc.)")
+
+        print(f"\n{'='*60}")
+        print(f" Total Frontrun projects found: {len(projects)}")
+        print(f"{'='*60}\n")
+
+    except Exception as e:
+        print(f" Frontrun scraping failed: {e}")
+        import traceback
+        traceback.print_exc()
+        projects = []
+
+    page.close()
+    return projects
+
+
 def get_all_projects(context, protocols_lookup: dict):
     """Fetch and merge projects from all sources using the shared browser context."""
     cryptorank_projects = get_projects_from_cryptorank(context)
     rootdata_projects = get_projects_from_rootdata(context)
     defillama_projects = get_projects_from_defillama(context, protocols_lookup)
+    frontrun_projects = get_projects_from_frontrun(context)
 
     # Merge projects, avoiding duplicates by name (case-insensitive)
     all_projects = []
@@ -633,7 +838,7 @@ def get_all_projects(context, protocols_lookup: dict):
     extra_fields = ('website', 'twitter', 'amount', 'category', 'description',
                     'lead_investors', 'other_investors', 'chains')
 
-    for project in cryptorank_projects + rootdata_projects + defillama_projects:
+    for project in cryptorank_projects + rootdata_projects + defillama_projects + frontrun_projects:
         clean_name = re.sub(r'\n.*', '', project['name']).strip()
         clean_name = re.sub(r'\$.*', '', clean_name).strip()
         name_key = clean_name.lower()
@@ -666,6 +871,7 @@ def get_all_projects(context, protocols_lookup: dict):
     print(f" CryptoRank: {len(cryptorank_projects)} projects")
     print(f" RootData: {len(rootdata_projects)} projects")
     print(f" DefiLlama: {len(defillama_projects)} projects")
+    print(f" Frontrun: {len(frontrun_projects)} projects")
     print(f" Total unique: {len(all_projects)} projects")
     print(f"{'='*60}\n")
 
@@ -1774,6 +1980,24 @@ def _load_rootdata_cookies():
         print(f"  Could not decode ROOTDATA_COOKIES: {e}")
         return None
 
+
+def _load_frontrun_cookies():
+    """Load Frontrun cookies from the scraper_cookies DB table.
+
+    Returns a list of cookie dicts ready to pass to context.add_cookies().
+    """
+    try:
+        conn = sqlite3.connect(f"file:{LINAUTO_DB}?mode=ro", uri=True)
+        row = conn.execute(
+            "SELECT cookies_json FROM scraper_cookies WHERE site = 'frontrun' LIMIT 1"
+        ).fetchone()
+        conn.close()
+        if row:
+            return json.loads(row[0])
+    except Exception as e:
+        print(f"  ⚠ Could not load Frontrun cookies from DB: {e}", flush=True)
+    return None
+
 def fetch_team_members(project_url):
     """Standalone team-page scraper (kept for direct / fallback use).
 
@@ -2187,6 +2411,10 @@ def gather_all():
                         website_info = None
                 else:
                     website_info = None
+                team = []
+            elif project['source'] == 'frontrun_feed':
+                print(" ℹ Frontrun project — website via protocols lookup or Apollo")
+                website_info = None
                 team = []
             else:
                 print(" ℹ RootData project - skipping team page, will use Apollo")
@@ -2769,11 +2997,13 @@ if __name__ == "__main__":
                 apollo_count = sum(1 for p in people if 'apollo_api' in p.get('source', ''))
                 rootdata_count = sum(1 for p in people if 'rootdata' in p.get('source', ''))
                 defillama_count = sum(1 for p in people if 'defillama' in p.get('project_source_url', ''))
+                frontrun_count = sum(1 for p in people if 'frontrun' in p.get('project_source_url', ''))
                 project_only_count = sum(1 for p in people if p.get('source') == 'project_only')
                 combined_count = sum(1 for p in people if '+' in p.get('source', ''))
                 print(f" From CryptoRank Team Pages: {cryptorank_team_count}")
                 print(f" From RootData: {rootdata_count}")
                 print(f" From DefiLlama: {defillama_count}")
+                print(f" From Frontrun: {frontrun_count}")
                 print(f" From Apollo API: {apollo_count}")
                 print(f" Combined Sources: {combined_count}")
                 print(f" Project Data Only: {project_only_count}")
