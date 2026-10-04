@@ -120,6 +120,7 @@ class CampaignExecutor:
 
             # Execute
             action_result = await actions.send_connection_request(lead.linkedin_url, message, filters=filters)
+            result["error"] = action_result.reason
 
             if action_result.status == ActionStatus.SUCCESS:
                 try:
@@ -161,6 +162,8 @@ class CampaignExecutor:
 
             elif action_result.status in (ActionStatus.CAPTCHA, ActionStatus.SESSION_EXPIRED):
                 result["fatal"] = True
+                result["session_expired"] = action_result.status == ActionStatus.SESSION_EXPIRED
+                result["captcha"] = action_result.status == ActionStatus.CAPTCHA
                 await self.repo.log_action(
                     account_id=account.id,
                     campaign_id=campaign.id,
@@ -253,25 +256,23 @@ class CampaignExecutor:
 
             else:  # ERROR
                 reason = action_result.reason or ""
-                # Priority chain: explicit session signal → mark fatal +
-                # session_expired and DON'T burn the lead to ERROR (the
-                # request never went through). Network signal → flag for
-                # dispatcher, mark ERROR. Else → mark ERROR normally.
-                if _is_session_expired_signal(reason):
-                    result["fatal"] = True
-                    result["session_expired"] = True
-                    # Leave the lead in its current status so the dispatcher
-                    # can reset SCHEDULED → PENDING for re-planning after
-                    # cookie renewal (same as the 3-strike path already does).
-                elif reason == "no_connect_button":
-                    # Navigation succeeded (session valid) but no Connect button
-                    # was found in the DOM — transient page-load / LinkedIn
-                    # rate-limit issue, not a session failure. Don't burn the
-                    # lead (keep it SCHEDULED for retry) and don't count toward
-                    # the 3-strike session counter that triggers COOKIE_EXPIRED.
+                # Only SESSION_EXPIRED above confirms auth loss. Error text
+                # (including redirect loops) is an inconclusive navigation hint.
+                if reason in ("no_connect_button", "profile_identity_unavailable", "profile_render_incomplete", "profile_error_page"):
+                    result["failure_kind"] = "profile_dom"
+                elif action_result.details.get("pre_send") and (
+                    _is_network_error(reason) or _is_session_expired_signal(reason)
+                ):
+                    # Action navigation failed before Connect/Send was reached.
                     result["network_error"] = True
                 else:
-                    validate_transition(lead.status, LeadStatus.ERROR)
+                    try:
+                        validate_transition(lead.status, LeadStatus.ERROR)
+                    except Exception:
+                        # The scheduler selected an eligible assignment; the
+                        # canonical lead can carry another campaign's status.
+                        logger.warning("executor.error_transition_stale_status", lead_id=lead.id,
+                                       lead_status=lead.status, target="ERROR")
                     await self.repo.update_lead(
                         lead,
                         campaign_id_override=campaign.id,
@@ -280,18 +281,17 @@ class CampaignExecutor:
                         error_message=reason,
                     )
                     await self.repo.increment_daily_stat(account.id, "errors")
-                    if _is_network_error(reason):
-                        result["network_error"] = True
+                    await self.repo.log_action(
+                        account_id=account.id, campaign_id=campaign.id, lead_id=lead.id,
+                        action_type=ActionType.CONNECTION_REQUEST, status=ActionLogStatus.FAILED,
+                        details={"reason": reason, "failure_kind": "action_error", "retryable": False},
+                    )
 
         except Exception as e:
             err_str = str(e)
+            result["error"] = err_str[:500]
             logger.error("executor.single_lead_failed", error=err_str)
-            # Priority chain mirrors the action-result branch above.
-            if _is_session_expired_signal(err_str):
-                # Don't burn the lead — message never went through.
-                result["fatal"] = True
-                result["session_expired"] = True
-            elif "Cannot transition" in err_str:
+            if "Cannot transition" in err_str:
                 # Lead/assignment desync: the assignment row said pending but the
                 # canonical lead row is already in a terminal state (e.g. error).
                 # This is a data integrity issue, not a session or network problem.
@@ -314,10 +314,15 @@ class CampaignExecutor:
                     )
                 except Exception:
                     pass  # Best-effort — don't mask the original error
-                if _is_network_error(err_str):
-                    result["network_error"] = True
-                else:
-                    result["fatal"] = True
+                await self.repo.increment_daily_stat(account.id, "errors")
+                await self.repo.log_action(
+                    account_id=account.id, campaign_id=campaign.id, lead_id=lead.id,
+                    action_type=ActionType.CONNECTION_REQUEST, status=ActionLogStatus.FAILED,
+                    details={"reason": err_str[:500], "failure_kind": "uncertain_outcome", "retryable": False},
+                )
+                # An exception can occur after Send. Never automatically retry
+                # an uncertain outcome, even when the exception is a timeout.
+                result["fatal"] = True
         finally:
             try:
                 await page.goto("about:blank", wait_until="domcontentloaded", timeout=2000)

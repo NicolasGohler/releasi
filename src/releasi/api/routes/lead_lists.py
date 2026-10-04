@@ -123,6 +123,7 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
     session = get_session_factory()()
     repo = _Repo(session)
     browser = LinkedInBrowser()
+    lease = None
 
     try:
         account = await repo.get_account(account_id)
@@ -130,6 +131,13 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
             _scrape_jobs[list_id] = {"status": "error", "collected": 0, "error": "Account not found"}
             return
 
+        from releasi.linkedin.pool import get_browser_pool
+        from releasi.scheduler.runner import _account_proxy_url
+        if not await _account_proxy_url(account):
+            raise RuntimeError("An account proxy is required for event scraping")
+        lease = await get_browser_pool().reserve_external(account.id)
+        # Login may have updated credentials while this scrape waited.
+        await session.refresh(account)
         await browser.launch(
             account_id=account.id,
             li_at_cookie=account.li_at_cookie,
@@ -137,6 +145,7 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
             proxy_url=account.proxy_url,
             proxy_country=account.proxy_country,
             timezone=account.timezone,
+            cookies_json=account.cookies_json,
         )
 
         valid = await browser.validate_session()
@@ -188,6 +197,11 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
             )
         finally:
             await page.close()
+        # Enrichment does not need LinkedIn. Stop network traffic and release
+        # account ownership rather than holding the browser through Apollo work.
+        await browser.close()
+        lease.release()
+        lease = None
 
         # Apollo enrichment — batches of 10, only if API key is configured
         apollo_key = _get_apollo_key()
@@ -266,8 +280,12 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
         except Exception:
             pass
     finally:
-        await browser.close()
-        await session.close()
+        try:
+            await browser.close()
+        finally:
+            if lease:
+                lease.release()
+            await session.close()
 
 
 async def _enrich_lead_list(repo: Repository, lead_list) -> LeadListOut:

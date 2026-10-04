@@ -90,10 +90,10 @@ class TestFollowupClassifier:
         assert intent.account_action == AccountAction.NONE
         assert intent.stop_account is False
 
-    def test_generic_failure_third_strike_marks_cookie_expired(self):
+    def test_generic_failure_third_strike_stops_without_claiming_expiry(self):
         intent = self._classify({}, session=2)
         assert intent.consecutive_session == 3
-        assert intent.account_action == AccountAction.MARK_COOKIE_EXPIRED
+        assert intent.account_action == AccountAction.NONE
         assert intent.stop_account is True
         assert intent.lead_action == LeadAction.MARK_ERROR  # the failing lead still burns
         assert "3 consecutive" in intent.slack_message
@@ -126,19 +126,29 @@ class TestConnectionClassifier:
         assert intent.lead_action == LeadAction.NONE
         assert intent.consecutive_session == 0
 
-    def test_session_expired_reverts_scheduled_to_pending(self):
+    def test_session_expired_preserves_scheduled_leads(self):
         intent = self._classify({"session_expired": True, "fatal": True})
         assert intent.account_action == AccountAction.MARK_COOKIE_EXPIRED
-        assert intent.reset_scheduled_to_pending is True
+        assert intent.reset_scheduled_to_pending is False
         assert intent.stop_account is True
-        assert "reverted to PENDING" in intent.slack_message
+        assert "preserved" in intent.slack_message
 
-    def test_third_strike_session_error_reverts_scheduled_to_pending(self):
+    def test_generic_errors_do_not_claim_cookie_expiry(self):
         """The 3-strike path should also revert scheduled leads, matching
         the historical behaviour of the connection dispatcher."""
         intent = self._classify({}, session=2)
-        assert intent.account_action == AccountAction.MARK_COOKIE_EXPIRED
-        assert intent.reset_scheduled_to_pending is True
+        assert intent.account_action == AccountAction.NONE
+        assert intent.reset_scheduled_to_pending is False
+        assert intent.stop_account
+        assert intent.account_backoff_seconds == 3600
+
+    def test_dom_failures_are_not_network_or_session_errors(self):
+        intent = self._classify({"failure_kind": "profile_dom", "error": "no_connect_button"}, session=2)
+        assert intent.account_action == AccountAction.NONE
+        assert intent.consecutive_network == 0
+        assert intent.retry_delay_seconds == 86400
+        assert intent.stop_account
+        assert intent.account_backoff_seconds == 3600
 
     def test_network_error_does_not_revert_scheduled(self):
         """Network failures aren't a cookie problem — don't reset leads."""
@@ -184,10 +194,10 @@ class TestCounterSequencing:
         assert intents[2].consecutive_session == 0
         assert sess == 0
 
-    def test_three_errors_in_a_row_triggers_cookie_expired(self):
+    def test_three_generic_errors_stop_without_cookie_expiry(self):
         intents, sess, net = self._run([{}, {}, {}])
         assert len(intents) == 3
-        assert intents[2].account_action == AccountAction.MARK_COOKIE_EXPIRED
+        assert intents[2].account_action == AccountAction.NONE
         assert intents[2].stop_account is True
 
     def test_mixed_network_and_session_errors_dont_double_count(self):

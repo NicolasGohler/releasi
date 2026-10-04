@@ -249,7 +249,7 @@ class LinkedInActions:
         # returning None on slower profile loads, which relaxed the sidebar
         # invite guard to fail-open. That risks reintroducing the d18f312 bug.
         try:
-            h1 = self.page.locator("main h1").first
+            h1 = self.page.locator(selectors.PROFILE_OWNER_HEADINGS).first
             await h1.wait_for(state="visible", timeout=5000)
             text = (await h1.inner_text(timeout=2000)).strip()
             if text:
@@ -259,7 +259,7 @@ class LinkedInActions:
         # Fallback: some LinkedIn layouts use a heading nested in a wrapper.
         try:
             text = await self.page.evaluate("""() => {
-                const h = document.querySelector('main h1, main [data-anonymize="person-name"]');
+                const h = document.querySelector('main h1, main h2, main [data-anonymize="person-name"]');
                 return h ? h.innerText.trim() : '';
             }""")
             return text or None
@@ -331,13 +331,34 @@ class LinkedInActions:
         vanity: Optional[str] = None,
     ) -> bool:
         """Fetch a candidate's aria-label and validate against the profile owner."""
-        if not owner_name and not vanity:
-            return True
         try:
+            from urllib.parse import urlparse, parse_qs, unquote
+            href = await candidate.get_attribute("href")
+            if href:
+                parsed = urlparse(href)
+                if "custom-invite" in parsed.path:
+                    target = parse_qs(parsed.query).get("vanityName", [None])[0]
+                    if target:
+                        return bool(vanity and unquote(target).casefold() == unquote(vanity).casefold())
+            if not owner_name:
+                return False
             aria = await candidate.get_attribute("aria-label")
         except Exception:
-            return True  # can't inspect — fail open
+            return False  # Invitation ownership must be known before clicking.
         return self._aria_label_matches_owner(aria, owner_name, vanity)
+
+    async def _find_primary_connect_button(self, profile_url: str):
+        """Read-only lookup; inspect every candidate rather than only the first."""
+        owner = await self._get_profile_owner_name()
+        vanity = self._vanity_name_from_url(profile_url)
+        for selector in selectors.CONNECT_BUTTON_PRIMARY:
+            candidates = self.page.locator(selector)
+            for index in range(await candidates.count()):
+                candidate = candidates.nth(index)
+                if await candidate.is_visible() and await self._candidate_matches_owner(candidate, owner, vanity):
+                    logger.info("action.connect_found", method="verified_primary", url=profile_url)
+                    return candidate
+        return None
 
     async def _find_connect_button(self, profile_url: str):
         """
@@ -364,9 +385,7 @@ class LinkedInActions:
         # here — sidebar "People you may know" Connect buttons share the same
         # aria-label pattern and would match instead of the profile's button.
         # Only use class-scoped CSS selectors that target the profile actions area.
-        connect_by_css = await self._find_element(
-            selectors.CONNECT_BUTTON_PRIMARY, timeout_ms=2000,
-        )
+        connect_by_css = await self._find_primary_connect_button(profile_url)
         if connect_by_css:
             if await self._candidate_matches_owner(connect_by_css, owner_name, vanity):
                 logger.info("action.connect_found", method="css_scoped", url=profile_url)
@@ -581,7 +600,9 @@ class LinkedInActions:
             if nav.error == "authwall_per_profile":
                 logger.info("action.authwall_per_profile", url=profile_url)
                 return ActionResult(ActionStatus.SKIPPED, reason="authwall_per_profile")
-            return ActionResult(ActionStatus.ERROR, reason=f"Navigation failed: {nav.error}")
+            return ActionResult(ActionStatus.ERROR,
+                                reason=nav.error if nav.error == "profile_render_incomplete" else f"Navigation failed: {nav.error}",
+                                details={"pre_send": True})
         if not nav.session_valid:
             return ActionResult(ActionStatus.SESSION_EXPIRED)
 

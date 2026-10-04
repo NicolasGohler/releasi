@@ -241,6 +241,11 @@ class LinkedInBrowser:
         """
         settings = get_settings()
 
+        if not proxy_url and proxy_country:
+            proxy_url = _build_proxy_url(account_id, proxy_country)
+        if not proxy_url:
+            raise RuntimeError("An account proxy is required; refusing to use the server IP")
+
         # Ensure browser data directory exists
         user_data_dir = Path("data/browser_data") / account_id
         user_data_dir.mkdir(parents=True, exist_ok=True)
@@ -439,13 +444,13 @@ class LinkedInBrowser:
         self._avatar_url: Optional[str] = None
         page = await self._context.new_page()
         try:
-            await page.goto(FEED_URL, wait_until="domcontentloaded", timeout=15000)
-            current_url = page.url
-
-            for pattern in LOGIN_URL_PATTERNS:
-                if pattern in current_url:
-                    logger.warning("session.expired", url=current_url)
-                    return False
+            from releasi.linkedin.navigator import LinkedInNavigator
+            navigation = await LinkedInNavigator(page).go_to_feed()
+            if not navigation.success:
+                raise RuntimeError("Session validation inconclusive: " + (navigation.error or "page not rendered"))
+            if not navigation.session_valid:
+                logger.warning("session.expired", url=page.url)
+                return False
 
             # Wait for page to fully render before scraping avatar
             try:
@@ -464,7 +469,7 @@ class LinkedInBrowser:
             return True
         except Exception as e:
             logger.error("session.validation_failed", error=str(e))
-            return False
+            raise
         finally:
             await page.close()
 

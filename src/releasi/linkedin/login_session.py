@@ -20,12 +20,48 @@ from typing import Optional
 import structlog
 from playwright.async_api import async_playwright, BrowserContext, Playwright
 
+from releasi.linkedin.pool import BrowserPool, ExternalBrowserLease, get_browser_pool
+
 logger = structlog.get_logger()
 
 DISPLAY = ":99"
 VNC_PORT = 5999
 NOVNC_PORT = 6080
 IDLE_TIMEOUT_SECONDS = 30 * 60  # 30 minutes
+
+
+def _replace_profile(source: Path, destination: Path) -> None:
+    """Stage a flushed profile before replacing the saved one, with rollback."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".login_profile_", dir=str(destination.parent)))
+    backup = staging / "previous"
+    staged_profile = staging / "profile"
+    try:
+        shutil.copytree(
+            str(source), str(staged_profile),
+            ignore=shutil.ignore_patterns("Singleton*", "tokens.cfg"),
+        )
+        # The copy is owned by the running user. Keep profile access private,
+        # even if a prior deployment left the destination owned by root.
+        staged_profile.chmod(0o700)
+        if destination.exists():
+            destination.rename(backup)
+        try:
+            staged_profile.rename(destination)
+        except BaseException:
+            if backup.exists():
+                backup.rename(destination)
+            raise
+    finally:
+        # On a rollback failure preserve the backup for recovery, rather than
+        # deleting the only remaining copy of the original saved profile.
+        if backup.exists() and not destination.exists():
+            logger.error("login_session.profile_rollback_failed", backup=str(backup))
+        else:
+            try:
+                shutil.rmtree(staging)
+            except OSError as exc:
+                logger.warning("login_session.profile_staging_cleanup_failed", error_type=type(exc).__name__)
 
 
 class LoginSessionManager:
@@ -41,6 +77,8 @@ class LoginSessionManager:
         self._temp_dir: Optional[str] = None
         self._token: Optional[str] = None
         self._idle_task: Optional[asyncio.Task] = None
+        self._lease: Optional[ExternalBrowserLease] = None
+        self._lifecycle_lock = asyncio.Lock()
 
     @classmethod
     def get_instance(cls) -> LoginSessionManager:
@@ -121,12 +159,41 @@ class LoginSessionManager:
         proxy_url: Optional[str] = None,
         li_at_cookie: Optional[str] = None,
         start_url: str = "https://www.linkedin.com/login",
+        browser_pool: Optional[BrowserPool] = None,
+    ) -> str:
+        """Reserve the account before opening a headed browser.
+
+        The manager owns the reservation until cleanup. The optional pool is
+        for API-only callers/tests; normally the shared singleton is used.
+        """
+        async with self._lifecycle_lock:
+            if self.is_active or self._lease is not None:
+                raise RuntimeError("A login session is already active; finish it first.")
+            try:
+                if browser_pool is None:
+                    try:
+                        browser_pool = get_browser_pool()
+                    except RuntimeError:
+                        pass  # No scheduler/pool in standalone API or CLI mode.
+                if browser_pool is not None:
+                    self._lease = await browser_pool.reserve_external(account_id)
+                return await self._start_session(account_id, proxy_url, li_at_cookie, start_url)
+            except BaseException:
+                await self._run_cleanup()
+                raise
+
+    async def _start_session(
+        self,
+        account_id: str,
+        proxy_url: Optional[str],
+        li_at_cookie: Optional[str],
+        start_url: str,
     ) -> str:
         """
         Start a noVNC browser session for the given account.
 
-        Uses a temporary profile directory so it doesn't conflict with the
-        automation browser that may be using the account's main profile.
+        Uses a temporary profile directory while holding exclusive ownership
+        of the account, with its automation browser closed.
         Uses the same deterministic User-Agent as the pool browser to
         maintain a consistent fingerprint.
 
@@ -275,7 +342,23 @@ class LoginSessionManager:
         encoded_path = f"websockify%3Ftoken%3D{self._token}"
         return f"/vnc.html?path={encoded_path}&autoconnect=true&resize=scale&quality=3&compression=9"
 
-    async def finish_session(self) -> dict:
+    async def finish_session(self, *, release_lease: bool = True) -> dict:
+        """Extract and save the profile, reporting whether persistence succeeded.
+
+        API routes can pass ``release_lease=False`` and call ``release_lease()``
+        in finally after saving credentials to the DB. This prevents automation
+        from relaunching with old credentials between profile and DB writes.
+        """
+        async with self._lifecycle_lock:
+            try:
+                result = await self._finish_session()
+            except BaseException:
+                await self._run_cleanup()
+                raise
+            await self._run_cleanup(release_lease=release_lease)
+            return result
+
+    async def _finish_session(self) -> dict:
         """
         Extract cookies from the browser, copy the full profile to the
         account's persistent browser_data directory, then clean up.
@@ -297,6 +380,8 @@ class LoginSessionManager:
             "cookies_json": None,
             "li_at_expires_at": None,  # ISO string (UTC) or None
             "account_id": self._account_id,
+            "profile_saved": False,
+            "profile_error": None,
         }
 
         try:
@@ -343,32 +428,50 @@ class LoginSessionManager:
         if self._temp_dir and self._account_id and result["li_at"]:
             try:
                 if self._context:
-                    try:
-                        await self._context.close()
-                    except Exception:
-                        pass
+                    await asyncio.wait_for(self._context.close(), timeout=5)
                     self._context = None
 
                 dest = Path("data/browser_data") / self._account_id
-                if dest.exists():
-                    shutil.rmtree(dest)
-                shutil.copytree(self._temp_dir, str(dest))
+                _replace_profile(Path(self._temp_dir), dest)
+                result["profile_saved"] = True
                 logger.info(
                     "login_session.profile_copied",
                     account_id=self._account_id,
                     dest=str(dest),
                 )
             except Exception as e:
-                logger.warning("login_session.profile_copy_failed", error=str(e))
-
-        await self._cleanup()
+                result["profile_error"] = "Browser profile could not be saved; the previous profile was retained."
+                logger.warning("login_session.profile_copy_failed", error_type=type(e).__name__)
 
         return result
 
-    async def _cleanup(self):
+    def release_lease(self) -> None:
+        """Release a deferred reservation after the browser and DB save finish."""
+        if self._context is not None or self._playwright is not None:
+            raise RuntimeError("Close the login browser before releasing its lease")
+        if self._lease is not None:
+            self._lease.release()
+            self._lease = None
+
+    async def _cleanup(self, *, release_lease: bool = True):
+        async with self._lifecycle_lock:
+            await self._run_cleanup(release_lease=release_lease)
+
+    async def _run_cleanup(self, *, release_lease: bool = True):
+        caller = asyncio.current_task()
+        cleanup = asyncio.create_task(self._cleanup_resources(caller, release_lease))
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await cleanup
+            # A cancelled finish cannot leave its deferred lease behind.
+            self.release_lease()
+            raise
+
+    async def _cleanup_resources(self, caller, release_lease: bool):
         """Stop all processes, close browser, remove temp directory, and cancel idle timer."""
         # Cancel the idle timeout task if it's still running
-        if self._idle_task and not self._idle_task.done():
+        if self._idle_task and self._idle_task is not caller and not self._idle_task.done():
             self._idle_task.cancel()
             try:
                 await self._idle_task
@@ -414,4 +517,6 @@ class LoginSessionManager:
 
         self._account_id = None
         self._token = None
+        if release_lease:
+            self.release_lease()
         logger.info("login_session.cleaned_up")

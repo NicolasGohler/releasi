@@ -75,7 +75,7 @@ John Doe,john@example.com,https://www.linkedin.com/in/johndoe
         os.unlink(path)
 
 
-def test_parse_skips_rows_without_url():
+def test_parse_keeps_named_rows_without_url():
     csv_content = """First Name,LinkedIn URL
 John,https://www.linkedin.com/in/johndoe
 Jane,
@@ -84,9 +84,11 @@ Bob,https://www.linkedin.com/in/bob
     path = _write_csv(csv_content)
     try:
         leads, result = parse_csv(path, "campaign-1")
-        assert result.imported == 2
-        assert result.no_url_skipped == 1
-        assert 3 in result.no_url_rows  # Row 3 (1-indexed from header)
+        assert result.imported == 3
+        assert result.no_url_imported == 1
+        assert result.no_url_skipped == 0
+        assert leads[1].first_name == "Jane"
+        assert leads[1].linkedin_url is None
     finally:
         os.unlink(path)
 
@@ -147,8 +149,9 @@ John,https://linkedin.com/in/john,Tech,Berlin
         leads, result = parse_csv(path, "campaign-1")
         assert result.imported == 1
         assert leads[0].extra_data["industry"] == "Tech"
-        assert leads[0].extra_data["location"] == "Berlin"
-        assert "industry" in result.extra_columns or "location" in result.extra_columns
+        assert leads[0].location == "Berlin"
+        assert "industry" in result.extra_columns
+        assert "location" not in result.extra_columns
     finally:
         os.unlink(path)
 
@@ -162,5 +165,51 @@ Alice,linkedin.com/in/alice
         leads, result = parse_csv(path, "campaign-1")
         assert result.imported == 1
         assert leads[0].linkedin_url == "https://www.linkedin.com/in/alice"
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.parametrize("headers,values", [
+    ("pid,nm,ti,co,em,li", "source-id,Jane Smith,Head of People,Acme,jane@example.com,https://linkedin.com/in/jane/?isSelfProfile=false"),
+    ("company,contact_name,contact_title,email,linkedin_url", "Acme,Jane Smith,Head of People,jane@example.com,https://linkedin.com/in/jane"),
+    ("companyname,person_name,person_title,person_email,linkedin_url", "Acme,Jane Smith,Head of People,jane@example.com,https://linkedin.com/in/jane"),
+])
+def test_parse_hiring_export_headers(headers, values):
+    path = _write_csv(headers + "\n" + values + "\n")
+    try:
+        leads, result = parse_csv(path, lead_list_id="list-1")
+        assert result.imported == 1
+        lead = leads[0]
+        assert (lead.first_name, lead.last_name) == ("Jane", "Smith")
+        assert (lead.company, lead.title, lead.email) == ("Acme", "Head of People", "jane@example.com")
+        assert lead.linkedin_url == "https://www.linkedin.com/in/jane"
+        if "pid" in headers:
+            assert lead.extra_data == {"pid": "source-id"}
+            assert lead.apollo_person_id is None
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.parametrize("headers,values", [
+    ("first_name,last_name,contact_name", "Mary Jane,Watson,Mary Watson"),
+    ("contact_name,first_name,last_name", "Mary Watson,Mary Jane,Watson"),
+])
+def test_explicit_names_win_over_full_name_in_either_order(headers, values):
+    path = _write_csv(headers + ",linkedin_url\n" + values + ",https://linkedin.com/in/mary\n")
+    try:
+        leads, _ = parse_csv(path, lead_list_id="list-1")
+        assert (leads[0].first_name, leads[0].last_name) == ("Mary Jane", "Watson")
+    finally:
+        os.unlink(path)
+
+
+def test_abbreviated_identity_without_url_is_retained():
+    path = _write_csv("nm,em,li\nJane Smith,jane@example.com,\n,,\n")
+    try:
+        leads, result = parse_csv(path, lead_list_id="list-1")
+        assert result.no_url_imported == 1
+        assert result.no_url_skipped == 1
+        assert result.no_url_rows == [3]
+        assert leads[0].first_name == "Jane"
     finally:
         os.unlink(path)

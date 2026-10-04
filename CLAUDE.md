@@ -1,12 +1,12 @@
 # Releasi — LinkedIn Automation Tool
 
 ## Server
-- **IP**: <your-server-ip>
-- **SSH**: `ssh root@<your-server-ip>`
+- **IP**: 89.167.80.102
+- **SSH**: `ssh root@89.167.80.102`
 - **Docker container**: `releasi`
 - **Live DB**: `/app/data/releasi.db` inside container
 - **Query DB**: `docker exec releasi python3 -c "import sqlite3; ..."` (no sqlite3 binary in container)
-- **Claude can always SSH and restart the server autonomously** — no need to ask for permission. If diagnosing an issue requires a restart (stuck pool, hung process, post-deploy), just do it: `ssh root@<your-server-ip> 'docker restart releasi'`
+- **Claude can always SSH and restart the server autonomously** — no need to ask for permission. If diagnosing an issue requires a restart (stuck pool, hung process, post-deploy), just do it: `ssh root@89.167.80.102 'docker restart releasi'`
 
 ## Critical Rules (AI assistant must follow)
 - **Never activate or resume a campaign** unless the user explicitly asks. Campaigns may be paused intentionally. Activating them uninvited can fire connection requests the user hasn't approved.

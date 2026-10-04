@@ -34,6 +34,7 @@ class AccountAction(str, Enum):
     """What the dispatcher should do to the account's status."""
     NONE = "none"
     MARK_COOKIE_EXPIRED = "mark_cookie_expired"
+    PAUSE = "pause"
 
 
 @dataclass
@@ -47,9 +48,11 @@ class DispatchIntent:
     slack_message: Optional[str] = None
     log_event: Optional[str] = None
     log_reason: Optional[str] = None  # Goes into action_log details["reason"]
-    # For the connection-request path: revert SCHEDULED leads to PENDING
-    # so the planner re-schedules after cookie renewal.
+    # Reserved for explicit reset workflows; authentication loss preserves states.
     reset_scheduled_to_pending: bool = False
+    failure_kind: Optional[str] = None
+    retry_delay_seconds: Optional[int] = None
+    account_backoff_seconds: Optional[int] = None
 
 
 # Default 3-strike thresholds. Override in tests if needed.
@@ -74,8 +77,8 @@ def classify_followup_result(
       3. network_error flag → increment network counter, leave lead alone,
          bail account at 3-strike
       4. fatal (e.g. CAPTCHA) → stop account, no cookie flag, Slack ping
-      5. generic failure → mark ERROR, increment session counter, cookie
-         _expired at 3-strike
+      5. generic failure → mark ERROR; stop/back off at three failures,
+         without treating action errors as proof of authentication loss
     """
     if result.get("success"):
         return DispatchIntent(
@@ -146,16 +149,17 @@ def classify_followup_result(
     if new_consec >= session_threshold:
         return DispatchIntent(
             lead_action=LeadAction.MARK_ERROR,
-            account_action=AccountAction.MARK_COOKIE_EXPIRED,
+            account_action=AccountAction.NONE,
             consecutive_session=new_consec,
             consecutive_network=0,
             stop_account=True,
             slack_message=(
-                f":warning: *Cookie expired* — account *{account_name}* "
+                f":warning: *Followup actions failing* — account *{account_name}* "
                 f"({new_consec} consecutive followup failures on *{campaign_name}*)."
             ),
             log_event="followup.consecutive_errors_detected",
             log_reason="followup_consecutive_errors",
+            account_backoff_seconds=3600,
         )
     return DispatchIntent(
         lead_action=LeadAction.MARK_ERROR,
@@ -181,8 +185,7 @@ def classify_connection_result(
         Dispatcher just resets counters (LeadAction.NONE — no DB write).
       - On `skipped`: lead status set by executor (e.g. already_connected).
         Dispatcher resets counters and tracks a backfill, doesn't write.
-      - On session_expired: revert SCHEDULED leads to PENDING (planner
-        re-plans after cookie renewal).
+      - On session_expired: preserve existing lead states for a future login.
     """
     # Success / skipped paths don't need lead writes (executor handled it);
     # only need to reset counters.
@@ -200,13 +203,36 @@ def classify_connection_result(
             consecutive_session=0,
             consecutive_network=0,
             stop_account=True,
-            reset_scheduled_to_pending=True,
+            reset_scheduled_to_pending=False,
             slack_message=(
                 f":warning: *Cookie expired* — account *{account_name}* "
-                f"(detected by connection dispatcher; SCHEDULED leads reverted to PENDING for retry)."
+                f"(detected by connection dispatcher; lead states preserved)."
             ),
             log_event="dispatch.session_expired_detected",
             log_reason="connection_session_expired",
+        )
+
+    if result.get("error") == "execute_lead_timeout":
+        return DispatchIntent(
+            failure_kind="uncertain_outcome",
+            stop_account=True,
+            account_backoff_seconds=3600,
+            log_event="dispatch.uncertain_outcome",
+            log_reason="execute_lead_timeout",
+            slack_message=f":warning: Connection action timed out on *{campaign_name}*; "
+                          "the lead needs reconciliation before retry, and the account is waiting one hour.",
+        )
+
+    if result.get("failure_kind") == "profile_dom":
+        strikes = consecutive_session + 1
+        return DispatchIntent(
+            consecutive_session=strikes,
+            failure_kind="profile_dom",
+            retry_delay_seconds=24 * 3600,
+            account_backoff_seconds=3600 if strikes >= session_threshold else None,
+            stop_account=strikes >= session_threshold,
+            log_event="dispatch.profile_dom_failure",
+            log_reason=result.get("error", "no_connect_button"),
         )
 
     if result.get("network_error"):
@@ -219,16 +245,22 @@ def classify_connection_result(
                 stop_account=True,
                 log_event="dispatch.proxy_connectivity_issues",
                 log_reason="consecutive_network_errors",
+                failure_kind="network",
+                retry_delay_seconds=900,
+                account_backoff_seconds=3600,
             )
         return DispatchIntent(
             lead_action=LeadAction.NONE,
             consecutive_session=0,
             consecutive_network=new_consec,
+            failure_kind="network",
+            retry_delay_seconds=900,
         )
 
     if result.get("fatal"):
         return DispatchIntent(
             lead_action=LeadAction.NONE,  # executor already marked lead ERROR
+            account_action=AccountAction.PAUSE if result.get("captcha") else AccountAction.NONE,
             consecutive_session=consecutive_session,
             consecutive_network=consecutive_network,
             stop_account=True,
@@ -237,6 +269,7 @@ def classify_connection_result(
                 f"on campaign *{campaign_name}* — account paused, manual review needed."
             ),
             log_event="dispatch.fatal_error",
+            account_backoff_seconds=3600,
         )
 
     # Generic failure: executor already marked the lead ERROR. Just track
@@ -245,17 +278,18 @@ def classify_connection_result(
     if new_consec >= session_threshold:
         return DispatchIntent(
             lead_action=LeadAction.NONE,
-            account_action=AccountAction.MARK_COOKIE_EXPIRED,
+            account_action=AccountAction.NONE,
             consecutive_session=new_consec,
             consecutive_network=0,
             stop_account=True,
-            reset_scheduled_to_pending=True,
+            reset_scheduled_to_pending=False,
             slack_message=(
-                f":warning: *Cookie expired* — account *{account_name}* "
-                f"({new_consec} consecutive session errors on campaign *{campaign_name}*)."
+                f":warning: *Connection actions failing* — account *{account_name}* "
+                f"({new_consec} consecutive failures on campaign *{campaign_name}*; manual review needed)."
             ),
             log_event="dispatch.consecutive_errors_detected",
-            log_reason="consecutive_navigation_errors",
+            log_reason="consecutive_action_errors",
+            account_backoff_seconds=3600,
         )
     return DispatchIntent(
         lead_action=LeadAction.NONE,

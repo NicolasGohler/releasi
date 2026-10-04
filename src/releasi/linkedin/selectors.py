@@ -22,6 +22,9 @@ button labels stay stable.
 # The caller (_find_connect_button) ALSO verifies the candidate's aria-label
 # against the profile H1 as belt-and-suspenders. Both layers must stay.
 CONNECT_BUTTON_PRIMARY = [
+    # The SDUI layout exposes an exact target vanity in the invitation URL.
+    # Caller must compare it with the visited profile, including sidebar links.
+    'main a[href*="custom-invite"]',
     # Class-based primary (older LinkedIn DOM — still present on some profiles)
     'button.pv-s-profile-actions--connect',
     # Scoped to known profile-actions containers only
@@ -40,6 +43,8 @@ CONNECT_BUTTON_PRIMARY = [
     # caused the 2026-08 false-positive already_connected wave.
     'main a[aria-label^="Invite"][aria-label$="to connect"]',
 ]
+
+PROFILE_OWNER_HEADINGS = 'main h1, main h2, main [role="heading"][aria-level="1"]'
 
 # "More" button on profile — the dropdown trigger next to Follow/Message.
 # This is the most critical selector — on Follow-primary profiles, Connect

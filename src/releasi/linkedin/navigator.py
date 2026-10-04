@@ -13,6 +13,7 @@ from releasi.config import get_settings
 from releasi.linkedin.selectors import (
     FEED_URL, LOGIN_URL_PATTERNS, INVITATION_MANAGER_URL,
     CONNECTIONS_URL, PROFILE_ACTION_BUTTONS,
+    PROFILE_OWNER_HEADINGS,
 )
 
 logger = structlog.get_logger()
@@ -71,6 +72,11 @@ class LinkedInNavigator:
     async def _wait_for_profile_rendered(self, timeout_ms: int = 10000):
         """Wait until LinkedIn profile action buttons are visible (page fully rendered)."""
         from playwright.async_api import TimeoutError as PlaywrightTimeout
+        try:
+            await self.page.locator(PROFILE_OWNER_HEADINGS).first.wait_for(
+                state="visible", timeout=timeout_ms)
+        except Exception:
+            return False
         per_sel_timeout = max(timeout_ms // len(PROFILE_ACTION_BUTTONS), 2000)
         for sel in PROFILE_ACTION_BUTTONS:
             try:
@@ -82,16 +88,12 @@ class LinkedInNavigator:
                 # rendering on Follow-primary profiles where "Follow" appears
                 # before "More actions" is fully in the DOM.
                 await asyncio.sleep(0.5)
-                # Cancel in-flight XHR/fetch/resource requests — the DOM we need
-                # is already present. Reduces proxy bandwidth per profile visit.
-                try:
-                    await self.page.evaluate("window.stop()")
-                except Exception:
-                    pass  # Non-critical — continue even if evaluate fails
-                return
+                # Do not stop loading as soon as a sidebar action appears.
+                return True
             except (PlaywrightTimeout, Exception):
                 continue
         logger.warning("navigator.profile_render_timeout")
+        return False
 
     async def go_to_profile(self, profile_url: str) -> NavigationResult:
         """Navigate to a LinkedIn profile page."""
@@ -112,9 +114,11 @@ class LinkedInNavigator:
                 return NavigationResult(
                     success=True, url=self.page.url, session_valid=False
                 )
+            if "/404" in self.page.url or "page not found" in (await self.page.title()).lower():
+                return NavigationResult(success=True, url=self.page.url)
 
             # Wait for profile to be fully rendered by JS
-            await self._wait_for_profile_rendered()
+            rendered = await self._wait_for_profile_rendered()
 
             # Secondary session check: LinkedIn may overlay the authwall on the
             # profile URL without redirecting (soft session expiry). The URL check
@@ -133,7 +137,7 @@ class LinkedInNavigator:
             if await self._is_authwall_showing():
                 try:
                     feed_result = await self.go_to_feed()
-                    if feed_result.session_valid:
+                    if feed_result.success and feed_result.session_valid:
                         logger.warning(
                             "navigator.authwall_per_profile",
                             target=profile_url,
@@ -144,6 +148,9 @@ class LinkedInNavigator:
                             session_valid=True,
                             error="authwall_per_profile",
                         )
+                    if not feed_result.success:
+                        return NavigationResult(success=False, url=profile_url,
+                                                error=feed_result.error or "feed_check_inconclusive")
                 except Exception:
                     pass  # Feed check failed — fall through to session_valid=False
                 logger.warning("navigator.authwall_overlay_detected", target=profile_url)
@@ -151,6 +158,9 @@ class LinkedInNavigator:
                     success=True, url=self.page.url, session_valid=False
                 )
 
+            if not rendered:
+                return NavigationResult(success=False, url=self.page.url,
+                                        error="profile_render_incomplete")
             return NavigationResult(
                 success=True, url=self.page.url, session_valid=session_valid
             )
@@ -165,6 +175,12 @@ class LinkedInNavigator:
         try:
             await self.page.goto(FEED_URL, wait_until="domcontentloaded", timeout=15000)
             await self._random_delay()
+            if not self._check_session(self.page.url) or await self._is_authwall_showing():
+                return NavigationResult(success=True, url=self.page.url, session_valid=False)
+            # A feed URL alone is not proof of authentication: wait for member navigation.
+            await self.page.locator(
+                'a[href*="/mynetwork/"], a[href*="/messaging/"], .global-nav__me'
+            ).first.wait_for(state="visible", timeout=10000)
             return NavigationResult(
                 success=True,
                 url=self.page.url,

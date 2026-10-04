@@ -42,9 +42,38 @@ async def _apply_connection_intent(
     repo: "Repository",
     account,
     campaign,
+    lead=None,
+    result: Optional[dict] = None,
 ) -> None:
     """Execute DB writes, Slack pings, and logging encoded in a DispatchIntent
     for connection-request dispatchers.  Does NOT set stop_account or break."""
+    if lead is not None and intent.failure_kind == "uncertain_outcome":
+        await repo.defer_connection_attempt(campaign.id, lead.id,
+                                           "Uncertain action outcome after timeout; reconcile before retry", 0, max_attempts=1)
+        await repo.increment_daily_stat(account.id, "errors")
+        await repo.log_action(account_id=account.id, campaign_id=campaign.id, lead_id=lead.id,
+                              action_type=ActionType.CONNECTION_REQUEST, status=ActionLogStatus.FAILED,
+                              details={"failure_kind": "uncertain_outcome", "reason": "execute_lead_timeout"})
+    if intent.retry_delay_seconds and lead is not None:
+        retry = await repo.defer_connection_attempt(
+            campaign.id, lead.id, f"[{intent.failure_kind}] {(result or {}).get('error') or intent.failure_kind}",
+            intent.retry_delay_seconds,
+            max_attempts=3 if intent.failure_kind == "profile_dom" else 6,
+        )
+        await repo.increment_daily_stat(account.id, "errors")
+        await repo.log_action(
+            account_id=account.id, campaign_id=campaign.id, lead_id=lead.id,
+            action_type=ActionType.CONNECTION_REQUEST, status=ActionLogStatus.FAILED,
+            details={"reason": (result or {}).get("error"), "failure_kind": intent.failure_kind, **retry},
+        )
+        if retry["exhausted"]:
+            await slack_notify(f":warning: Connection retry exhausted for {lead.linkedin_url} "
+                               f"on *{campaign.name}* ({intent.failure_kind}); manual review needed.")
+    if intent.account_backoff_seconds:
+        resume = datetime.utcnow() + timedelta(seconds=intent.account_backoff_seconds)
+        if account.paused_until and account.paused_until > resume:
+            resume = account.paused_until
+        await repo.update_account(account, paused_until=resume)
     if intent.log_event:
         if "network" in intent.log_event or "proxy" in intent.log_event:
             logger.warning(
@@ -60,18 +89,22 @@ async def _apply_connection_intent(
                 campaign=campaign.name,
                 consecutive=max(intent.consecutive_session, intent.consecutive_network),
             )
-        await repo.log_action(
-            account_id=account.id,
-            campaign_id=campaign.id,
-            action_type=ActionType.ERROR,
-            status=ActionLogStatus.FAILED,
-            details={k: v for k, v in {
-                "reason": intent.log_reason,
-                "count": max(intent.consecutive_session, intent.consecutive_network) or None,
-            }.items() if v is not None},
-        )
+        if intent.stop_account:
+            await repo.log_action(
+                account_id=account.id,
+                campaign_id=campaign.id,
+                action_type=ActionType.ERROR,
+                status=ActionLogStatus.FAILED,
+                details={k: v for k, v in {
+                    "reason": intent.log_reason,
+                    "failure_kind": intent.failure_kind,
+                    "count": max(intent.consecutive_session, intent.consecutive_network) or None,
+                }.items() if v is not None},
+            )
     if intent.account_action == AccountAction.MARK_COOKIE_EXPIRED:
         await repo.update_account(account, status="cookie_expired")
+    elif intent.account_action == AccountAction.PAUSE:
+        await repo.update_account(account, status="paused")
     if intent.slack_message:
         await slack_notify(intent.slack_message)
     if intent.reset_scheduled_to_pending:
@@ -90,6 +123,11 @@ async def _apply_followup_intent(
     lead,
 ) -> None:
     """Execute DB writes, Slack pings, and logging for followup dispatchers."""
+    if intent.account_backoff_seconds:
+        resume = datetime.utcnow() + timedelta(seconds=intent.account_backoff_seconds)
+        if account.paused_until and account.paused_until > resume:
+            resume = account.paused_until
+        await repo.update_account(account, paused_until=resume)
     if intent.lead_action == LeadAction.MARK_SENT:
         validate_transition(lead.status, LeadStatus.FOLLOWUP_SENT)
         await repo.update_lead(
@@ -208,38 +246,6 @@ _KEEPALIVE_ACTIVITIES = [
 ]
 # Weights for step-2 selection (index 1 onwards): notifications/network/messaging/jobs/learning
 _KEEPALIVE_STEP2_WEIGHTS = [3, 2, 2, 1, 1]
-
-
-async def _http_check_session(
-    li_at_cookie: str,
-    user_agent: Optional[str] = None,
-    proxy_url: Optional[str] = None,
-) -> bool:
-    """Fast HTTP session check routed through the account's proxy, ~1-2s.
-
-    Always uses the proxy when available so LinkedIn sees a consistent IP.
-    Sending li_at from a datacenter IP (unproxied) is a session invalidation trigger.
-    Returns True if valid, False if expired/redirected. Raises on network errors.
-    """
-    import httpx
-    login_patterns = ["/login", "/uas/login", "/signup", "/checkpoint/"]
-    headers = {
-        "Cookie": f"li_at={li_at_cookie}",
-        "User-Agent": user_agent or "Mozilla/5.0",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
-    try:
-        client_kwargs = dict(headers=headers, follow_redirects=True, timeout=10.0)
-        if proxy_url:
-            client_kwargs["proxy"] = proxy_url
-        async with httpx.AsyncClient(**client_kwargs) as client:
-            resp = await client.get("https://www.linkedin.com/feed/")
-        final_url = str(resp.url)
-        if any(p in final_url for p in login_patterns):
-            return False
-        return resp.status_code == 200
-    except Exception:
-        raise
 
 
 async def _account_proxy_url(account) -> Optional[str]:
@@ -637,7 +643,7 @@ async def _dispatch_continuous(
             )
             consecutive_session_errors = intent.consecutive_session
             consecutive_network_errors = intent.consecutive_network
-            await _apply_connection_intent(intent, repo, account, campaign)
+            await _apply_connection_intent(intent, repo, account, campaign, lead, result)
             if intent.stop_account:
                 stop_account = True
                 break
@@ -813,7 +819,7 @@ async def _dispatch_planned(
             )
             consecutive_session_errors = intent.consecutive_session
             consecutive_network_errors = intent.consecutive_network
-            await _apply_connection_intent(intent, repo, account, campaign)
+            await _apply_connection_intent(intent, repo, account, campaign, lead, result)
             if intent.stop_account:
                 stop_account = True
                 break
@@ -823,7 +829,7 @@ async def _dispatch_planned(
                 await repo.add_proxy_mb(account.id, 2.0)  # ~2 MB per connection request
             elif result.get("skipped"):
                 backfill_count += 1
-            elif not result.get("network_error") and not result.get("session_expired") and not result.get("fatal"):
+            elif not intent.retry_delay_seconds and not result.get("network_error") and not result.get("session_expired") and not result.get("fatal"):
                 # Generic failure that didn't hit 3-strike stop — schedule a backfill slot
                 backfill_count += 1
 
@@ -917,6 +923,10 @@ async def _dispatch_planned(
                 day_target=day_target,
                 day_remaining=max(0, day_target - day_sent),
             )
+        _last_session_end[account.id] = datetime.utcnow()
+        resume = _last_session_end[account.id] + timedelta(seconds=get_settings().inter_session_delay[0])
+        if not account.paused_until or account.paused_until < resume:
+            await repo.update_account(account, paused_until=resume)
 
         if stop_account:
             break
@@ -1259,10 +1269,11 @@ async def dispatch():
                     sent = await _dispatch_continuous(account, repo, pool_context, remaining)
                     if sent > 0:
                         pool.confirm_session(account.id)
-                        _last_session_end[account.id] = datetime.utcnow()
-                        # Compute gap to next session now, so it's stable for the
-                        # entire waiting period rather than re-randomised each poll.
-                        _state["next_gap_sec"] = _next_continuous_gap(_state["target_gap_sec"])
+                    _last_session_end[account.id] = datetime.utcnow()
+                    _state["next_gap_sec"] = _next_continuous_gap(_state["target_gap_sec"])
+                    resume = _last_session_end[account.id] + timedelta(seconds=_state["next_gap_sec"])
+                    if not account.paused_until or account.paused_until < resume:
+                        await repo.update_account(account, paused_until=resume)
                 else:
                     # ── Legacy planned-mode dispatch (explicit dispatch_mode='planned' only) ──
                     await _dispatch_planned(account, repo, pool_context, pool, remaining, now, sent_today_count)
@@ -2292,27 +2303,26 @@ async def telegram_enrichment_sweep():
             _tg_last_processed_at = datetime.utcnow()
 
 
-async def check_cookie_health():
-    """
-    Proactive session validation for all active AND cookie_expired accounts.
+async def check_cookie_health(account_id: Optional[str] = None):
+    """Startup/post-login observation through the exclusive, proxied browser.
 
-    Runs every 6 hours. Routes through the account's proxy so LinkedIn sees a
-    consistent IP — unproxied datacenter requests trigger session invalidation.
-    Also checks cookie_expired accounts so they can self-recover after re-login.
+    Never reactivates an account, and inconclusive/network failures never
+    become authentication failures. Post-login callers target one account.
     """
     from sqlalchemy import select as sa_select
     from releasi.db.models import AccountStatus
 
     repo, session = await _get_repo()
     try:
-        # Check both active and cookie_expired accounts (to enable self-recovery)
-        result = await session.execute(
-            sa_select(Account).where(
-                Account.status.in_([AccountStatus.ACTIVE, AccountStatus.COOKIE_EXPIRED]),
+        stmt = sa_select(Account).where(
+                Account.status == AccountStatus.ACTIVE,
                 Account.archived == False,  # noqa: E712
             )
-        )
+        if account_id:
+            stmt = stmt.where(Account.id == account_id)
+        result = await session.execute(stmt)
         accounts = result.scalars().all()
+        pool = get_browser_pool()
 
         for account in accounts:
             if not account.li_at_cookie:
@@ -2324,26 +2334,39 @@ async def check_cookie_health():
                 logger.debug("cookie_health.skipped_paused", account=account.name)
                 continue
 
-            # Build proxy URL — prefer direct proxy_url, fall back to country-based builder
-            proxy_url = account.proxy_url
-            if not proxy_url and account.proxy_country:
-                from releasi.linkedin.browser import _build_proxy_url
-                try:
-                    proxy_url = _build_proxy_url(account.id, account.proxy_country)
-                except Exception:
-                    pass
-
+            if not await _account_proxy_url(account) or pool.is_busy(account.id):
+                logger.info("cookie_health.skipped_unavailable", account=account.name)
+                continue
+            acquired = False
+            page = None
             try:
-                valid = await _http_check_session(account.li_at_cookie, account.user_agent, proxy_url)
+                from releasi.linkedin.navigator import LinkedInNavigator
+                context = await asyncio.wait_for(pool.acquire(account), timeout=15)
+                acquired = True
+                page = await context.new_page()
+                nav = await LinkedInNavigator(page).go_to_feed()
+                await _record_session_touch(
+                    context, account, repo, job="cookie_health",
+                    result="ok" if nav.success and nav.session_valid else
+                    "redirect_login" if nav.success else "network_error",
+                    detail={"phase": "browser_validation", "error": nav.error}, fetch_egress=False,
+                )
             except Exception as e:
-                logger.warning("cookie_health.check_error", account=account.name, error=str(e))
-                continue  # Network error — don't mark expired, try again next cycle
+                logger.warning("cookie_health.check_error", account=account.name, error_type=type(e).__name__)
+                continue
+            finally:
+                try:
+                    if page:
+                        await page.close()
+                finally:
+                    if acquired:
+                        await pool.release_idle(account.id)
 
-            if valid:
+            if not nav.success:
+                logger.warning("cookie_health.inconclusive", account=account.name)
+            elif nav.session_valid:
+                pool.confirm_session(account.id)
                 logger.info("cookie_health.valid", account=account.name, status=account.status)
-                if account.status == AccountStatus.COOKIE_EXPIRED:
-                    await repo.update_account(account, status="active")
-                    logger.info("cookie_health.auto_recovered", account=account.name)
             else:
                 if account.status == AccountStatus.ACTIVE:
                     logger.warning("cookie_health.expired", account=account.name)

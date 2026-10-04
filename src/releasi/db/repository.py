@@ -1,12 +1,13 @@
 """Data access layer — CRUD operations for all models."""
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional, Sequence
 
 from sqlalchemy import case, select, func, update, or_, not_, exists, and_, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from releasi.campaign.importer import normalize_linkedin_url
 from releasi.db.models import (
     Account, AccountStatus,
     Campaign, CampaignStatus,
@@ -21,6 +22,12 @@ from releasi.db.models import (
     User,
     Broadcast, BroadcastLead, BroadcastStatus,
 )
+
+
+def _lead_search_pattern(search: str) -> str:
+    query = search.strip()
+    query = normalize_linkedin_url(query) or query
+    return f"%{query.rstrip('/')}%"
 
 
 def _last_activity_subquery():
@@ -580,6 +587,8 @@ class Repository:
                 CampaignLeadAssignment.campaign_id == campaign_id,
                 CampaignLeadAssignment.status == status_str,
                 Lead.linkedin_url.isnot(None),
+                or_(CampaignLeadAssignment.scheduled_at.is_(None),
+                    CampaignLeadAssignment.scheduled_at <= datetime.utcnow()),
             )
             .order_by(priority_col.desc(), Lead.created_at)
         )
@@ -587,6 +596,35 @@ class Repository:
             stmt = stmt.limit(limit)
         result = await self.session.execute(stmt)
         return result.scalars().all()
+
+    async def defer_connection_attempt(self, campaign_id: str, lead_id: str,
+                                       reason: str, delay_seconds: int,
+                                       max_attempts: int = 3) -> dict:
+        """Persist retry eligibility on this assignment, never another campaign.
+
+        scheduled_at is an eligibility timestamp for both pending and scheduled
+        assignments. Exhausted attempts require manual review instead of looping.
+        """
+        row = (await self.session.execute(select(CampaignLeadAssignment).where(
+            CampaignLeadAssignment.campaign_id == campaign_id,
+            CampaignLeadAssignment.lead_id == lead_id,
+        ))).scalar_one()
+        if row.status not in (LeadStatus.PENDING.value, LeadStatus.SCHEDULED.value):
+            return {"attempt": row.retry_count, "next_attempt_at": None, "exhausted": False}
+        now = datetime.utcnow()
+        row.retry_count = (row.retry_count or 0) + 1
+        exhausted = row.retry_count >= max_attempts
+        cap = 86400 if delay_seconds >= 86400 else 3600
+        delay = min(delay_seconds * (2 ** (row.retry_count - 1)), cap)
+        row.scheduled_at = None if exhausted else now + timedelta(seconds=delay)
+        row.error_message = reason[:500]
+        row.updated_at = now
+        if exhausted:
+            row.status = LeadStatus.ERROR.value
+        await self.session.commit()
+        return {"attempt": row.retry_count,
+                "next_attempt_at": row.scheduled_at.isoformat() if row.scheduled_at else None,
+                "exhausted": exhausted}
 
     async def get_stranded_followup_leads(self, campaign_id: str) -> Sequence[Lead]:
         """Get CONNECTED leads that never got a followup scheduled or sent.
@@ -1204,7 +1242,7 @@ class Repository:
             count_stmt = count_stmt.where(Lead.lead_list_id == lead_list_id)
 
         if search:
-            pattern = f"%{search.rstrip('/')}%"
+            pattern = _lead_search_pattern(search)
             full_name = func.coalesce(Lead.first_name, "") + " " + func.coalesce(Lead.last_name, "")
             search_filter = or_(
                 Lead.first_name.ilike(pattern),
@@ -1356,7 +1394,7 @@ class Repository:
             )
 
         if search:
-            pattern = f"%{search.rstrip('/')}%"
+            pattern = _lead_search_pattern(search)
             full_name = func.coalesce(Lead.first_name, "") + " " + func.coalesce(Lead.last_name, "")
             search_filter = or_(
                 Lead.first_name.ilike(pattern),
@@ -2191,7 +2229,7 @@ class Repository:
                 count_stmt = count_stmt.where(Lead.status.in_(statuses))
 
         if search:
-            pattern = f"%{search.rstrip('/')}%"
+            pattern = _lead_search_pattern(search)
             full_name = func.coalesce(Lead.first_name, "") + " " + func.coalesce(Lead.last_name, "")
             search_filter = or_(
                 Lead.first_name.ilike(pattern),

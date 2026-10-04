@@ -2,8 +2,8 @@
 
 Keeps one Chromium instance per account alive across scheduler jobs,
 preserving cookies (bcookie, bscookie, JSESSIONID, li_rm, etc.) that
-accumulate naturally during browsing.  A periodic keep-alive job
-prevents sessions from expiring due to inactivity.
+accumulate naturally during browsing. Authentication is confirmed by callers
+after visiting an authenticated page, independently of browser process health.
 """
 from __future__ import annotations
 
@@ -21,8 +21,14 @@ from releasi.linkedin.browser import LinkedInBrowser
 
 logger = structlog.get_logger()
 
-# Minimum seconds between session validations on acquire
-_VALIDATION_COOLDOWN = 30 * 60  # 30 minutes
+# A process check never establishes that LinkedIn accepted the session.
+_PROCESS_CHECK_COOLDOWN = 30 * 60  # 30 minutes
+# Publicly imported by dispatchers to decide when to validate authentication.
+_VALIDATION_COOLDOWN = 30 * 60
+
+
+class AccountSessionChangedError(RuntimeError):
+    """An external session completed while waiting; reload the account first."""
 
 
 @dataclass
@@ -34,15 +40,54 @@ class PoolSlot:
     context: BrowserContext
     in_use: bool = False
     last_activity: float = field(default_factory=time.monotonic)
-    last_validated: float = field(default_factory=time.monotonic)
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    last_validated: Optional[float] = None
+    last_process_checked: float = field(default_factory=time.monotonic)
+
+
+class ExternalBrowserLease:
+    """Exclusive account reservation for a browser outside the pool.
+
+    Acquired with ``await pool.reserve_external(account_id)``. Keep the lease
+    until the external browser is closed AND new credentials are persisted.
+    Use ``release()`` in finally, or ``async with lease``. Do not call
+    ``pool.acquire()`` / ``pool.evict()`` while holding this lease; they wait
+    on its lock. ``await lease.evict()`` is safe without reacquiring it.
+    """
+
+    def __init__(self, pool: BrowserPool, account_id: str):
+        self._pool = pool
+        self.account_id = account_id
+        self._released = False
+
+    async def __aenter__(self) -> ExternalBrowserLease:
+        if self._released:
+            raise RuntimeError("External browser lease has already been released")
+        return self
+
+    async def __aexit__(self, *args) -> None:
+        self.release()
+
+    async def evict(self) -> None:
+        if self._released:
+            raise RuntimeError("External browser lease has already been released")
+        await self._pool._evict_locked(self.account_id)
+
+    def release(self) -> None:
+        """Idempotently release ownership (can be called by a teardown task)."""
+        if not self._released:
+            self._released = True
+            self._pool._external_leases.pop(self.account_id, None)
+            self._pool._session_generations[self.account_id] = (
+                self._pool._session_generations.get(self.account_id, 0) + 1
+            )
+            self._pool._account_lock(self.account_id).release()
 
 
 class BrowserPool:
     """Manages persistent browser instances for active accounts.
 
     - One slot per account, up to ``pool_max_browsers``.
-    - Per-slot ``asyncio.Lock`` for concurrency (APScheduler jobs are async
+    - Stable per-account ``asyncio.Lock`` for concurrency (APScheduler jobs are async
       on the same event loop).
     - Global lock only for slot creation / deletion.
     """
@@ -51,6 +96,14 @@ class BrowserPool:
         self._slots: Dict[str, PoolSlot] = {}
         self._max_browsers = max_browsers
         self._global_lock = asyncio.Lock()
+        self._account_locks: Dict[str, asyncio.Lock] = {}
+        self._pool_holders = set()
+        self._external_leases: Dict[str, ExternalBrowserLease] = {}
+        self._session_generations: Dict[str, int] = {}
+
+    def _account_lock(self, account_id: str) -> asyncio.Lock:
+        # Locks outlive slots so eviction cannot strand waiters on an old lock.
+        return self._account_locks.setdefault(account_id, asyncio.Lock())
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -61,7 +114,10 @@ class BrowserPool:
         to_warm = accounts[: self._max_browsers]
         for account in to_warm:
             try:
-                await self._create_slot(account)
+                async with self._account_lock(account.id):
+                    async with self._global_lock:
+                        if account.id not in self._slots:
+                            await self._create_slot(account)
                 logger.info("pool.prewarm_ok", account=account.name)
             except Exception as e:
                 logger.error("pool.prewarm_failed", account=account.name, error=str(e))
@@ -69,13 +125,8 @@ class BrowserPool:
 
     async def shutdown(self) -> None:
         """Close all browser slots."""
-        async with self._global_lock:
-            for account_id, slot in list(self._slots.items()):
-                try:
-                    await slot.browser.force_close()
-                except Exception:
-                    pass
-            self._slots.clear()
+        for account_id in list(self._slots):
+            await self.evict(account_id)
         logger.info("pool.shutdown")
 
     # ------------------------------------------------------------------
@@ -85,36 +136,55 @@ class BrowserPool:
     async def acquire(self, account: Account) -> BrowserContext:
         """Get (or create) a browser context for an account.
 
-        Performs a health check if the slot hasn't been validated recently.
+        Performs a process check periodically, independently of authentication.
         Blocks if the slot is already in use by another job.
+        Raises AccountSessionChangedError if a completed external lease means
+        the supplied account credentials may have become stale while waiting.
         """
-        async with self._global_lock:
-            slot = self._slots.get(account.id)
-            if not slot:
-                slot = await self._create_slot(account)
+        lock = self._account_lock(account.id)
+        generation = self._session_generations.get(account.id, 0)
+        await lock.acquire()
+        try:
+            if generation != self._session_generations.get(account.id, 0):
+                raise AccountSessionChangedError("Account session changed while waiting; reload account before retrying")
+            async with self._global_lock:
+                slot = self._slots.get(account.id)
+                if slot is None:
+                    slot = await self._create_slot(account)
 
-        # Per-slot lock — blocks concurrent access for the same account
-        await slot._lock.acquire()
-        slot.in_use = True
-        slot.last_activity = time.monotonic()
+            if time.monotonic() - slot.last_process_checked > _PROCESS_CHECK_COOLDOWN:
+                if not await self._health_check(slot):
+                    logger.warning("pool.recreating_unhealthy_slot", account=account.name)
+                    await self._evict_locked(account.id)
+                    async with self._global_lock:
+                        slot = await self._create_slot(account)
+                slot.last_process_checked = time.monotonic()
 
-        # Health-check: skip if recently validated
-        now = time.monotonic()
-        if now - slot.last_validated > _VALIDATION_COOLDOWN:
-            healthy = await self._health_check(slot)
-            if not healthy:
-                logger.warning("pool.recreating_unhealthy_slot", account=account.name)
-                await slot.browser.force_close()
-                async with self._global_lock:
-                    self._slots.pop(account.id, None)
-                slot = await self._create_slot(account)
-                await slot._lock.acquire()
-                slot.in_use = True
-                slot.last_activity = time.monotonic()
-            slot.last_validated = time.monotonic()
+            slot.in_use = True
+            slot.last_activity = time.monotonic()
+            self._pool_holders.add(account.id)
+            logger.debug("pool.acquired", account=account.name)
+            return slot.context
+        except BaseException:
+            lock.release()
+            raise
 
-        logger.debug("pool.acquired", account=account.name)
-        return slot.context
+    async def reserve_external(self, account_id: str) -> ExternalBrowserLease:
+        """Wait for account work, evict its browser, and reserve exclusivity.
+
+        Cancellation while waiting or evicting leaves no reservation behind.
+        Callers must close their browser before releasing the returned lease.
+        """
+        lock = self._account_lock(account_id)
+        await lock.acquire()
+        try:
+            await self._evict_locked(account_id)
+            lease = ExternalBrowserLease(self, account_id)
+            self._external_leases[account_id] = lease
+            return lease
+        except BaseException:
+            lock.release()
+            raise
 
     async def release_idle(self, account_id: str) -> None:
         """Navigate to about:blank to stop background JS, then release slot.
@@ -124,33 +194,35 @@ class BrowserPool:
         about:blank before releasing stops all network activity and saves
         proxy bandwidth (~1-2 GB/day for a persistent context).
         """
-        slot = self._slots.get(account_id)
-        if slot and slot.context:
-            try:
+        if account_id not in self._pool_holders:
+            return
+        try:
+            slot = self._slots.get(account_id)
+            if slot and slot.context:
                 pages = slot.context.pages
                 if pages:
                     await pages[0].goto("about:blank", timeout=5000)
-            except Exception:
-                pass  # Best-effort; don't block release
-        self.release(account_id)
+        except Exception:
+            pass  # Best-effort; don't block release
+        finally:
+            self.release(account_id)
 
     def release(self, account_id: str) -> None:
-        """Mark a slot as no longer in use and release the per-slot lock."""
-        slot = self._slots.get(account_id)
-        if not slot:
+        """Release pooled ownership without releasing an external reservation."""
+        if account_id not in self._pool_holders:
             return
-        slot.in_use = False
-        slot.last_activity = time.monotonic()
-        try:
-            slot._lock.release()
-        except RuntimeError:
-            pass  # Already released
+        self._pool_holders.remove(account_id)
+        slot = self._slots.get(account_id)
+        if slot:
+            slot.in_use = False
+            slot.last_activity = time.monotonic()
+        self._account_lock(account_id).release()
         logger.debug("pool.released", account_id=account_id)
 
     def is_busy(self, account_id: str) -> bool:
         """Check if an account's browser is currently in use."""
-        slot = self._slots.get(account_id)
-        return slot.in_use if slot else False
+        lock = self._account_locks.get(account_id)
+        return lock.locked() if lock else False
 
     def has_slot(self, account_id: str) -> bool:
         """Return True if a live browser slot already exists for the account.
@@ -167,7 +239,7 @@ class BrowserPool:
         Returns infinity if the slot doesn't exist (forces a check).
         """
         slot = self._slots.get(account_id)
-        if not slot:
+        if not slot or slot.last_validated is None:
             return float("inf")
         return time.monotonic() - slot.last_validated
 
@@ -183,10 +255,24 @@ class BrowserPool:
 
     async def evict(self, account_id: str) -> None:
         """Close and remove a slot (e.g. when an account is removed)."""
+        async with self._account_lock(account_id):
+            await self._evict_locked(account_id)
+
+    async def _evict_locked(self, account_id: str) -> None:
         async with self._global_lock:
-            slot = self._slots.pop(account_id, None)
+            slot = self._slots.get(account_id)
         if slot:
-            await slot.browser.force_close()
+            # Finish closing even if the reserving task is cancelled, before
+            # another task can acquire the same profile and open a browser.
+            closing = asyncio.create_task(slot.browser.force_close())
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                await closing
+                raise
+            finally:
+                if closing.done() and not closing.cancelled() and closing.exception() is None:
+                    self._slots.pop(account_id, None)
             logger.info("pool.evicted", account_id=account_id)
 
     # ------------------------------------------------------------------
@@ -202,17 +288,21 @@ class BrowserPool:
         and must never be sent.
         """
         browser = LinkedInBrowser(pool_managed=True)
-        context = await browser.launch(
-            account_id=account.id,
-            li_at_cookie=account.li_at_cookie,
-            user_agent=account.user_agent,
-            proxy_url=account.proxy_url,
-            proxy_country=account.proxy_country,
-            timezone=account.timezone,
-            cookies_json=getattr(account, "cookies_json", None),
-        )
-        # validate_session() is skipped — check_cookie_health() already ran.
-        # which is slow (15s) and breaks when the proxy blocks LinkedIn.
+        try:
+            context = await browser.launch(
+                account_id=account.id,
+                li_at_cookie=account.li_at_cookie,
+                user_agent=account.user_agent,
+                proxy_url=account.proxy_url,
+                proxy_country=account.proxy_country,
+                timezone=account.timezone,
+                cookies_json=getattr(account, "cookies_json", None),
+            )
+        except BaseException:
+            await browser.force_close()
+            raise
+        # Launching a browser does not prove authentication. The caller must
+        # validate an authenticated page before calling confirm_session().
 
         slot = PoolSlot(
             account_id=account.id,

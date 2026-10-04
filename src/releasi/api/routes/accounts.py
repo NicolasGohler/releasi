@@ -23,6 +23,68 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
 public_router = APIRouter()
 
 
+@router.get("/accounts/{account_id}/profile-diagnostics")
+async def inspect_profile(
+    account_id: str,
+    profile_url: str = Query(...),
+    repo: Repository = Depends(get_repo),
+):
+    """Observe profile identity/actions using the pool; never send an invitation."""
+    import asyncio
+    from releasi.campaign.importer import normalize_linkedin_url
+    from releasi.linkedin.pool import get_browser_pool
+    from releasi.linkedin.login_session import LoginSessionManager
+
+    url = normalize_linkedin_url(profile_url)
+    if not url:
+        raise HTTPException(status_code=422, detail="A LinkedIn profile URL is required")
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if LoginSessionManager.get_instance().is_active:
+        raise HTTPException(status_code=409, detail="Close the manual browser before diagnostics")
+    from releasi.scheduler.runner import _account_proxy_url
+    if not await _account_proxy_url(account):
+        raise HTTPException(status_code=409, detail="An account proxy is required")
+    pool = get_browser_pool()
+    try:
+        context = await asyncio.wait_for(pool.acquire(account), timeout=30)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=409, detail="Account browser is busy")
+    page = None
+    try:
+        page = await context.new_page()
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(5)
+        from releasi.linkedin.actions import LinkedInActions
+        actions = LinkedInActions(page)
+        candidate = await actions._find_primary_connect_button(url)
+        observed = await page.evaluate("""() => ({
+            url: location.href,
+            headings: Array.from(document.querySelectorAll('main h1, main h2, main h3, main [role="heading"]'))
+                .slice(0, 15).map(e => ({tag: e.tagName, text: e.innerText.slice(0, 150), html: e.outerHTML.slice(0, 700)})),
+            actions: Array.from(document.querySelectorAll('main a, main button'))
+                .filter(e => /connect|invite|more/i.test((e.innerText || '') + (e.getAttribute('aria-label') || '') + (e.getAttribute('href') || '')))
+                .slice(0, 20).map(e => ({tag: e.tagName, text: e.innerText.slice(0, 100), aria: e.getAttribute('aria-label'),
+                    href: e.getAttribute('href'), html: e.outerHTML.slice(0, 1200),
+                    parents: [e.parentElement, e.parentElement?.parentElement, e.parentElement?.parentElement?.parentElement]
+                        .filter(Boolean).map(p => ({tag: p.tagName, class: p.className, testid: p.getAttribute('data-testid')}))}))
+        })""")
+        observed["verified_connect"] = {
+            "found": candidate is not None,
+            "owner": await actions._get_profile_owner_name(),
+            "href": await candidate.get_attribute("href") if candidate else None,
+            "aria": await candidate.get_attribute("aria-label") if candidate else None,
+        }
+        return observed
+    finally:
+        try:
+            if page:
+                await page.close()
+        finally:
+            await pool.release_idle(account.id)
+
+
 # ── Proxy URL helpers ───────────────────────────────────────────────────────
 
 def _parse_proxy_url(url: Optional[str]) -> dict:
@@ -383,7 +445,7 @@ async def check_connection(
     except RuntimeError:
         pool = None  # pool not initialised (CLI / API-only context)
 
-    if pool is not None and pool.has_slot(account.id):
+    if pool is not None:
         if pool.is_busy(account.id):
             return {
                 "valid": None,
@@ -538,6 +600,8 @@ async def start_login_session(
         except Exception:
             pass
 
+    if not proxy_url:
+        raise HTTPException(status_code=409, detail="An account proxy is required; login will not use the server IP")
     try:
         novnc_path = await manager.start_session(account_id, proxy_url=proxy_url)
     except Exception as e:
@@ -563,11 +627,16 @@ async def finish_login_session(
         raise HTTPException(status_code=400, detail="No active login session")
 
     try:
-        result = await manager.finish_session()
+        if manager._account_id != account_id:
+            raise HTTPException(status_code=409, detail="Login session belongs to another account")
+        result = await manager.finish_session(release_lease=False)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to finish session: {e}")
 
     if not result["li_at"]:
+        manager.release_lease()
         return {"success": False, "message": "No li_at cookie found. Did you complete the login?"}
 
     # Save cookies to database — including the long-term li_rm token, the full
@@ -588,7 +657,10 @@ async def finish_login_session(
             update_kwargs["li_at_expires_at"] = li_at_exp_dt
         except Exception:
             li_at_exp_dt = None
-    await repo.update_account(account, **update_kwargs)
+    try:
+        await repo.update_account(account, **update_kwargs)
+    finally:
+        manager.release_lease()
 
     # Ledger: record the login touch (did we get li_rm / a long-lived cookie?).
     try:
@@ -605,22 +677,12 @@ async def finish_login_session(
     except Exception:
         pass
 
-    # Evict old pool slot so the pool creates a fresh browser with the new cookie
-    # on next acquire (avoids stale cookie / fingerprint mismatch)
-    try:
-        from releasi.linkedin.pool import get_browser_pool
-        pool = get_browser_pool()
-        await pool.evict(account.id)
-    except RuntimeError:
-        pass  # Pool not initialized (CLI context)
-
-    # Validate the new session immediately via proxy HTTP check in the background.
-    # This confirms the cookie works and the proxy route is healthy, and will
-    # auto-recover the account to ACTIVE status if the health check passes.
+    # The manual session evicted the old pool context before acquiring its lease.
+    # Validate only this account through a complete browser after saving.
     async def _validate_after_login(acct_id: str):
         try:
             from releasi.scheduler.runner import check_cookie_health
-            await check_cookie_health()
+            await check_cookie_health(acct_id)
             logger.info("post_login.health_check_done", account_id=acct_id)
         except Exception as e:
             logger.warning("post_login.health_check_failed", account_id=acct_id, error=str(e))
@@ -629,7 +691,10 @@ async def finish_login_session(
     logger = _structlog.get_logger()
     background_tasks.add_task(_validate_after_login, account_id)
 
-    return {"success": True, "message": "Cookies extracted and saved successfully"}
+    return {"success": bool(result.get("profile_saved")), "cookies_saved": True,
+            "profile_saved": result.get("profile_saved", False),
+            "message": "Cookies saved successfully" if result.get("profile_saved") else
+            "Cookies saved, but the browser profile could not be saved. Check server profile permissions."}
 
 
 @router.post("/accounts/{account_id}/browse-session")
@@ -662,6 +727,8 @@ async def start_browse_session(
         except Exception:
             pass
 
+    if not proxy_url:
+        raise HTTPException(status_code=409, detail="An account proxy is required; browsing will not use the server IP")
     try:
         novnc_path = await manager.start_session(
             account_id,
@@ -754,9 +821,14 @@ async def fetch_avatar_now(
         raise HTTPException(status_code=404, detail="Account not found")
 
     # Try to use pool (avoids spawning a separate browser fingerprint)
+    from releasi.linkedin.pool import get_browser_pool
     try:
-        from releasi.linkedin.pool import get_browser_pool
         pool = get_browser_pool()
+    except RuntimeError:
+        pool = None
+    try:
+        if pool is None:
+            raise RuntimeError("Browser pool unavailable")
         await pool.acquire(account)
         try:
             slot = pool._slots.get(account.id)
@@ -772,8 +844,10 @@ async def fetch_avatar_now(
                 return {"success": False, "message": "Could not find profile photo on page"}
             return {"success": False, "message": "Pool slot not available"}
         finally:
-            pool.release(account.id)
+            await pool.release_idle(account.id)
     except RuntimeError:
+        if pool is not None:
+            raise HTTPException(status_code=409, detail="Account session changed or browser unavailable; retry shortly")
         # Pool not initialized — fall back to ephemeral browser
         from releasi.linkedin.browser import LinkedInBrowser
         browser = LinkedInBrowser()

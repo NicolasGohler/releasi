@@ -32,7 +32,7 @@ _TELEGRAM_URL_RE = re.compile(
 # Column names that contain a full name to be split into first/last
 _FULL_NAME_COLUMNS = {
     "name", "full_name", "fullname", "full name", "contact name",
-    "person name", "contact", "nombre completo",
+    "person name", "person_name", "contact_name", "contact", "nombre completo", "nm",
 }
 
 # Common column name variants -> standard field names
@@ -62,6 +62,8 @@ _COLUMN_MAP = {
     "company": "company",
     "company_name": "company",
     "company name": "company",
+    "companyname": "company",
+    "co": "company",
     "organization": "company",
     "organisation": "company",
     "firma": "company",
@@ -81,6 +83,11 @@ _COLUMN_MAP = {
     "role": "title",
     "designation": "title",
     "titel": "title",
+    "contact_title": "title",
+    "contact title": "title",
+    "person_title": "title",
+    "person title": "title",
+    "ti": "title",
     # email
     "email": "email",
     "e-mail": "email",
@@ -88,6 +95,9 @@ _COLUMN_MAP = {
     "emailaddress": "email",
     "mail": "email",
     "courriel": "email",
+    "contact_email": "email",
+    "person_email": "email",
+    "em": "email",
     # phone
     "phone": "phone",
     "phone_number": "phone",
@@ -218,7 +228,7 @@ def _detect_url_column(headers: list, first_row: dict) -> Optional[str]:
     url_column_names = {
         "linkedin_url", "linkedin url", "linkedin_profile_url",
         "linkedin profile url", "profile_url", "profile url",
-        "linkedin", "li_url", "url", "person linkedin url",
+        "linkedin", "li", "li_url", "url", "person linkedin url",
     }
     for header in headers:
         if header.lower().strip() in url_column_names:
@@ -364,10 +374,10 @@ def parse_csv(
                     v = (val or "").strip()
                     if not v:
                         continue
-                    norm = header.lower().strip()
-                    if norm in _COLUMN_MAP and _COLUMN_MAP[norm] == "email":
+                    mapped_field = column_mapping.get(header)
+                    if mapped_field == "email":
                         row_email = v.lower()
-                    if norm in _FULL_NAME_COLUMNS or _COLUMN_MAP.get(norm) in ("first_name", "last_name"):
+                    if mapped_field in ("full_name", "first_name", "last_name"):
                         row_has_name = True
 
                 if not row_email and not row_has_name:
@@ -385,6 +395,7 @@ def parse_csv(
             # Extract standard fields
             first_name = None
             last_name = None
+            full_name = None
             company = None
             title = None
             email = None
@@ -405,7 +416,7 @@ def parse_csv(
 
                 mapped_field = column_mapping.get(header)
                 if mapped_field == "full_name":
-                    first_name, last_name = _split_full_name(value)
+                    full_name = value
                 elif mapped_field == "first_name":
                     first_name = value
                 elif mapped_field == "last_name":
@@ -434,6 +445,12 @@ def parse_csv(
                     _country = value
                 elif header != url_column:
                     extra_data[header] = value
+
+            # Explicit first/last fields win regardless of CSV column order.
+            if full_name:
+                full_first, full_last = _split_full_name(full_name)
+                first_name = first_name or full_first
+                last_name = last_name or full_last
 
             # Compose location from city/state/country if not directly provided
             if location is None and any([_city, _state, _country]):
