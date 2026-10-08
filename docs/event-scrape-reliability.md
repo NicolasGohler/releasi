@@ -22,7 +22,9 @@ a complete or stable roster.
   do not terminate pagination or create duplicate lead records.
 - Only a disabled Next control, explicit no-results state, or a requested
   total limit counts as completion. The 100-page boundary is an incomplete stop.
-- Completion and failures send the configured Slack DM with the saved count.
+- Completion and failures send the saved count to Slack. Event jobs use the
+  existing fundraising Slack destination when top-level notification credentials
+  are absent; other notification callers retain their existing destination.
 - A process restart does not automatically resume scraping. Persisted running
   jobs are shown as interrupted and require an explicit Re-scrape.
 

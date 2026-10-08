@@ -46,6 +46,25 @@ def _get_apollo_key() -> str:
     return ""
 
 
+async def _notify_event_scrape(text: str) -> bool:
+    """Reuse the configured fundraising Slack destination for event jobs only."""
+    from releasi.config import get_settings
+    from releasi.notifications.slack import notify
+    settings = get_settings()
+    if settings.slack_bot_token:
+        return await notify(text)
+    for path in ("/app/config/settings.yaml", "config/settings.yaml"):
+        try:
+            with open(path) as file:
+                config = yaml.safe_load(file) or {}
+        except FileNotFoundError:
+            continue
+        funding = config.get("fundraising") or {}
+        return await notify(text, bot_token=funding.get("slack_bot_token", ""),
+                            channel=funding.get("slack_channel") or settings.slack_user_id)
+    return False
+
+
 class EventImportRequest(BaseModel):
     url: str
     account_id: str
@@ -152,7 +171,6 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
     from releasi.linkedin.browser import LinkedInBrowser
     from releasi.linkedin.pool import get_browser_pool
     from releasi.linkedin.scraper import scrape_event_attendees
-    from releasi.notifications.slack import notify
     from releasi.scheduler.runner import _account_proxy_url
 
     store = get_scrape_job_store()
@@ -275,7 +293,7 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
                     await session.commit()
         state = store.update(list_id, status="done", error=None)
         logger.info("event_scrape.done", list_id=list_id, total=state["collected"])
-        await notify("*Event scrape complete*: *%s*\n%s attendees saved; %s enriched. No invitations sent." %
+        await _notify_event_scrape("*Event scrape complete*: *%s*\n%s attendees saved; %s enriched. No invitations sent." %
                      (list_name, state["collected"], len(enrichment)))
     except asyncio.CancelledError:
         store.update(list_id, status="error", error="Run interrupted; use Re-scrape to resume saved progress.")
@@ -286,7 +304,7 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
         reason = str(error) if isinstance(error, (EventScrapeStopped, EventScrapeSetupError)) else type(error).__name__
         state = store.update(list_id, status="error", error=reason)
         logger.warning("event_scrape.stopped", list_id=list_id, saved=state.get("collected", 0), reason=reason)
-        await notify("*Event scrape stopped*: *%s*\n%s attendees saved. %s\nUse Re-scrape after resolving the issue; saved attendees stay available." %
+        await _notify_event_scrape("*Event scrape stopped*: *%s*\n%s attendees saved. %s\nUse Re-scrape after resolving the issue; saved attendees stay available." %
                      (list_name, state.get("collected", 0), reason))
     finally:
         try:

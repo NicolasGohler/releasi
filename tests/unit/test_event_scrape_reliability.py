@@ -1,5 +1,6 @@
 """Offline checks: no tests contact LinkedIn or a proxy."""
 from types import SimpleNamespace
+from datetime import datetime
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -233,7 +234,6 @@ async def test_partial_background_run_keeps_memberships_statuses_and_resume_curs
     from releasi.db.models import Account, Base, Lead, LeadList, LeadStatus
     from releasi.db.repository import Repository
     from releasi.linkedin import browser, pool
-    from releasi.notifications import slack
     from releasi.scheduler import runner
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -258,7 +258,7 @@ async def test_partial_background_run_keeps_memberships_statuses_and_resume_curs
     monkeypatch.setattr(pool, "get_browser_pool", lambda: SimpleNamespace(is_busy=lambda _: False, reserve_external=AsyncMock(return_value=lease)))
     monkeypatch.setattr(runner, "_account_proxy_url", AsyncMock(return_value="http://proxy.invalid"))
     notification = AsyncMock()
-    monkeypatch.setattr(slack, "notify", notification)
+    monkeypatch.setattr(lead_lists, "_notify_event_scrape", notification)
     async def fail_after_saved_page(page, url, **kwargs):
         items = [{"url": existing.linkedin_url, "name": "Do Not Overwrite"}, {"url": "https://www.linkedin.com/in/new-attendee", "name": "New Attendee"}]
         await kwargs["on_checkpoint"](items)
@@ -293,7 +293,7 @@ async def test_prepared_list_does_not_start_until_login(tmp_path, monkeypatch):
     from releasi.db.models import LeadList
     list_id, account_id = str(uuid4()), str(uuid4())
     ll = LeadList(id=list_id, name="Prepared event", total_leads=0, archived=False,
-                  tg_enrich_enabled=False, created_at=__import__("datetime").datetime.now(), updated_at=__import__("datetime").datetime.now())
+                  tg_enrich_enabled=False, created_at=datetime.now(), updated_at=datetime.now())
     repo = SimpleNamespace(
         get_account=AsyncMock(return_value=SimpleNamespace(status="cookie_expired")),
         get_lead_list_by_name=AsyncMock(return_value=None),
@@ -306,3 +306,33 @@ async def test_prepared_list_does_not_start_until_login(tmp_path, monkeypatch):
     await lead_lists.event_import_list(lead_lists.EventImportRequest(url=URL, account_id=account_id, start=False), tasks, repo)
     assert not tasks.tasks and not store.active
     assert store.read(list_id)["status"] == "awaiting_login"
+
+
+@pytest.mark.asyncio
+async def test_event_notification_uses_existing_fundraising_destination(monkeypatch):
+    from unittest.mock import mock_open
+    from releasi.api.routes import lead_lists
+    from releasi import config
+    from releasi.notifications import slack
+    monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(slack_bot_token="", slack_user_id="default-user"))
+    monkeypatch.setattr("builtins.open", mock_open(read_data="fundraising:\n  slack_bot_token: fake-test-token\n  slack_channel: configured-channel\n"))
+    send = AsyncMock(return_value=True)
+    monkeypatch.setattr(slack, "notify", send)
+    assert await lead_lists._notify_event_scrape("test notification") is True
+    send.assert_awaited_once_with("test notification", bot_token="fake-test-token", channel="configured-channel")
+
+
+@pytest.mark.asyncio
+async def test_slack_delivery_reports_result_without_changing_default_target(monkeypatch):
+    from releasi.notifications import slack
+    monkeypatch.setattr(slack, "get_settings", lambda: SimpleNamespace(slack_bot_token="default-token", slack_user_id="default-user"))
+    client = SimpleNamespace(post=AsyncMock(return_value=SimpleNamespace(json=lambda: {"ok": True})))
+    from unittest.mock import MagicMock
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=client)
+    context.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(slack.httpx, "AsyncClient", lambda **kwargs: context)
+    assert await slack.notify("default message") is True
+    assert client.post.await_args.kwargs["json"]["channel"] == "default-user"
+    assert await slack.notify("event message", bot_token="event-token", channel="event-channel") is True
+    assert client.post.await_args.kwargs["json"]["channel"] == "event-channel"
