@@ -15,8 +15,6 @@ logger = structlog.get_logger()
 
 # Recycle the Playwright page every N pages to prevent Chromium OOM accumulation.
 _RECYCLE_INTERVAL = 20
-# Flush collected-but-unpersisted items to DB every N pages via on_checkpoint.
-_CHECKPOINT_INTERVAL = 15
 
 
 def _build_page_url(base_url: str, page_num: int) -> str:
@@ -116,6 +114,24 @@ async def _extract_profile_data(page: Page) -> List[dict]:
     return items
 
 
+class EventScrapeStopped(RuntimeError):
+    """A partial result is not a completed scrape."""
+
+    def __init__(self, reason: str, items: List[dict], page_num: int):
+        super().__init__(reason)
+        self.items = items
+        self.page_num = page_num
+
+
+async def _search_has_next_page(page: Page) -> Optional[bool]:
+    from releasi.linkedin.selectors import SEARCH_NEXT_PAGE
+    for selector in SEARCH_NEXT_PAGE:
+        button = page.locator(selector).first
+        if await button.count() and await button.is_visible():
+            return await button.is_enabled() and await button.get_attribute("aria-disabled") != "true"
+    return None
+
+
 async def scrape_event_attendees(
     page: Page,
     search_url: str,
@@ -123,178 +139,106 @@ async def scrape_event_attendees(
     on_progress: Optional[Callable[[int, int], None]] = None,
     page_factory: Optional[Callable[[], Awaitable[Page]]] = None,
     on_checkpoint: Optional[Callable[[List[dict]], Awaitable[None]]] = None,
+    start_page: int = 1,
+    existing_urls: Optional[set] = None,
+    before_navigation: Optional[Callable[[], Awaitable[None]]] = None,
+    on_page_saved: Optional[Callable[[int, int, bool], Awaitable[None]]] = None,
 ) -> List[dict]:
+    """Read one search page every 6-7 minutes; persist before advancing.
+
+    Any authentication, navigation, restriction, pagination or persistence
+    uncertainty stops the run. It never retries a blocked request or reports
+    partial results as complete. Existing URLs do not terminate pagination.
     """
-    Scrape profile data from a LinkedIn people search results page.
+    from releasi.linkedin.selectors import SEARCH_NO_RESULTS, SEARCH_RESTRICTIONS
 
-    Paginates through results using &page=N, collecting unique /in/ profile
-    entries until the limit is reached or results are exhausted (~10 per page).
-
-    Args:
-        page: Authenticated Playwright page (browser must be logged in).
-        search_url: Full LinkedIn people search URL (e.g. event attendees URL).
-        limit: Max profiles to collect. None = collect everything available.
-        on_progress: Optional callback(total_collected, page_num) for live updates.
-        page_factory: Async callable that creates a fresh authenticated page.
-            Used for proactive page recycling and crash recovery.
-        on_checkpoint: Async callback(new_items) called every _CHECKPOINT_INTERVAL
-            pages so the caller can persist progress before the full scrape finishes.
-
-    Returns:
-        List of {url, name} dicts, e.g. [{"url": "https://www.linkedin.com/in/johndoe", "name": "John Doe"}].
-    """
     collected: List[dict] = []
-    seen: set[str] = set()
-    page_num = 1
-    consecutive_empty = 0  # pages with no new results; break after 2 in a row
-    slow_mode = False       # activated after redirect-loop detection; widens delays
-    last_checkpoint_idx = 0  # index into collected of the last checkpoint boundary
+    seen = set(existing_urls or ())
+    page_num = start_page
+    previous_urls = None
+    local_delay = 0.0
 
-    while True:
-        if limit is not None and len(collected) >= limit:
-            break
+    while limit is None or len(seen) < limit:
+        if page_num > 100:
+            raise EventScrapeStopped("Reached the 100-page search boundary; completeness is unconfirmed.", collected, page_num)
+        if before_navigation:
+            await before_navigation()
+        elif local_delay:
+            await asyncio.sleep(local_delay)
 
         url = _build_page_url(search_url, page_num)
-        logger.info("scraper.loading_page", page=page_num, url=url, slow_mode=slow_mode)
+        logger.info("scraper.loading_page", page=page_num, url=url, conservative=True)
+        try:
+            response = await asyncio.wait_for(
+                page.goto(url, wait_until="domcontentloaded", timeout=15000),
+                timeout=30.0,
+            )
+        except Exception as error:
+            # Do not follow redirect loops, retry challenges, or probe the feed.
+            reason = "Redirect loop" if "ERR_TOO_MANY_REDIRECTS" in str(error) else "Navigation failed"
+            raise EventScrapeStopped(reason + "; reconnect/check access before resuming.", collected, page_num) from error
 
-        # Two attempts per page. Recovery strategy varies by failure type:
-        # - Page crashed (Chromium OOM): close broken page, open a fresh one via
-        #   page_factory, wait 5 s, then retry the same search page number.
-        # - ERR_TOO_MANY_REDIRECTS (LinkedIn anti-bot): navigate to /feed/ to
-        #   reset LinkedIn's session state, wait 15 s, engage slow_mode for the
-        #   rest of the session, then retry.
-        # - Timeout or other errors: plain 20 s backoff.
-        nav_ok = False
-        for attempt in range(2):
-            try:
-                await asyncio.wait_for(
-                    page.goto(url, wait_until="domcontentloaded", timeout=15000),
-                    timeout=30.0,
-                )
-                nav_ok = True
-                break
-            except asyncio.TimeoutError:
-                if attempt == 0:
-                    logger.warning("scraper.page_frozen_retrying", page=page_num)
-                    await asyncio.sleep(20.0)
-                else:
-                    logger.error("scraper.page_frozen_giving_up", page=page_num)
-            except Exception as e:
-                err_str = str(e)
-                is_crash = "Page crashed" in err_str
-                is_redirect_loop = "ERR_TOO_MANY_REDIRECTS" in err_str
-                if attempt == 0:
-                    if is_crash and page_factory is not None:
-                        logger.warning("scraper.page_crashed_recovering", page=page_num)
-                        try:
-                            await page.close()
-                        except Exception:
-                            pass
-                        page = await page_factory()
-                        await asyncio.sleep(5.0)
-                    elif is_redirect_loop:
-                        logger.warning("scraper.redirect_loop_recovering", page=page_num)
-                        slow_mode = True
-                        try:
-                            await page.goto(
-                                "https://www.linkedin.com/feed/",
-                                wait_until="domcontentloaded",
-                                timeout=15000,
-                            )
-                        except Exception:
-                            pass
-                        await asyncio.sleep(15.0)
-                    else:
-                        logger.warning("scraper.navigation_failed_retrying", page=page_num, error=err_str)
-                        await asyncio.sleep(20.0)
-                else:
-                    logger.error("scraper.navigation_failed_giving_up", page=page_num, error=err_str)
+        if response is not None and response.status in (401, 403, 429):
+            raise EventScrapeStopped("LinkedIn refused the search (HTTP %s); run stopped." % response.status, collected, page_num)
+        if any(pattern in page.url for pattern in LOGIN_URL_PATTERNS):
+            raise EventScrapeStopped("Login/checkpoint detected; reconnect before resuming.", collected, page_num)
 
-        if not nav_ok:
-            break
+        for selector in SEARCH_RESTRICTIONS:
+            if await page.locator(selector).first.is_visible():
+                raise EventScrapeStopped("LinkedIn restriction/challenge detected; run stopped.", collected, page_num)
 
-        # Session check — redirect to /login means expired cookie
-        if any(p in page.url for p in LOGIN_URL_PATTERNS):
-            logger.warning("scraper.session_expired")
-            break
+        if not await _wait_for_results(page):
+            if any(pattern in page.url for pattern in LOGIN_URL_PATTERNS):
+                raise EventScrapeStopped("Login/checkpoint detected; reconnect before resuming.", collected, page_num)
+            for selector in SEARCH_NO_RESULTS:
+                if await page.locator(selector).first.is_visible():
+                    return collected
+            raise EventScrapeStopped("Search results did not render; completeness is unconfirmed.", collected, page_num)
 
-        has_results = await _wait_for_results(page)
-        if not has_results:
-            consecutive_empty += 1
-            logger.info("scraper.no_results", page=page_num, consecutive=consecutive_empty)
-            if consecutive_empty >= 2:
-                # Two empty pages in a row confirms real end of pagination,
-                # not a transient DOM rendering glitch on a single page.
-                break
-            page_num += 1
-            continue
-        consecutive_empty = 0
-
-        # Brief pause for React to finish rendering all cards
         await asyncio.sleep(random.uniform(0.8, 1.5))
-
+        if any(pattern in page.url for pattern in LOGIN_URL_PATTERNS):
+            raise EventScrapeStopped("Login/checkpoint detected; reconnect before resuming.", collected, page_num)
         page_items = await _extract_profile_data(page)
         if not page_items:
-            logger.info("scraper.page_empty", page=page_num)
-            break
-
-        new_count = 0
+            raise EventScrapeStopped("No extractable attendees; page layout may have changed.", collected, page_num)
+        current_urls = {item["url"] for item in page_items}
+        if current_urls == previous_urls:
+            raise EventScrapeStopped("Pagination repeated the previous page; run stopped.", collected, page_num)
+        previous_urls = current_urls
+        new_items = []
+        processed = 0
         for item in page_items:
-            if limit is not None and len(collected) >= limit:
+            if limit is not None and len(seen) >= limit:
                 break
-            slug = item["url"].split("/in/")[-1].rstrip("/")
-            if slug not in seen:
-                seen.add(slug)
-                collected.append(item)
-                new_count += 1
-
-        logger.info("scraper.page_done", page=page_num, new=new_count, total=len(collected))
-
+            processed += 1
+            if item["url"] not in seen:
+                seen.add(item["url"])
+                new_items.append(item)
+        # Persistence failure must leave the cursor on this page for retry.
+        if on_checkpoint:
+            await on_checkpoint(new_items)
+        collected.extend(new_items)
+        if on_page_saved:
+            await on_page_saved(page_num, len(page_items), processed == len(page_items))
         if on_progress:
-            on_progress(len(collected), page_num)
+            on_progress(len(seen), page_num)
+        logger.info("scraper.page_done", page=page_num, new=len(new_items), total=len(seen))
 
-        # No new URLs on this page → we've hit the end of pagination
-        if new_count == 0:
-            break
+        if limit is not None and len(seen) >= limit:
+            return collected
+        has_next = await _search_has_next_page(page)
+        if has_next is False:
+            return collected
+        if has_next is None:
+            raise EventScrapeStopped("Cannot confirm the next page; saved attendees remain available.", collected, page_num + 1)
 
-        # Checkpoint: flush newly collected items to DB every _CHECKPOINT_INTERVAL pages
-        items_since_checkpoint = len(collected) - last_checkpoint_idx
-        if on_checkpoint and items_since_checkpoint >= _CHECKPOINT_INTERVAL * 10:
-            new_batch = collected[last_checkpoint_idx:]
-            try:
-                await on_checkpoint(new_batch)
-                last_checkpoint_idx = len(collected)
-                logger.info("scraper.checkpoint", saved=len(new_batch), total=len(collected))
-            except Exception as cp_err:
-                logger.warning("scraper.checkpoint_failed", error=str(cp_err))
+        # Stop LinkedIn's background polling throughout the long idle period.
+        await page.goto("about:blank", timeout=5000)
 
-        # Proactive page recycle every _RECYCLE_INTERVAL pages — prevents OOM from
-        # accumulated React/DOM state in a single long-lived Chromium renderer.
-        if page_factory is not None and page_num % _RECYCLE_INTERVAL == 0:
-            logger.info("scraper.recycling_page", page=page_num)
-            try:
-                await page.close()
-            except Exception:
-                pass
+        if page_factory and page_num % _RECYCLE_INTERVAL == 0:
+            await page.close()
             page = await page_factory()
-            # Extra breather after recycle so the new context fully initialises
-            await asyncio.sleep(random.uniform(3.0, 5.0))
-
-        # Adaptive inter-page delay: wider range after redirect-loop detection.
-        # Search results are rate-limited more aggressively than profile pages —
-        # keep base delay high enough that LinkedIn doesn't invalidate the session
-        # mid-scrape. A 1K-attendee event is ~100 pages and can run for hours.
-        delay = random.uniform(10.0, 18.0) if slow_mode else random.uniform(6.0, 12.0)
-        await asyncio.sleep(delay)
+        local_delay = max(random.uniform(360, 420), len(page_items) * 36)
         page_num += 1
-
-    # Final checkpoint for any tail items not yet flushed
-    if on_checkpoint and len(collected) > last_checkpoint_idx:
-        tail = collected[last_checkpoint_idx:]
-        try:
-            await on_checkpoint(tail)
-            logger.info("scraper.checkpoint_final", saved=len(tail), total=len(collected))
-        except Exception as cp_err:
-            logger.warning("scraper.checkpoint_final_failed", error=str(cp_err))
 
     return collected

@@ -8,7 +8,7 @@ from typing import Optional
 import structlog
 import yaml
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, File  # noqa: F401
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from releasi.api.auth import require_api_key
 from releasi.api.deps import get_repo, get_current_user_id
@@ -24,13 +24,10 @@ from releasi.api.schemas import (
     LeadPage,
 )
 from releasi.db.repository import Repository
+from releasi.linkedin.scrape_jobs import get_scrape_job_store
 
 logger = structlog.get_logger()
 router = APIRouter(dependencies=[Depends(require_api_key)])
-
-# ── Event import job tracking (in-memory) ────────────────────────────────
-# Maps lead_list_id → job state. Single-process FastAPI — safe for our use case.
-_scrape_jobs: dict[str, dict] = {}
 
 
 def _get_apollo_key() -> str:
@@ -53,13 +50,45 @@ class EventImportRequest(BaseModel):
     url: str
     account_id: str
     list_name: Optional[str] = None
-    limit: Optional[int] = None
+    limit: Optional[int] = Field(None, ge=1)
+    start: bool = True
 
 
 class ScrapeStatusOut(BaseModel):
-    status: str  # "running" | "done" | "error" | "unknown"
+    status: str  # running, done, error, awaiting_login, unknown
     collected: int = 0
     error: Optional[str] = None
+    next_page: int = 1
+
+
+def _validate_event_url(url: str) -> None:
+    import json
+    from urllib.parse import urlparse, parse_qs
+    parsed = urlparse(url)
+    try:
+        events = json.loads(parse_qs(parsed.query)["eventAttending"][0])
+        valid = (parsed.scheme == "https" and parsed.hostname == "www.linkedin.com"
+                 and parsed.path.rstrip("/") == "/search/results/people"
+                 and not parsed.username and not parsed.password
+                 and isinstance(events, list) and len(events) == 1
+                 and isinstance(events[0], str) and events[0].isdigit())
+    except (KeyError, ValueError, TypeError):
+        valid = False
+    if not valid:
+        raise HTTPException(422, "Use a LinkedIn event attendee people-search URL")
+
+
+async def _scrape_account(repo: Repository, account_id: str, ready: bool = True):
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(404, "Account not found")
+    if ready:
+        if account.status != "active" or not account.li_at_cookie:
+            raise HTTPException(409, "Reconnect this account and Save before starting/resuming the scrape")
+        from releasi.scheduler.runner import _account_proxy_url
+        if not await _account_proxy_url(account):
+            raise HTTPException(409, "An account proxy is required")
+    return account
 
 
 async def _apollo_enrich_batch(items: list, apollo_api_key: str) -> dict:
@@ -111,181 +140,161 @@ async def _apollo_enrich_batch(items: list, apollo_api_key: str) -> dict:
         return {}
 
 
+class EventScrapeSetupError(RuntimeError):
+    """Safe, user-facing setup errors with no credentials or browser details."""
+
+
 async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Optional[int]):
-    """Background task: scrape LinkedIn event attendees, Apollo-enrich, and persist as leads."""
+    """Run a claimed job, checkpoint each page, and retain partial failures."""
+    import asyncio
     from releasi.db.engine import get_session_factory
-    from releasi.db.repository import Repository as _Repo
     from releasi.db.models import Lead, LeadStatus
     from releasi.linkedin.browser import LinkedInBrowser
+    from releasi.linkedin.pool import get_browser_pool
     from releasi.linkedin.scraper import scrape_event_attendees
-    _scrape_jobs[list_id] = {"status": "running", "collected": 0, "enriched": 0}
+    from releasi.notifications.slack import notify
+    from releasi.scheduler.runner import _account_proxy_url
 
-    session = get_session_factory()()
-    repo = _Repo(session)
+    store = get_scrape_job_store()
+    sessions = get_session_factory()
     browser = LinkedInBrowser()
     lease = None
-
+    list_name = list_id
+    items = []
     try:
-        account = await repo.get_account(account_id)
-        if not account:
-            _scrape_jobs[list_id] = {"status": "error", "collected": 0, "error": "Account not found"}
-            return
+        # Keep DB sessions short: an hours-long scrape must not hold a read txn.
+        async with sessions() as session:
+            repo = Repository(session)
+            account = await repo.get_account(account_id)
+            ll = await repo.get_lead_list(list_id)
+            if not account or not ll:
+                raise EventScrapeSetupError("Account or list no longer exists")
+            list_name = ll.name
+            if account.status != "active" or not account.li_at_cookie:
+                raise EventScrapeSetupError("Reconnect this account and Save, then use Re-scrape.")
+            if not await _account_proxy_url(account):
+                raise EventScrapeSetupError("An account proxy is required for event scraping")
 
-        from releasi.linkedin.pool import get_browser_pool
-        from releasi.scheduler.runner import _account_proxy_url
-        if not await _account_proxy_url(account):
-            raise RuntimeError("An account proxy is required for event scraping")
-        lease = await get_browser_pool().reserve_external(account.id)
-        # Login may have updated credentials while this scrape waited.
-        await session.refresh(account)
-        await browser.launch(
-            account_id=account.id,
-            li_at_cookie=account.li_at_cookie,
-            user_agent=account.user_agent,
-            proxy_url=account.proxy_url,
-            proxy_country=account.proxy_country,
-            timezone=account.timezone,
-            cookies_json=account.cookies_json,
-        )
+        pool = get_browser_pool()
+        if pool.is_busy(account_id):
+            raise EventScrapeSetupError("Account browser is busy; resume when its current session is closed.")
+        lease = await pool.reserve_external(account_id)
+        async with sessions() as session:
+            account = await Repository(session).get_account(account_id)
+            if not account or account.status != "active" or not account.li_at_cookie:
+                raise EventScrapeSetupError("Reconnect this account before resuming.")
+            if not await _account_proxy_url(account):
+                raise EventScrapeSetupError("An account proxy is required for event scraping")
+            await browser.launch(
+                account_id=account.id, li_at_cookie=account.li_at_cookie,
+                user_agent=account.user_agent, proxy_url=account.proxy_url,
+                proxy_country=account.proxy_country, timezone=account.timezone,
+                cookies_json=account.cookies_json,
+            )
 
-        valid = await browser.validate_session()
-        if not valid:
-            _scrape_jobs[list_id] = {"status": "error", "collected": 0, "error": "Session expired — please re-login"}
-            return
-
-        # Track items written by the checkpoint callback so we can backfill
-        # Apollo enrichment into them after the full scrape completes.
-        checkpointed_urls: set = set()
+        # Include the feed validation in pacing. Never rapid-fire feed + search.
+        await store.before_navigation(account_id)
+        if not await browser.validate_session():
+            raise EventScrapeSetupError("Browser session validation failed; reconnect/check proxy before resuming.")
+        async with sessions() as session:
+            existing = await Repository(session).get_list_lead_urls(list_id)
+        state = store.read(list_id)
+        store.update(list_id, collected=len(existing))
+        effective_limit = limit if limit is not None else state.get("limit")
 
         async def _checkpoint(new_items: list) -> None:
-            """Write raw (unenriched) leads to DB every _CHECKPOINT_INTERVAL pages."""
-            ll_cur = await repo.get_lead_list(list_id)
-            if not ll_cur:
-                return
-            existing = await repo.get_list_lead_urls(list_id)
-            raw_leads = []
-            for item in new_items:
-                li_url = item["url"]
-                if li_url in existing:
-                    continue
-                parts = (item.get("name") or "").strip().split(None, 1)
-                raw_leads.append(Lead(
-                    lead_list_id=list_id,
-                    linkedin_url=li_url,
-                    first_name=parts[0] if parts else None,
-                    last_name=parts[1] if len(parts) > 1 else None,
-                    status=LeadStatus.PENDING,
-                ))
-                checkpointed_urls.add(li_url)
-            if raw_leads:
-                count = await repo.bulk_create_leads(raw_leads)
-                await repo.update_lead_list(
-                    ll_cur, total_leads=ll_cur.total_leads + count, csv_filename="event_attendees.csv"
-                )
+            async with sessions() as session:
+                repo = Repository(session)
+                ll = await repo.get_lead_list(list_id)
+                if not ll:
+                    raise EventScrapeSetupError("List deleted; scrape stopped")
+                existing_now = await repo.get_list_lead_urls(list_id)
+                raw = []
+                for item in new_items:
+                    if item["url"] in existing_now:
+                        continue
+                    parts = (item.get("name") or "").strip().split(None, 1)
+                    raw.append(Lead(
+                        lead_list_id=list_id, linkedin_url=item["url"],
+                        first_name=parts[0] if parts else None,
+                        last_name=parts[1] if len(parts) > 1 else None,
+                        status=LeadStatus.PENDING,
+                    ))
+                if raw:
+                    await repo.bulk_create_leads(raw)
+                    # Reused canonical leads may still have blank imported names.
+                    from sqlalchemy import select
+                    names = {lead.linkedin_url: lead for lead in raw}
+                    rows = await session.execute(select(Lead).where(Lead.linkedin_url.in_(names)))
+                    for lead in rows.scalars():
+                        incoming = names[lead.linkedin_url]
+                        for field in ("first_name", "last_name"):
+                            if not getattr(lead, field) and getattr(incoming, field):
+                                setattr(lead, field, getattr(incoming, field))
+                # Count actual memberships, including previously existing people.
+                total = len(await repo.get_list_lead_urls(list_id))
+                await repo.update_lead_list(ll, total_leads=total, csv_filename="event_attendees.csv")
+                store.update(list_id, collected=total)
+
+        async def _page_saved(page_num: int, page_size: int, complete: bool) -> None:
+            store.record_page_size(account_id, page_size)
+            store.update(list_id, next_page=page_num + 1 if complete else page_num)
+
+        async def _before_navigation() -> None:
+            await store.before_navigation(account_id)
 
         page = await browser.new_page()
-        try:
-            def _on_progress(count: int, _page_num: int):
-                _scrape_jobs[list_id]["collected"] = count
-
-            items = await scrape_event_attendees(
-                page, url,
-                limit=limit,
-                on_progress=_on_progress,
-                page_factory=browser.new_page,
-                on_checkpoint=_checkpoint,
-            )
-        finally:
-            await page.close()
-        # Enrichment does not need LinkedIn. Stop network traffic and release
-        # account ownership rather than holding the browser through Apollo work.
+        items = await scrape_event_attendees(
+            page, url, limit=effective_limit,
+            page_factory=browser.new_page,
+            on_checkpoint=_checkpoint,
+            start_page=state.get("next_page", 1), existing_urls=existing,
+            before_navigation=_before_navigation, on_page_saved=_page_saved,
+        )
         await browser.close()
         lease.release()
         lease = None
 
-        # Apollo enrichment — batches of 10, only if API key is configured
+        # Enrichment needs no LinkedIn browser and cannot lose saved attendees.
+        enrichment = {}
         apollo_key = _get_apollo_key()
-        enrichment: dict = {}
-        if apollo_key and items:
-            _scrape_jobs[list_id]["status"] = "enriching"
-            batch_size = 10
-            for i in range(0, len(items), batch_size):
-                batch = items[i:i + batch_size]
-                batch_result = await _apollo_enrich_batch(batch, apollo_key)
-                enrichment.update(batch_result)
-                _scrape_jobs[list_id]["enriched"] = len(enrichment)
-                logger.info("apollo_enrich.progress", enriched=len(enrichment), total=len(items))
-
-        # Persist leads that were not already checkpointed
-        ll = await repo.get_lead_list(list_id)
-        if ll and items:
-            existing_urls = await repo.get_list_lead_urls(list_id)
-            new_leads = []
-            for item in items:
-                li_url = item["url"]
-                if li_url in existing_urls:
-                    continue
-                # Merge scraper name with Apollo enrichment (Apollo wins on fields it provides)
-                apollo = enrichment.get(li_url.lower().rstrip("/"), {})
-                scraper_name = item.get("name", "")
-                scraper_parts = scraper_name.strip().split(None, 1) if scraper_name else []
-                first_name = apollo.get("first_name") or (scraper_parts[0] if scraper_parts else None)
-                last_name = apollo.get("last_name") or (scraper_parts[1] if len(scraper_parts) > 1 else None)
-                new_leads.append(Lead(
-                    lead_list_id=list_id,
-                    linkedin_url=li_url,
-                    first_name=first_name,
-                    last_name=last_name,
-                    email=apollo.get("email"),
-                    company=apollo.get("company"),
-                    title=apollo.get("title"),
-                    status=LeadStatus.PENDING,
-                ))
-            if new_leads:
-                count = await repo.bulk_create_leads(new_leads)
-                await repo.update_lead_list(ll, total_leads=ll.total_leads + count, csv_filename="event_attendees.csv")
-
-            # Backfill Apollo enrichment into leads that were written raw by the
-            # checkpoint callback — they were persisted without Apollo data.
-            if enrichment and checkpointed_urls:
-                backfill = {}
-                for li_url in checkpointed_urls:
-                    apollo = enrichment.get(li_url.lower().rstrip("/"), {})
-                    filled = {k: apollo.get(k) for k in ("first_name", "last_name", "email", "company", "title") if apollo.get(k)}
-                    if filled:
-                        backfill[li_url] = filled
-                if backfill:
-                    updated = await repo.update_leads_enrichment(backfill)
-                    logger.info("event_scrape.apollo_backfill", updated=updated)
-
-        _scrape_jobs[list_id] = {"status": "done", "collected": len(items), "enriched": len(enrichment)}
-        logger.info("event_scrape.done", list_id=list_id, total=len(items), enriched=len(enrichment))
-
-        from releasi.notifications.slack import notify as _slack_notify
-        ll_final = await repo.get_lead_list(list_id)
-        list_name = ll_final.name if ll_final else list_id
-        await _slack_notify(
-            f":white_check_mark: *Event scrape done* — *{list_name}*\n"
-            f"{len(items)} profiles collected, {len(enrichment)} Apollo-enriched."
-        )
-
-    except Exception as e:
-        logger.error("event_scrape.failed", list_id=list_id, error=str(e))
-        prev = _scrape_jobs.get(list_id, {})
-        _scrape_jobs[list_id] = {"status": "error", "collected": prev.get("collected", 0), "error": str(e)}
-
-        from releasi.notifications.slack import notify as _slack_notify
-        try:
-            await _slack_notify(f":x: *Event scrape failed* — list `{list_id}`\nError: {str(e)[:200]}")
-        except Exception:
-            pass
+        if apollo_key:
+            for index in range(0, len(items), 10):
+                enrichment.update(await _apollo_enrich_batch(items[index:index + 10], apollo_key))
+            if enrichment:
+                from sqlalchemy import select
+                async with sessions() as session:
+                    rows = await session.execute(select(Lead).where(
+                        Lead.linkedin_url.in_([item["url"] for item in items])
+                    ))
+                    for lead in rows.scalars():
+                        data = enrichment.get(lead.linkedin_url.lower().rstrip("/"), {})
+                        for field in ("first_name", "last_name", "email", "company", "title"):
+                            if not getattr(lead, field) and data.get(field):
+                                setattr(lead, field, data[field])
+                    await session.commit()
+        state = store.update(list_id, status="done", error=None)
+        logger.info("event_scrape.done", list_id=list_id, total=state["collected"])
+        await notify("*Event scrape complete*: *%s*\n%s attendees saved; %s enriched. No invitations sent." %
+                     (list_name, state["collected"], len(enrichment)))
+    except asyncio.CancelledError:
+        store.update(list_id, status="error", error="Run interrupted; use Re-scrape to resume saved progress.")
+        raise
+    except Exception as error:
+        # Do not include credentials/URLs from browser exceptions in notifications.
+        from releasi.linkedin.scraper import EventScrapeStopped
+        reason = str(error) if isinstance(error, (EventScrapeStopped, EventScrapeSetupError)) else type(error).__name__
+        state = store.update(list_id, status="error", error=reason)
+        logger.warning("event_scrape.stopped", list_id=list_id, saved=state.get("collected", 0), reason=reason)
+        await notify("*Event scrape stopped*: *%s*\n%s attendees saved. %s\nUse Re-scrape after resolving the issue; saved attendees stay available." %
+                     (list_name, state.get("collected", 0), reason))
     finally:
         try:
             await browser.close()
         finally:
             if lease:
                 lease.release()
-            await session.close()
+            store.release(list_id)
 
 
 async def _enrich_lead_list(repo: Repository, lead_list) -> LeadListOut:
@@ -325,16 +334,31 @@ async def event_import_list(
     repo: Repository = Depends(get_repo),
 ):
     """Create a lead list and start scraping LinkedIn event attendees in the background."""
+    _validate_event_url(body.url)
+    await _scrape_account(repo, body.account_id, ready=body.start)
+    store = get_scrape_job_store()
+    if body.start and body.account_id in store.active.values():
+        raise HTTPException(409, "This account already has a queued/running scrape")
     name = body.list_name or f"Event Attendees - {datetime.utcnow().strftime('%m/%d')}"
+    if await repo.get_lead_list_by_name(name):
+        raise HTTPException(409, "Lead list name already exists")
     ll = await repo.create_lead_list(name=name, csv_filename="scraping...")
     ll = await repo.update_lead_list(ll, source_url=body.url, scrape_account_id=body.account_id)
-    background_tasks.add_task(_run_event_scrape, ll.id, body.account_id, body.url, body.limit)
+    if body.start:
+        try:
+            store.claim(ll.id, body.account_id, body.limit)
+        except ValueError as error:
+            await repo.delete_lead_list(ll.id)
+            raise HTTPException(409, str(error)) from error
+        background_tasks.add_task(_run_event_scrape, ll.id, body.account_id, body.url, body.limit)
+    else:
+        store.prepare(ll.id, body.account_id, body.limit)
     return await _enrich_lead_list(repo, ll)
 
 
 class ReScrapeRequest(BaseModel):
     account_id: Optional[str] = None
-    limit: Optional[int] = None
+    limit: Optional[int] = Field(None, ge=1)
 
 
 @router.post("/lead-lists/{lead_list_id}/re-scrape", response_model=LeadListOut)
@@ -355,18 +379,31 @@ async def re_scrape_list(
     if not account_id:
         raise HTTPException(status_code=400, detail="No account ID provided and none stored on this list")
 
-    # Update stored account if caller explicitly overrode it
-    if body.account_id and body.account_id != ll.scrape_account_id:
-        ll = await repo.update_lead_list(ll, scrape_account_id=body.account_id)
+    _validate_event_url(ll.source_url)
+    await _scrape_account(repo, account_id)
+    store = get_scrape_job_store()
+    try:
+        store.claim(lead_list_id, account_id, body.limit)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
 
+    try:
+        # Only an unstarted list can safely switch account search ordering.
+        if body.account_id and body.account_id != ll.scrape_account_id:
+            ll = await repo.update_lead_list(ll, scrape_account_id=body.account_id)
+        response = await _enrich_lead_list(repo, ll)
+    except BaseException:
+        store.update(lead_list_id, status="error", error="Failed to queue resume; no scraping started")
+        store.release(lead_list_id)
+        raise
     background_tasks.add_task(_run_event_scrape, ll.id, account_id, ll.source_url, body.limit)
-    return await _enrich_lead_list(repo, ll)
+    return response
 
 
 @router.get("/lead-lists/{lead_list_id}/scrape-status", response_model=ScrapeStatusOut)
 async def get_scrape_status(lead_list_id: str):
     """Poll the progress of an in-progress event attendee scrape."""
-    job = _scrape_jobs.get(lead_list_id)
+    job = get_scrape_job_store().read(lead_list_id)
     if not job:
         return ScrapeStatusOut(status="unknown", collected=0)
     return ScrapeStatusOut(**job)
@@ -455,9 +492,13 @@ async def unarchive_lead_list(
 
 @router.delete("/lead-lists/{lead_list_id}")
 async def delete_lead_list(lead_list_id: str, repo: Repository = Depends(get_repo)):
+    store = get_scrape_job_store()
+    if lead_list_id in store.active:
+        raise HTTPException(409, "Cannot delete a list while its scrape is running")
     deleted = await repo.delete_lead_list(lead_list_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Lead list not found")
+    store.delete(lead_list_id)
     return {"ok": True}
 
 

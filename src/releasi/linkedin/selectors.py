@@ -368,6 +368,22 @@ SEARCH_NO_RESULTS = [
     ':has-text("No results found")',
 ]
 
+SEARCH_NEXT_PAGE = [
+    'button[aria-label="Next"]',
+    'button[aria-label="Next page"]',
+    '.artdeco-pagination__button--next',
+    'main button:text-is("Next")',
+]
+
+SEARCH_RESTRICTIONS = [
+    'main :text("commercial use limit")',
+    'main :text("search limit")',
+    'main :text("Too many requests")',
+    ':text("temporarily restricted")',
+    ':text("unusual activity")',
+    'iframe[src*="captcha"]',
+]
+
 # ── Contact Info overlay ──────────────────────────────────────────────────
 # LinkedIn renders the Contact Info at /in/{slug}/overlay/contact-info/
 # The overlay is a modal with structured sections. Email is in an <a href="mailto:">
