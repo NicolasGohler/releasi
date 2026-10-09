@@ -1716,7 +1716,7 @@ class Repository:
             )
             .join(CampaignLeadAssignment, Campaign.id == CampaignLeadAssignment.campaign_id)
             .join(Account, Campaign.account_id == Account.id, isouter=True)
-            .where(CampaignLeadAssignment.lead_id == lead_id)
+            .where(CampaignLeadAssignment.lead_id == lead_id, Campaign.archived == False)
             .order_by(CampaignLeadAssignment.created_at.desc())
         )
         return result.all()
@@ -1729,7 +1729,7 @@ class Repository:
             select(CampaignLeadAssignment, Campaign.name, Account.name)
             .join(Campaign, Campaign.id == CampaignLeadAssignment.campaign_id)
             .outerjoin(Account, Account.id == Campaign.account_id)
-            .where(CampaignLeadAssignment.lead_id.in_(lead_ids))
+            .where(CampaignLeadAssignment.lead_id.in_(lead_ids), Campaign.archived == False)
             .order_by(
                 CampaignLeadAssignment.created_at.desc(),
                 CampaignLeadAssignment.id.desc(),
@@ -2235,6 +2235,8 @@ class Repository:
                     CampaignLeadAssignment.id.desc(),
                 ),
             ).label("position"),
+        ).join(Campaign, Campaign.id == CampaignLeadAssignment.campaign_id).where(
+            Campaign.archived == False
         )
         if campaign_id:
             assignment_query = assignment_query.where(
@@ -2261,13 +2263,19 @@ class Repository:
 
         if campaign_id:
             # Phase 3b: join via CampaignLeadAssignment since Lead.campaign_id is NULL
+            visible_campaign = CampaignLeadAssignment.campaign_id.in_(
+                select(Campaign.id).where(Campaign.archived == False)
+            )
             stmt = stmt.join(
                 CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id
-            ).where(CampaignLeadAssignment.campaign_id == campaign_id)
+            ).where(
+                CampaignLeadAssignment.campaign_id == campaign_id,
+                visible_campaign,
+            )
             count_stmt = (
                 count_stmt
                 .join(CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id)
-                .where(CampaignLeadAssignment.campaign_id == campaign_id)
+                .where(CampaignLeadAssignment.campaign_id == campaign_id, visible_campaign)
             )
 
         if status_filter:

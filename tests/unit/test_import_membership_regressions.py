@@ -147,3 +147,36 @@ async def test_library_status_sort_and_unassigned_fallback(repo):
     leads, count = await repo.list_leads_global(status_filter="pending")
     assert count == 1
     assert [l.id for l in leads] == [unassigned.id]
+
+
+@pytest.mark.asyncio
+async def test_archived_campaigns_do_not_affect_library_status_or_summaries(repo):
+    from releasi.api.routes.leads import _enrich_leads
+
+    account = Account(name="Archive", li_at_cookie="test")
+    repo.session.add(account)
+    await repo.session.flush()
+    visible = Campaign(name="Visible", account_id=account.id)
+    archived = Campaign(name="Archived", account_id=account.id, archived=True)
+    lead = Lead(first_name="Shared")
+    repo.session.add_all([visible, archived, lead])
+    await repo.session.flush()
+    repo.session.add_all([
+        CampaignLeadAssignment(lead_id=lead.id, campaign_id=visible.id,
+                               status="connected", created_at=datetime(2026, 1, 1)),
+        CampaignLeadAssignment(lead_id=lead.id, campaign_id=archived.id,
+                               status="error", created_at=datetime(2026, 2, 1)),
+    ])
+    await repo.session.commit()
+    leads, total = await repo.list_leads_global(status_filter="connected")
+    assert total == 1
+    out = (await _enrich_leads(repo, leads, library=True))[0]
+    assert out.campaign_id == visible.id
+    assert out.status == "connected"
+    assert [campaign.id for campaign in out.campaigns] == [visible.id]
+    assert [row[0] for row in await repo.get_lead_campaigns(lead.id)] == [visible.id]
+    _, total = await repo.list_leads_global(status_filter="error")
+    assert total == 0
+    leads, total = await repo.list_leads_global(campaign_id=archived.id)
+    assert total == 0 and leads == []
+    assert not repo.session.dirty
