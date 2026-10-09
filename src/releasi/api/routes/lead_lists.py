@@ -315,10 +315,12 @@ async def _run_event_scrape(list_id: str, account_id: str, url: str, limit: Opti
             store.release(list_id)
 
 
-async def _enrich_lead_list(repo: Repository, lead_list) -> LeadListOut:
+async def _enrich_lead_list(
+    repo: Repository, lead_list, include_archived: bool = False,
+) -> LeadListOut:
     """Add campaign_count to a LeadList."""
     out = LeadListOut.model_validate(lead_list)
-    links = await repo.get_list_campaigns(lead_list.id)
+    links = await repo.get_list_campaigns(lead_list.id, include_archived=include_archived)
     out.campaign_count = len(links)
     return out
 
@@ -329,7 +331,7 @@ async def list_lead_lists(
     repo: Repository = Depends(get_repo),
 ):
     lists = await repo.list_lead_lists(include_archived=include_archived)
-    return [await _enrich_lead_list(repo, ll) for ll in lists]
+    return [await _enrich_lead_list(repo, ll, include_archived=include_archived) for ll in lists]
 
 
 @router.post("/lead-lists", response_model=LeadListOut, status_code=201)
@@ -428,12 +430,15 @@ async def get_scrape_status(lead_list_id: str):
 
 
 @router.get("/lead-lists/{lead_list_id}", response_model=LeadListDetail)
-async def get_lead_list(lead_list_id: str, repo: Repository = Depends(get_repo)):
+async def get_lead_list(
+    lead_list_id: str, include_archived: bool = Query(False),
+    repo: Repository = Depends(get_repo),
+):
     ll = await repo.get_lead_list(lead_list_id)
     if not ll:
         raise HTTPException(status_code=404, detail="Lead list not found")
 
-    links = await repo.get_list_campaigns(lead_list_id)
+    links = await repo.get_list_campaigns(lead_list_id, include_archived=include_archived)
     campaigns = []
     for link in links:
         campaign = await repo.get_campaign(link.campaign_id)

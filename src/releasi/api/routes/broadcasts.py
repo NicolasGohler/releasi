@@ -38,7 +38,8 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
 
 async def _enrich(repo: Repository, broadcast: Broadcast) -> BroadcastOut:
     out = BroadcastOut.model_validate(broadcast)
-    out.status_counts = await repo.get_broadcast_status_counts(broadcast.id)
+    out.status_counts = await repo.get_broadcast_status_counts(broadcast.id, include_archived=broadcast.archived)
+    out.total_leads = sum(out.status_counts.values())
 
     account = await repo.get_account(broadcast.account_id)
     if account:
@@ -46,8 +47,10 @@ async def _enrich(repo: Repository, broadcast: Broadcast) -> BroadcastOut:
 
     if broadcast.source_list_id:
         source_list = await repo.get_lead_list(broadcast.source_list_id)
-        if source_list:
+        if source_list and (not source_list.archived or broadcast.archived):
             out.source_list_name = source_list.name
+        else:
+            out.source_list_id = None
 
     # Count successful DIRECT_MESSAGE action_log rows for this broadcast.
     # Different from total_leads: a lead may receive 1–3 messages, or 0 if skipped.
@@ -276,6 +279,7 @@ async def list_broadcast_leads(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     status: Optional[str] = Query(None),
+    include_archived: bool = Query(False),
     repo: Repository = Depends(get_repo),
 ):
     broadcast = await repo.get_broadcast(broadcast_id)
@@ -283,7 +287,8 @@ async def list_broadcast_leads(
         raise HTTPException(status_code=404, detail="Broadcast not found")
 
     rows, total = await repo.list_broadcast_leads_paginated(
-        broadcast_id, limit=limit, offset=offset, status_filter=status
+        broadcast_id, limit=limit, offset=offset, status_filter=status,
+        include_archived=include_archived or broadcast.archived,
     )
     items = [await _enrich_lead(repo, r) for r in rows]
     return BroadcastLeadsPage(items=items, total=total, limit=limit, offset=offset)

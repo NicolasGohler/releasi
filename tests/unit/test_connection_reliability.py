@@ -9,7 +9,7 @@ from playwright.async_api import async_playwright
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from releasi.db.models import Account, Base, Campaign, CampaignLeadAssignment, Lead
+from releasi.db.models import Account, Base, Campaign, CampaignLeadAssignment, Lead, LeadList, LeadListMembership
 from releasi.db.repository import Repository
 from releasi.linkedin.actions import LinkedInActions
 from releasi.safety.dispatch_decisions import classify_connection_result, AccountAction
@@ -32,6 +32,10 @@ async def retry_repo(tmp_path):
         assignments = [CampaignLeadAssignment(campaign_id=campaigns[0].id, lead_id=lead.id) for lead in leads]
         assignments.append(CampaignLeadAssignment(campaign_id=campaigns[1].id, lead_id=leads[0].id))
         session.add_all(assignments)
+        lead_list = LeadList(name="Retry test")
+        session.add(lead_list)
+        await session.flush()
+        session.add_all([LeadListMembership(lead_id=lead.id, lead_list_id=lead_list.id) for lead in leads])
         await session.commit()
         yield Repository(session), factory, campaigns, leads, assignments
     await engine.dispose()

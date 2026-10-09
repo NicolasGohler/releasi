@@ -41,6 +41,7 @@ async def list_leads(
     last_activity_after: Optional[str] = Query(None),
     last_activity_before: Optional[str] = Query(None),
     skip_reason: Optional[str] = Query(None),
+    include_archived: bool = Query(False),
     read_source: str = Query(
         "new",
         description=(
@@ -54,6 +55,12 @@ async def list_leads(
     campaign = await repo.get_campaign(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+
+    account = await repo.get_account(campaign.account_id)
+    include_archived = include_archived or campaign.archived or bool(account and account.archived)
+    if lead_list_id:
+        target_list = await repo.get_lead_list(lead_list_id)
+        include_archived = include_archived or bool(target_list and target_list.archived)
 
     paginator = (
         repo.list_leads_via_assignments_paginated
@@ -73,8 +80,9 @@ async def list_leads(
         last_activity_after=last_activity_after,
         last_activity_before=last_activity_before,
         skip_reason=skip_reason,
+        include_archived=include_archived,
     )
-    items = await _enrich_leads(repo, leads)
+    items = await _enrich_leads(repo, leads, include_archived=include_archived)
     return LeadPage(
         items=items,
         total=total,
@@ -86,6 +94,7 @@ async def list_leads(
 async def _enrich_leads(
     repo: Repository, leads, *, library: bool = False,
     campaign_id: Optional[str] = None,
+    include_archived: bool = False, target_list_ids: Optional[list] = None,
 ) -> list[LeadOut]:
     """Attach campaign_name and lead_list_name to LeadOut.
 
@@ -103,8 +112,12 @@ async def _enrich_leads(
             campaign_names[cid] = c.name
 
     # Batch lookup: most-recent list membership per lead
-    recent_lists = await repo.get_most_recent_list_for_leads(lead_ids)
-    assignments = await repo.get_campaign_assignments_for_leads(lead_ids) if library else {}
+    recent_lists = await repo.get_most_recent_list_for_leads(
+        lead_ids, include_archived=include_archived, target_list_ids=target_list_ids,
+    )
+    assignments = await repo.get_campaign_assignments_for_leads(
+        lead_ids, include_archived=include_archived, target_campaign_id=campaign_id,
+    ) if library else {}
 
     items: list[LeadOut] = []
     for l in leads:
@@ -113,6 +126,9 @@ async def _enrich_leads(
             out.campaign_name = campaign_names[l.campaign_id]
         if l.id in recent_lists:
             out.lead_list_id, out.lead_list_name = recent_lists[l.id]
+        else:
+            out.lead_list_id = None
+            out.lead_list_name = None
         if library:
             rows = assignments.get(l.id, [])
             selected = next(
@@ -477,6 +493,7 @@ async def list_leads_global(
     has_twitter: Optional[bool] = Query(None),
     has_email: Optional[bool] = Query(None),
     tg_contacted: Optional[bool] = Query(None),
+    include_archived: bool = Query(False),
     repo: Repository = Depends(get_repo),
 ):
     leads, total = await repo.list_leads_global(
@@ -497,9 +514,14 @@ async def list_leads_global(
         has_twitter=has_twitter,
         has_email=has_email,
         tg_contacted=tg_contacted,
+        include_archived=include_archived,
     )
 
-    items = await _enrich_leads(repo, leads, library=True, campaign_id=campaign_id)
+    items = await _enrich_leads(
+        repo, leads, library=True, campaign_id=campaign_id,
+        include_archived=include_archived,
+        target_list_ids=[s.strip() for s in lead_list_id.split(",") if s.strip()] if lead_list_id else None,
+    )
     return LeadPage(
         items=items,
         total=total,
@@ -562,23 +584,26 @@ async def lookup_lead_by_url(
 # ── Single Lead GET / PATCH ─────────────────────────────────────────
 
 @router.get("/leads/{lead_id}", response_model=LeadOut)
-async def get_lead(lead_id: str, repo: Repository = Depends(get_repo)):
+async def get_lead(
+    lead_id: str, include_archived: bool = Query(False),
+    repo: Repository = Depends(get_repo),
+):
     """Fetch a single lead with all list memberships and campaign assignments."""
     lead = await repo.get_lead_by_id(lead_id)
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
-    items = await _enrich_leads(repo, [lead])
+    items = await _enrich_leads(repo, [lead], include_archived=include_archived)
     out = items[0]
 
     # Populate full list membership history (detail view only)
-    memberships = await repo.get_lead_memberships(lead_id)
+    memberships = await repo.get_lead_memberships(lead_id, include_archived=include_archived)
     out.lead_lists = [
         LeadListRef(id=row[0], name=row[1], added_at=row[2])
         for row in memberships
     ]
 
     # Populate all campaign assignments (detail view only)
-    campaign_rows = await repo.get_lead_campaigns(lead_id)
+    campaign_rows = await repo.get_lead_campaigns(lead_id, include_archived=include_archived)
     out.campaigns = [
         CampaignRef(id=row[0], name=row[1], status=row[2], account_name=row[3])
         for row in campaign_rows

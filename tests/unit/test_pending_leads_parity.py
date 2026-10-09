@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 
 from releasi.db.models import (
     Base,
-    Account, Campaign, Lead, LeadStatus,
+    Account, Campaign, Lead, LeadStatus, LeadList,
 )
 from releasi.db.repository import Repository
 
@@ -36,13 +36,15 @@ async def test_parity_pending_leads(session):
     session.add(acct)
     await session.flush()
     camp = Campaign(account_id=acct.id, name="C1")
-    session.add(camp)
+    lead_list = LeadList(name="Parity test")
+    session.add_all([camp, lead_list])
     await session.flush()
 
     leads = [
         Lead(
             campaign_id=camp.id,
             linkedin_url=f"https://www.linkedin.com/in/pending{i}",
+            lead_list_id=lead_list.id,
             status=LeadStatus.PENDING,
         )
         for i in range(5)
@@ -50,11 +52,13 @@ async def test_parity_pending_leads(session):
         Lead(
             campaign_id=camp.id,
             linkedin_url="https://www.linkedin.com/in/connected",
+            lead_list_id=lead_list.id,
             status=LeadStatus.CONNECTED,
         ),
         Lead(
             campaign_id=camp.id,
             linkedin_url="https://www.linkedin.com/in/error",
+            lead_list_id=lead_list.id,
             status=LeadStatus.ERROR,
         ),
     ]
@@ -77,13 +81,15 @@ async def test_parity_with_limit(session):
     session.add(acct)
     await session.flush()
     camp = Campaign(account_id=acct.id, name="C1")
-    session.add(camp)
+    lead_list = LeadList(name="Pending test")
+    session.add_all([camp, lead_list])
     await session.flush()
 
     leads = [
         Lead(
             campaign_id=camp.id,
             linkedin_url=f"https://www.linkedin.com/in/p{i}",
+            lead_list_id=lead_list.id,
             status=LeadStatus.PENDING,
         )
         for i in range(10)
@@ -105,12 +111,14 @@ async def test_parity_after_dispatch_transition(session):
     session.add(acct)
     await session.flush()
     camp = Campaign(account_id=acct.id, name="C1")
-    session.add(camp)
+    lead_list = LeadList(name="Dispatch test")
+    session.add_all([camp, lead_list])
     await session.flush()
 
     lead = Lead(
         campaign_id=camp.id,
         linkedin_url="https://www.linkedin.com/in/dispatch-test",
+        lead_list_id=lead_list.id,
         status=LeadStatus.PENDING,
     )
     await repo.bulk_create_leads([lead])

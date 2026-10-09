@@ -22,12 +22,16 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
 _catchup_tasks: dict = {}
 
 
-async def _enrich_campaign(repo: Repository, campaign) -> CampaignOut:
+async def _enrich_campaign(
+    repo: Repository, campaign, include_archived: bool = False,
+) -> CampaignOut:
     """Convert a Campaign ORM object to CampaignOut with status counts."""
     out = CampaignOut.model_validate(campaign)
-    out.status_counts = await repo.get_campaign_status_counts(campaign.id)
-    # Add account name
     account = await repo.get_account(campaign.account_id)
+    include_archived = include_archived or campaign.archived or bool(account and account.archived)
+    out.status_counts = await repo.get_campaign_status_counts(campaign.id, include_archived=include_archived)
+    out.total_leads = sum(out.status_counts.values())
+    # Add account name
     if account:
         out.account_name = account.name
         out.account_status = account.status.value if hasattr(account.status, 'value') else account.status
@@ -40,7 +44,7 @@ async def _enrich_campaign(repo: Repository, campaign) -> CampaignOut:
             remaining_budget = max(0, account.daily_limit - sent_today)
             out.estimated_remaining_today = min(pending_count, remaining_budget)
     # Add assigned lead lists
-    links = await repo.get_campaign_lists(campaign.id)
+    links = await repo.get_campaign_lists(campaign.id, include_archived=include_archived)
     assigned = []
     for link in links:
         ll = await repo.get_lead_list(link.lead_list_id)
@@ -61,15 +65,18 @@ async def list_campaigns(
     campaigns = await repo.list_campaigns(account_id=account_id, include_archived=include_archived)
     if status:
         campaigns = [c for c in campaigns if c.status.value == status]
-    return [await _enrich_campaign(repo, c) for c in campaigns]
+    return [await _enrich_campaign(repo, c, include_archived=include_archived) for c in campaigns]
 
 
 @router.get("/campaigns/{campaign_id}", response_model=CampaignOut)
-async def get_campaign(campaign_id: str, repo: Repository = Depends(get_repo)):
+async def get_campaign(
+    campaign_id: str, include_archived: bool = Query(False),
+    repo: Repository = Depends(get_repo),
+):
     campaign = await repo.get_campaign(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    return await _enrich_campaign(repo, campaign)
+    return await _enrich_campaign(repo, campaign, include_archived=include_archived)
 
 
 @router.put("/campaigns/{campaign_id}/lists/order", response_model=CampaignOut)
@@ -336,14 +343,17 @@ async def campaign_stats(
     campaign_id: str,
     days: int = Query(30, ge=0, le=3650),
     granularity: str = Query("day", regex="^(day|hour)$"),
+    include_archived: bool = Query(False),
     repo: Repository = Depends(get_repo),
 ):
     campaign = await repo.get_campaign(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
     start = (date.today() - timedelta(days=days)) if days > 0 else None
-    daily = await repo.get_campaign_daily_stats(campaign_id, start, date.today(), granularity)
-    summary = await repo.get_campaign_acceptance_stats(campaign_id)
+    account = await repo.get_account(campaign.account_id)
+    include_archived = include_archived or campaign.archived or bool(account and account.archived)
+    daily = await repo.get_campaign_daily_stats(campaign_id, start, date.today(), granularity, include_archived=include_archived)
+    summary = await repo.get_campaign_acceptance_stats(campaign_id, include_archived=include_archived)
     return {"daily": daily, "summary": summary}
 
 

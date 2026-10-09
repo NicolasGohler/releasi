@@ -357,6 +357,7 @@ export const reorderCampaignLists = (campaignId: string, orderedListIds: string[
 
 export const fetchGlobalLeads = (params?: {
   page?: number; per_page?: number;
+  include_archived?: boolean;
   // lead_list_id accepts a comma-separated list of IDs, plus the "__unassigned__" sentinel
   // (mixable with real IDs, e.g. "abc,__unassigned__,def") to filter by multiple lists at once.
   lead_list_id?: string; campaign_id?: string;
@@ -371,6 +372,7 @@ export const fetchGlobalLeads = (params?: {
   tg_contacted?: boolean;
 }) => {
   const sp = new URLSearchParams();
+  if (params?.include_archived) sp.set("include_archived", "true");
   if (params?.page) sp.set("page", String(params.page));
   if (params?.per_page) sp.set("per_page", String(params.per_page));
   if (params?.lead_list_id) {

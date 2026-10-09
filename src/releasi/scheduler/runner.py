@@ -586,6 +586,8 @@ async def _dispatch_continuous(
         while lead_queue and successful_sends < remaining_batch and attempts < max_attempts:
             attempts += 1
             lead = lead_queue.pop(0)
+            if not await repo.is_lead_visible(lead.id):
+                continue
             # Per-lead ceiling so one hung Playwright call can't freeze the whole
             # dispatcher for hours (see 2026-08-24 → 2026-08-27 hang). Real dispatches
             # complete in ~30–90s; 180s is a hard "something's wrong" wall.
@@ -749,6 +751,8 @@ async def _dispatch_planned(
         while lead_queue and successful_sends < target and attempts < max_attempts:
             attempts += 1
             lead = lead_queue.pop(0)
+            if not await repo.is_lead_visible(lead.id):
+                continue
             # Per-lead ceiling — see _dispatch_continuous for rationale.
             try:
                 result = await asyncio.wait_for(
@@ -1577,6 +1581,8 @@ async def check_acceptances():
                         )
                     else:
                         # Send immediately (delay=0) — use existing pool context (already acquired)
+                        if not await repo.is_lead_visible(lead.id):
+                            continue
                         try:
                             from releasi.campaign.executor import CampaignExecutor
                             executor = CampaignExecutor(repo, browser_context=pool_context)
@@ -1765,6 +1771,9 @@ async def dispatch_followups():
                             continue
                         # Use the freshly-fetched object for all subsequent ops
                         lead = fresh
+
+                        if not await repo.is_lead_visible(lead.id):
+                            continue
 
                         logger.info(
                             "followup.starting_sequence",
@@ -1957,6 +1966,8 @@ async def dispatch_broadcasts():
 
                         # Bounded per-lead execution — one hung Playwright
                         # can't freeze the dispatcher.
+                        if not await repo.is_lead_visible(fresh.lead_id):
+                            continue
                         try:
                             bc_result = await asyncio.wait_for(
                                 executor.execute_broadcast_lead(account, broadcast, fresh),

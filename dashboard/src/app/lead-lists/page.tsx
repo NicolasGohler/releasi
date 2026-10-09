@@ -250,7 +250,7 @@ export default function LeadListsPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Lists" description="Manage reusable lead collections">
+      <PageHeader title="Lists" className="flex-col items-start gap-3 sm:flex-row sm:items-center [&>div:first-child]:pl-10 sm:[&>div:first-child]:pl-0">
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
@@ -384,8 +384,8 @@ export default function LeadListsPage() {
 
       {/* Sticky bulk-action bar — appears when ≥1 list selected. */}
       {selectedIds.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2">
-          <div className="flex items-center gap-2 rounded-full border border-border bg-background/95 px-4 py-2 shadow-xl backdrop-blur">
+        <div className="fixed bottom-6 left-1/2 z-50 w-[calc(100%-2rem)] max-w-3xl -translate-x-1/2">
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-background/95 px-4 py-2 shadow-xl backdrop-blur">
             <span className="text-sm font-medium">
               {selectedIds.size} selected
             </span>
@@ -401,7 +401,6 @@ export default function LeadListsPage() {
             {allSelectedActive && (
               <Button
                 size="sm"
-                variant="outline"
                 onClick={handleBulkArchive}
                 disabled={bulkPending !== null}
                 className="h-8"
@@ -422,8 +421,11 @@ export default function LeadListsPage() {
                 {bulkPending === "unarchive" ? "Restoring…" : "Restore"}
               </Button>
             )}
-            {confirmingDelete ? (
+            {allSelectedArchived && (confirmingDelete ? (
               <>
+                <p className="w-full text-xs text-destructive">
+                  Contacts with no other list and their campaign history will be permanently deleted.
+                </p>
                 <Button
                   size="sm"
                   variant="destructive"
@@ -453,9 +455,9 @@ export default function LeadListsPage() {
                 className="h-8"
               >
                 <Trash2 className="h-3.5 w-3.5 mr-1.5" />
-                Delete
+                Delete permanently
               </Button>
-            )}
+            ))}
             <button
               type="button"
               onClick={clearSelection}

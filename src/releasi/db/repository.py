@@ -30,6 +30,25 @@ def _lead_search_pattern(search: str) -> str:
     return f"%{query.rstrip('/')}%"
 
 
+def _visible_campaign_ids():
+    return select(Campaign.id).join(Account).where(
+        Campaign.archived == False, Account.archived == False,
+    )
+
+
+def _visible_lead_condition():
+    return exists(select(LeadListMembership.lead_id).where(
+        LeadListMembership.lead_id == Lead.id,
+        LeadListMembership.lead_list_id.in_(
+            select(LeadList.id).where(LeadList.archived == False)
+        ),
+    ))
+
+
+def _visible_lead_ids():
+    return select(Lead.id).where(_visible_lead_condition())
+
+
 def _last_activity_subquery():
     """Per-lead most-recent-activity timestamp across events, notes, and action log.
 
@@ -261,7 +280,7 @@ class Repository:
         if account_id:
             stmt = stmt.where(Campaign.account_id == account_id)
         if not include_archived:
-            stmt = stmt.where(Campaign.archived == False)  # noqa: E712
+            stmt = stmt.where(Campaign.id.in_(_visible_campaign_ids()))
         result = await self.session.execute(stmt)
         return result.scalars().all()
 
@@ -450,6 +469,7 @@ class Repository:
                 CampaignLeadAssignment.status == LeadStatus.SCHEDULED.value,
                 CampaignLeadAssignment.scheduled_at <= before,
                 Lead.linkedin_url.isnot(None),
+                _visible_lead_condition(),
             )
             .order_by(CampaignLeadAssignment.scheduled_at)
         )
@@ -466,6 +486,7 @@ class Repository:
                 CampaignLeadAssignment.campaign_id == campaign_id,
                 CampaignLeadAssignment.status == LeadStatus.SCHEDULED.value,
                 CampaignLeadAssignment.scheduled_at > now,
+                CampaignLeadAssignment.lead_id.in_(_visible_lead_ids()),
             )
         )
         return result.scalar_one()
@@ -508,6 +529,7 @@ class Repository:
                 CampaignLeadAssignment.campaign_id == campaign_id,
                 CampaignLeadAssignment.status == LeadStatus.SCHEDULED.value,
                 CampaignLeadAssignment.scheduled_at < now,
+                CampaignLeadAssignment.lead_id.in_(_visible_lead_ids()),
             )
             .values(status=LeadStatus.PENDING.value, scheduled_at=None)
         )
@@ -525,6 +547,7 @@ class Repository:
                 CampaignLeadAssignment.campaign_id == campaign_id,
                 CampaignLeadAssignment.status == LeadStatus.SCHEDULED.value,
                 CampaignLeadAssignment.scheduled_at > now,
+                CampaignLeadAssignment.lead_id.in_(_visible_lead_ids()),
             )
         )
         return result.scalar_one_or_none()
@@ -555,6 +578,7 @@ class Repository:
                 CampaignLeadAssignment.campaign_id == campaign_id,
                 CampaignLeadAssignment.status == status_str,
                 CampaignLeadAssignment.scheduled_at <= before,
+                _visible_lead_condition(),
             )
             .order_by(CampaignLeadAssignment.scheduled_at)
         )
@@ -591,6 +615,7 @@ class Repository:
                 CampaignLeadAssignment.campaign_id == campaign_id,
                 CampaignLeadAssignment.status == status_str,
                 Lead.linkedin_url.isnot(None),
+                _visible_lead_condition(),
                 or_(CampaignLeadAssignment.scheduled_at.is_(None),
                     CampaignLeadAssignment.scheduled_at <= datetime.utcnow()),
             )
@@ -647,6 +672,7 @@ class Repository:
                 CampaignLeadAssignment.campaign_id == campaign_id,
                 CampaignLeadAssignment.status == LeadStatus.CONNECTED.value,
                 CampaignLeadAssignment.followup_sent_at.is_(None),
+                _visible_lead_condition(),
             )
         )
         return result.scalars().all()
@@ -656,6 +682,11 @@ class Repository:
     ) -> Sequence[Lead]:
         """Phase 3b: delegates to the via_assignments read path."""
         return await self.get_pending_leads_via_assignments(campaign_id, limit=limit)
+
+    async def is_lead_visible(self, lead_id: str) -> bool:
+        return bool((await self.session.execute(
+            select(Lead.id).where(Lead.id == lead_id, _visible_lead_condition())
+        )).scalar_one_or_none())
 
     async def lead_exists_in_campaign(
         self, campaign_id: str, linkedin_url: str
@@ -700,7 +731,7 @@ class Repository:
         await self.session.refresh(lead)
         return lead
 
-    async def get_campaign_status_counts(self, campaign_id: str) -> dict[str, int]:
+    async def get_campaign_status_counts(self, campaign_id: str, include_archived: bool = False) -> dict[str, int]:
         """Get lead counts grouped by status for a campaign (excludes REMOVED leads).
 
         Phase 3b: reads from CampaignLeadAssignment — the canonical source of
@@ -711,6 +742,7 @@ class Repository:
             .where(
                 CampaignLeadAssignment.campaign_id == campaign_id,
                 CampaignLeadAssignment.status != "removed",
+                True if include_archived else CampaignLeadAssignment.lead_id.in_(_visible_lead_ids()),
             )
             .group_by(CampaignLeadAssignment.status)
         )
@@ -1219,6 +1251,7 @@ class Repository:
         last_activity_after: str | None = None,
         last_activity_before: str | None = None,
         skip_reason: str | None = None,
+        include_archived: bool = False,
     ) -> tuple:
         """Return (leads, total_count) with pagination, optional status filter and search."""
         last_activity_sq = _last_activity_subquery()
@@ -1234,6 +1267,9 @@ class Repository:
             .where(Lead.campaign_id == campaign_id)
         )
 
+        if not include_archived:
+            stmt = stmt.where(_visible_lead_condition())
+            count_stmt = count_stmt.where(_visible_lead_condition())
         if status_filter:
             stmt = stmt.where(Lead.status == status_filter)
             count_stmt = count_stmt.where(Lead.status == status_filter)
@@ -1314,6 +1350,7 @@ class Repository:
         last_activity_after: str | None = None,
         last_activity_before: str | None = None,
         skip_reason: str | None = None,
+        include_archived: bool = False,
     ) -> tuple:
         """Mirror of list_leads_paginated reading from CampaignLeadAssignment.
 
@@ -1383,6 +1420,9 @@ class Repository:
             .where(CampaignLeadAssignment.campaign_id == campaign_id)
         )
 
+        if not include_archived:
+            stmt = stmt.where(_visible_lead_condition())
+            count_stmt = count_stmt.where(_visible_lead_condition())
         if status_filter:
             sf = status_filter.lower()
             stmt = stmt.where(CampaignLeadAssignment.status == sf)
@@ -1563,6 +1603,7 @@ class Repository:
     async def get_campaign_daily_stats(
         self, campaign_id: str, start_date: Optional[date], end_date: date,
         granularity: str = "day",
+        include_archived: bool = False,
     ) -> list:
         """Aggregate stats per campaign from ActionLog + accepted from leads."""
         from sqlalchemy import cast, Date as SADate, case, text
@@ -1587,6 +1628,7 @@ class Repository:
                 )).label("errors"),
             )
             .where(ActionLog.campaign_id == campaign_id)
+            .where(True if include_archived else or_(ActionLog.lead_id.is_(None), ActionLog.lead_id.in_(_visible_lead_ids())))
             .group_by(text("bucket"))
             .order_by(text("bucket"))
         )
@@ -1608,6 +1650,7 @@ class Repository:
             .where(
                 CampaignLeadAssignment.campaign_id == campaign_id,
                 CampaignLeadAssignment.connection_accepted_at.isnot(None),
+                True if include_archived else CampaignLeadAssignment.lead_id.in_(_visible_lead_ids()),
             )
             .group_by(text("bucket"))
         )
@@ -1627,7 +1670,7 @@ class Repository:
             for row in sent_rows
         ]
 
-    async def get_campaign_acceptance_stats(self, campaign_id: str) -> dict:
+    async def get_campaign_acceptance_stats(self, campaign_id: str, include_archived: bool = False) -> dict:
         """Get acceptance rate and average time-to-accept for a campaign."""
         # total_sent: count successful CONNECTION_REQUEST actions (more reliable than
         # connection_requested_at which was not always populated in older runs)
@@ -1637,6 +1680,7 @@ class Repository:
                 ActionLog.campaign_id == campaign_id,
                 ActionLog.action_type == ActionType.CONNECTION_REQUEST,
                 ActionLog.status == ActionLogStatus.SUCCESS,
+                True if include_archived else ActionLog.lead_id.in_(_visible_lead_ids()),
             )
         )
         total_sent = sent_result.scalar() or 0
@@ -1648,6 +1692,7 @@ class Repository:
             .where(
                 CampaignLeadAssignment.campaign_id == campaign_id,
                 CampaignLeadAssignment.connection_accepted_at.isnot(None),
+                True if include_archived else CampaignLeadAssignment.lead_id.in_(_visible_lead_ids()),
             )
         )
         accepted_asgns = acc_result.scalars().all()
@@ -1690,25 +1735,28 @@ class Repository:
     async def get_lead_list(self, lead_list_id: str) -> LeadList | None:
         return await self.session.get(LeadList, lead_list_id)
 
-    async def get_lead_memberships(self, lead_id: str) -> list:
+    async def get_lead_memberships(self, lead_id: str, include_archived: bool = False) -> list:
         """Return all lists a lead belongs to, most-recent first.
 
         Returns list of (lead_list_id, name, added_at) tuples.
         """
-        result = await self.session.execute(
+        stmt = (
             select(LeadList.id, LeadList.name, LeadListMembership.added_at)
             .join(LeadListMembership, LeadList.id == LeadListMembership.lead_list_id)
             .where(LeadListMembership.lead_id == lead_id)
             .order_by(LeadListMembership.added_at.desc())
         )
+        if not include_archived:
+            stmt = stmt.where(LeadList.archived == False)
+        result = await self.session.execute(stmt)
         return result.all()
 
-    async def get_lead_campaigns(self, lead_id: str) -> list:
+    async def get_lead_campaigns(self, lead_id: str, include_archived: bool = False) -> list:
         """Return all campaigns a lead is assigned to, with their per-campaign status.
 
         Returns list of (campaign_id, name, status, account_name) tuples.
         """
-        result = await self.session.execute(
+        stmt = (
             select(
                 Campaign.id, Campaign.name,
                 CampaignLeadAssignment.status,
@@ -1716,25 +1764,37 @@ class Repository:
             )
             .join(CampaignLeadAssignment, Campaign.id == CampaignLeadAssignment.campaign_id)
             .join(Account, Campaign.account_id == Account.id, isouter=True)
-            .where(CampaignLeadAssignment.lead_id == lead_id, Campaign.archived == False)
+            .where(CampaignLeadAssignment.lead_id == lead_id)
             .order_by(CampaignLeadAssignment.created_at.desc())
         )
+        if not include_archived:
+            stmt = stmt.where(Campaign.id.in_(_visible_campaign_ids()))
+        result = await self.session.execute(stmt)
         return result.all()
 
-    async def get_campaign_assignments_for_leads(self, lead_ids: list) -> dict:
+    async def get_campaign_assignments_for_leads(
+        self, lead_ids: list, include_archived: bool = False,
+        target_campaign_id: Optional[str] = None,
+    ) -> dict:
         """Batch campaign summaries, ordered by assignment creation time."""
         if not lead_ids:
             return {}
-        result = await self.session.execute(
+        stmt = (
             select(CampaignLeadAssignment, Campaign.name, Account.name)
             .join(Campaign, Campaign.id == CampaignLeadAssignment.campaign_id)
             .outerjoin(Account, Account.id == Campaign.account_id)
-            .where(CampaignLeadAssignment.lead_id.in_(lead_ids), Campaign.archived == False)
+            .where(CampaignLeadAssignment.lead_id.in_(lead_ids))
             .order_by(
                 CampaignLeadAssignment.created_at.desc(),
                 CampaignLeadAssignment.id.desc(),
             )
         )
+        if not include_archived:
+            stmt = stmt.where(or_(
+                Campaign.id.in_(_visible_campaign_ids()),
+                Campaign.id == target_campaign_id if target_campaign_id else False,
+            ))
+        result = await self.session.execute(stmt)
         grouped = {}
         for assignment, name, account_name in result.all():
             grouped.setdefault(assignment.lead_id, []).append(
@@ -1742,7 +1802,10 @@ class Repository:
             )
         return grouped
 
-    async def get_most_recent_list_for_leads(self, lead_ids: list) -> dict:
+    async def get_most_recent_list_for_leads(
+        self, lead_ids: list, include_archived: bool = False,
+        target_list_ids: Optional[list] = None,
+    ) -> dict:
         """Return {lead_id: (list_id, list_name)} for the most-recent membership per lead.
 
         Used by _enrich_leads to populate lead_list_name in list views without
@@ -1750,26 +1813,26 @@ class Repository:
         """
         if not lead_ids:
             return {}
-        subq = (
+        query = (
             select(
                 LeadListMembership.lead_id,
-                func.max(LeadListMembership.added_at).label("max_added"),
+                LeadList.id.label("list_id"), LeadList.name,
+                func.row_number().over(
+                    partition_by=LeadListMembership.lead_id,
+                    order_by=(LeadListMembership.added_at.desc(), LeadListMembership.id.desc()),
+                ).label("position"),
             )
-            .where(LeadListMembership.lead_id.in_(lead_ids))
-            .group_by(LeadListMembership.lead_id)
-            .subquery()
-        )
-        result = await self.session.execute(
-            select(
-                LeadListMembership.lead_id,
-                LeadList.id,
-                LeadList.name,
-            )
-            .join(subq, and_(
-                LeadListMembership.lead_id == subq.c.lead_id,
-                LeadListMembership.added_at == subq.c.max_added,
-            ))
             .join(LeadList, LeadList.id == LeadListMembership.lead_list_id)
+            .where(LeadListMembership.lead_id.in_(lead_ids))
+        )
+        if not include_archived:
+            query = query.where(or_(
+                LeadList.archived == False, LeadList.id.in_(target_list_ids or []),
+            ))
+        subq = query.subquery()
+        result = await self.session.execute(
+            select(subq.c.lead_id, subq.c.list_id, subq.c.name)
+            .where(subq.c.position == 1)
         )
         return {row[0]: (row[1], row[2]) for row in result.all()}
 
@@ -1794,32 +1857,73 @@ class Repository:
         return lead_list
 
     async def delete_lead_list(self, lead_list_id: str) -> bool:
-        """Delete a lead list and its campaign links. Leaves leads intact (nulls FK)."""
-        lead_list = await self.get_lead_list(lead_list_id)
-        if not lead_list:
-            return False
+        """Delete the list and contacts that have no other list, atomically."""
         from sqlalchemy import delete as sa_delete
-        # Remove campaign links
-        await self.session.execute(
-            sa_delete(CampaignLeadList).where(
+        try:
+            # Acquire the SQLite writer lock before deciding which leads are shared.
+            locked = await self.session.execute(
+                update(LeadList).where(LeadList.id == lead_list_id)
+                .values(updated_at=LeadList.updated_at)
+            )
+            if not locked.rowcount:
+                await self.session.rollback()
+                return False
+            exclusive_query = select(Lead.id).where(
+                Lead.id.in_(select(LeadListMembership.lead_id).where(
+                    LeadListMembership.lead_list_id == lead_list_id
+                )),
+                not_(exists(select(LeadListMembership.lead_id).where(
+                    LeadListMembership.lead_id == Lead.id,
+                    LeadListMembership.lead_list_id != lead_list_id,
+                ))),
+            )
+            exclusive_ids = list((await self.session.execute(exclusive_query)).scalars())
+            campaign_ids = set()
+            broadcast_ids = set()
+            # Bound SQL parameters so large imported lists can be deleted safely.
+            for offset in range(0, len(exclusive_ids), 400):
+                batch = exclusive_ids[offset:offset + 400]
+                campaign_ids.update((await self.session.execute(
+                    select(CampaignLeadAssignment.campaign_id).where(CampaignLeadAssignment.lead_id.in_(batch))
+                )).scalars())
+                broadcast_ids.update((await self.session.execute(
+                    select(BroadcastLead.broadcast_id).where(BroadcastLead.lead_id.in_(batch))
+                )).scalars())
+                for model in (ActionLog, LeadEvent, LeadNote, BroadcastLead,
+                              CampaignLeadAssignment, LeadListMembership):
+                    await self.session.execute(sa_delete(model).where(model.lead_id.in_(batch)))
+                await self.session.execute(sa_delete(Lead).where(Lead.id.in_(batch)))
+
+            await self.session.execute(sa_delete(CampaignLeadList).where(
                 CampaignLeadList.lead_list_id == lead_list_id
-            )
-        )
-        # Remove list memberships (these gate TG enrichment eligibility — must be
-        # cleaned up or deleted leads' leads become permanently invisible to the sweep)
-        await self.session.execute(
-            sa_delete(LeadListMembership).where(
+            ))
+            await self.session.execute(sa_delete(LeadListMembership).where(
                 LeadListMembership.lead_list_id == lead_list_id
-            )
-        )
-        # Null out legacy lead_list_id FK on leads
-        await self.session.execute(
-            update(Lead)
-            .where(Lead.lead_list_id == lead_list_id)
-            .values(lead_list_id=None)
-        )
-        await self.session.delete(lead_list)
-        await self.session.commit()
+            ))
+            await self.session.execute(update(CampaignLeadAssignment).where(
+                CampaignLeadAssignment.lead_list_id == lead_list_id
+            ).values(lead_list_id=None))
+            await self.session.execute(update(Lead).where(
+                Lead.lead_list_id == lead_list_id
+            ).values(lead_list_id=None))
+            await self.session.execute(update(Broadcast).where(
+                Broadcast.source_list_id == lead_list_id
+            ).values(source_list_id=None))
+            await self.session.execute(sa_delete(LeadList).where(LeadList.id == lead_list_id))
+            for campaign_id in campaign_ids:
+                total = (await self.session.execute(select(func.count()).select_from(
+                    CampaignLeadAssignment
+                ).where(CampaignLeadAssignment.campaign_id == campaign_id))).scalar_one()
+                await self.session.execute(update(Campaign).where(Campaign.id == campaign_id).values(total_leads=total))
+            for broadcast_id in broadcast_ids:
+                total = (await self.session.execute(select(func.count()).select_from(
+                    BroadcastLead
+                ).where(BroadcastLead.broadcast_id == broadcast_id))).scalar_one()
+                await self.session.execute(update(Broadcast).where(Broadcast.id == broadcast_id).values(total_leads=total))
+            await self.session.commit()
+        except BaseException:
+            await self.session.rollback()
+            raise
         return True
 
     async def get_list_leads(
@@ -1965,13 +2069,20 @@ class Repository:
         await self.session.commit()
         return result.rowcount
 
-    async def get_campaign_lists(self, campaign_id: str) -> Sequence[CampaignLeadList]:
+    async def get_campaign_lists(
+        self, campaign_id: str, include_archived: bool = False,
+    ) -> Sequence[CampaignLeadList]:
         """Get all lead list links for a campaign, highest priority first."""
-        result = await self.session.execute(
+        stmt = (
             select(CampaignLeadList)
             .where(CampaignLeadList.campaign_id == campaign_id)
             .order_by(CampaignLeadList.priority.desc(), CampaignLeadList.created_at)
         )
+        if not include_archived:
+            stmt = stmt.where(CampaignLeadList.lead_list_id.in_(
+                select(LeadList.id).where(LeadList.archived == False)
+            ))
+        result = await self.session.execute(stmt)
         return result.scalars().all()
 
     async def set_campaign_lists_order(
@@ -1999,13 +2110,18 @@ class Repository:
         await self.session.commit()
         return updated
 
-    async def get_list_campaigns(self, lead_list_id: str) -> Sequence[CampaignLeadList]:
+    async def get_list_campaigns(
+        self, lead_list_id: str, include_archived: bool = False,
+    ) -> Sequence[CampaignLeadList]:
         """Get all campaign links for a lead list."""
-        result = await self.session.execute(
+        stmt = (
             select(CampaignLeadList).where(
                 CampaignLeadList.lead_list_id == lead_list_id
             )
         )
+        if not include_archived:
+            stmt = stmt.where(CampaignLeadList.campaign_id.in_(_visible_campaign_ids()))
+        result = await self.session.execute(stmt)
         return result.scalars().all()
 
     # ── Lead Soft Delete / Restore ────────────────────────────────────────
@@ -2222,6 +2338,7 @@ class Repository:
         has_twitter: Optional[bool] = None,
         has_email: Optional[bool] = None,
         tg_contacted: Optional[bool] = None,
+        include_archived: bool = False,
     ) -> tuple:
         """Return (leads, total_count) across all lists/campaigns."""
         assignment_query = select(
@@ -2235,9 +2352,11 @@ class Repository:
                     CampaignLeadAssignment.id.desc(),
                 ),
             ).label("position"),
-        ).join(Campaign, Campaign.id == CampaignLeadAssignment.campaign_id).where(
-            Campaign.archived == False
         )
+        if not include_archived and not campaign_id:
+            assignment_query = assignment_query.where(
+                CampaignLeadAssignment.campaign_id.in_(_visible_campaign_ids())
+            )
         if campaign_id:
             assignment_query = assignment_query.where(
                 CampaignLeadAssignment.campaign_id == campaign_id
@@ -2261,21 +2380,31 @@ class Repository:
 
         list_ids = [s.strip() for s in lead_list_id.split(",") if s.strip()] if lead_list_id else []
 
+        target_is_archived = False
+        if campaign_id:
+            target_campaign = await self.get_campaign(campaign_id)
+            target_account = await self.get_account(target_campaign.account_id) if target_campaign else None
+            target_is_archived = bool(target_campaign and (target_campaign.archived or (target_account and target_account.archived)))
+        if list_ids:
+            target_is_archived = target_is_archived or bool((await self.session.execute(
+                select(LeadList.id).where(LeadList.id.in_(list_ids), LeadList.archived == True).limit(1)
+            )).scalar_one_or_none())
+        if not include_archived and not target_is_archived:
+            visible_lead = _visible_lead_condition()
+            stmt = stmt.where(visible_lead)
+            count_stmt = count_stmt.where(visible_lead)
+
         if campaign_id:
             # Phase 3b: join via CampaignLeadAssignment since Lead.campaign_id is NULL
-            visible_campaign = CampaignLeadAssignment.campaign_id.in_(
-                select(Campaign.id).where(Campaign.archived == False)
-            )
             stmt = stmt.join(
                 CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id
             ).where(
                 CampaignLeadAssignment.campaign_id == campaign_id,
-                visible_campaign,
             )
             count_stmt = (
                 count_stmt
                 .join(CampaignLeadAssignment, CampaignLeadAssignment.lead_id == Lead.id)
-                .where(CampaignLeadAssignment.campaign_id == campaign_id, visible_campaign)
+                .where(CampaignLeadAssignment.campaign_id == campaign_id)
             )
 
         if status_filter:
@@ -2314,11 +2443,12 @@ class Repository:
             count_stmt = count_stmt.where(display_error == skip_reason)
 
         if unassigned_campaign:
-            no_cla = not_(exists(
-                select(CampaignLeadAssignment.lead_id).where(
-                    CampaignLeadAssignment.lead_id == Lead.id
-                )
-            ))
+            assigned = select(CampaignLeadAssignment.lead_id).where(
+                CampaignLeadAssignment.lead_id == Lead.id
+            )
+            if not include_archived:
+                assigned = assigned.where(CampaignLeadAssignment.campaign_id.in_(_visible_campaign_ids()))
+            no_cla = not_(exists(assigned))
             stmt = stmt.where(no_cla)
             count_stmt = count_stmt.where(no_cla)
 
@@ -2329,11 +2459,12 @@ class Repository:
                     LeadListMembership.lead_list_id.in_(list_ids),
                 )
             )
-            no_mem = not_(exists(
-                select(LeadListMembership.lead_id).where(
-                    LeadListMembership.lead_id == Lead.id
-                )
-            ))
+            memberships = select(LeadListMembership.lead_id).where(LeadListMembership.lead_id == Lead.id)
+            if not include_archived:
+                memberships = memberships.where(LeadListMembership.lead_list_id.in_(
+                    select(LeadList.id).where(LeadList.archived == False)
+                ))
+            no_mem = not_(exists(memberships))
             if list_ids and unassigned_list:
                 list_cond = or_(selected_mem, no_mem)
             elif list_ids:
@@ -2653,6 +2784,7 @@ class Repository:
         account_id: Optional[str] = None,
         campaign_id: Optional[str] = None,
         actor_user_id: Optional[str] = None,
+        include_archived: bool = False,
     ) -> tuple[list[dict], int]:
         """Return a merged, time-sorted activity feed from action_log + lead_events.
 
@@ -2694,6 +2826,12 @@ class Repository:
         # ── action_log ────────────────────────────────────────────────────────
         if include_action_log:
             stmt = select(ActionLog).order_by(ActionLog.created_at.desc())
+            if not include_archived:
+                stmt = stmt.where(
+                    or_(ActionLog.lead_id.is_(None), ActionLog.lead_id.in_(_visible_lead_ids())),
+                    ActionLog.account_id.in_(select(Account.id).where(Account.archived == False)),
+                    or_(ActionLog.campaign_id.is_(None), ActionLog.campaign_id.in_(_visible_campaign_ids())),
+                )
             if since:
                 stmt = stmt.where(ActionLog.created_at >= since)
             if until:
@@ -2765,6 +2903,8 @@ class Repository:
         # ── lead_events ───────────────────────────────────────────────────────
         if include_lead_events:
             stmt2 = select(LeadEvent).order_by(LeadEvent.created_at.desc())
+            if not include_archived:
+                stmt2 = stmt2.where(LeadEvent.lead_id.in_(_visible_lead_ids()))
             if since:
                 stmt2 = stmt2.where(LeadEvent.created_at >= since)
             if until:
@@ -2813,6 +2953,8 @@ class Repository:
         # note was edited after creation so edits float to the top.
         if include_notes:
             nstmt = select(LeadNote).order_by(LeadNote.created_at.desc())
+            if not include_archived:
+                nstmt = nstmt.where(LeadNote.lead_id.in_(_visible_lead_ids()))
             if since:
                 nstmt = nstmt.where(LeadNote.created_at >= since)
             if until:
@@ -3159,6 +3301,7 @@ class Repository:
             .where(
                 BroadcastLead.broadcast_id == broadcast_id,
                 BroadcastLead.status == "pending",
+                BroadcastLead.lead_id.in_(_visible_lead_ids()),
             )
             .order_by(BroadcastLead.created_at)
             .limit(limit)
@@ -3187,6 +3330,7 @@ class Repository:
                 BroadcastLead.status == "sent",
                 BroadcastLead.next_message_at != None,  # noqa: E711
                 BroadcastLead.next_message_at <= cutoff,
+                BroadcastLead.lead_id.in_(_visible_lead_ids()),
             )
             .order_by(BroadcastLead.next_message_at)
             .limit(limit)
@@ -3199,6 +3343,7 @@ class Repository:
         limit: int = 50,
         offset: int = 0,
         status_filter: Optional[str] = None,
+        include_archived: bool = False,
     ) -> tuple[Sequence[BroadcastLead], int]:
         """For the broadcast detail page's per-lead table.
 
@@ -3206,6 +3351,8 @@ class Repository:
         filter so pagination reflects the filtered set.
         """
         base_where = [BroadcastLead.broadcast_id == broadcast_id]
+        if not include_archived:
+            base_where.append(BroadcastLead.lead_id.in_(_visible_lead_ids()))
         if status_filter:
             base_where.append(BroadcastLead.status == status_filter)
 
@@ -3224,11 +3371,12 @@ class Repository:
         total = count_result.scalar_one() or 0
         return rows, total
 
-    async def get_broadcast_status_counts(self, broadcast_id: str) -> dict[str, int]:
+    async def get_broadcast_status_counts(self, broadcast_id: str, include_archived: bool = False) -> dict[str, int]:
         """Bucket counts for the broadcast detail header (pending / sent / ...)."""
         result = await self.session.execute(
             select(BroadcastLead.status, func.count())
             .where(BroadcastLead.broadcast_id == broadcast_id)
+            .where(True if include_archived else BroadcastLead.lead_id.in_(_visible_lead_ids()))
             .group_by(BroadcastLead.status)
         )
         return {status: count for status, count in result.all()}

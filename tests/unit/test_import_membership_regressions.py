@@ -64,11 +64,11 @@ async def test_library_filters_all_memberships_without_duplicate_results(repo):
         assert [item.id for item in leads] == [lead.id]
 
     leads, total = await repo.list_leads_global(
-        lead_list_id=older.id, unassigned_list=True,
+        lead_list_id=older.id, unassigned_list=True, include_archived=True,
     )
     assert total == 2
     assert {item.id for item in leads} == {lead.id, orphan.id}
-    leads, total = await repo.list_leads_global(unassigned_list=True)
+    leads, total = await repo.list_leads_global(unassigned_list=True, include_archived=True)
     assert total == 1
     assert [item.id for item in leads] == [orphan.id]
 
@@ -95,6 +95,10 @@ async def test_library_status_uses_latest_or_filtered_campaign_without_mutation(
         created_at=datetime(2026, 2, 1),
     )
     repo.session.add_all([old, new])
+    lead_list = LeadList(name="Status")
+    repo.session.add(lead_list)
+    await repo.session.flush()
+    repo.session.add(LeadListMembership(lead_id=lead.id, lead_list_id=lead_list.id))
     await repo.session.commit()
     original_status = lead.status
 
@@ -141,10 +145,10 @@ async def test_library_status_sort_and_unassigned_fallback(repo):
         lead_id=lead.id, campaign_id=campaign.id, status="error",
     ))
     await repo.session.commit()
-    leads, count = await repo.list_leads_global(sort_by="status", sort_dir="asc")
+    leads, count = await repo.list_leads_global(sort_by="status", sort_dir="asc", include_archived=True)
     assert count == 2
     assert [l.id for l in leads] == [lead.id, unassigned.id]
-    leads, count = await repo.list_leads_global(status_filter="pending")
+    leads, count = await repo.list_leads_global(status_filter="pending", include_archived=True)
     assert count == 1
     assert [l.id for l in leads] == [unassigned.id]
 
@@ -161,6 +165,10 @@ async def test_archived_campaigns_do_not_affect_library_status_or_summaries(repo
     lead = Lead(first_name="Shared")
     repo.session.add_all([visible, archived, lead])
     await repo.session.flush()
+    lead_list = LeadList(name="Archive test")
+    repo.session.add(lead_list)
+    await repo.session.flush()
+    repo.session.add(LeadListMembership(lead_id=lead.id, lead_list_id=lead_list.id))
     repo.session.add_all([
         CampaignLeadAssignment(lead_id=lead.id, campaign_id=visible.id,
                                status="connected", created_at=datetime(2026, 1, 1)),
@@ -178,5 +186,8 @@ async def test_archived_campaigns_do_not_affect_library_status_or_summaries(repo
     _, total = await repo.list_leads_global(status_filter="error")
     assert total == 0
     leads, total = await repo.list_leads_global(campaign_id=archived.id)
-    assert total == 0 and leads == []
+    assert total == 1
+    out = (await _enrich_leads(repo, leads, library=True, campaign_id=archived.id))[0]
+    assert out.campaign_id == archived.id and out.status == "error"
+    assert len(out.campaigns) == 2
     assert not repo.session.dirty

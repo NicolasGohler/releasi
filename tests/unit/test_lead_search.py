@@ -4,7 +4,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from releasi.db.models import Account, Base, Campaign, Lead
+from releasi.db.models import Account, Base, Campaign, Lead, LeadList
 from releasi.db.repository import Repository
 
 
@@ -19,9 +19,11 @@ async def searchable_leads():
         session.add(account)
         await session.flush()
         campaign = Campaign(account_id=account.id, name="Search test")
-        session.add(campaign)
+        lead_list = LeadList(name="Search test")
+        session.add_all([campaign, lead_list])
         await session.flush()
         target = Lead(
+            lead_list_id=lead_list.id,
             campaign_id=campaign.id,
             linkedin_url="https://www.linkedin.com/in/riddhibajaj",
             first_name="Riddhi",
@@ -29,6 +31,7 @@ async def searchable_leads():
             company="Example & Co",
         )
         other = Lead(
+            lead_list_id=lead_list.id,
             campaign_id=campaign.id,
             linkedin_url="https://www.linkedin.com/in/another-person",
             first_name="Another",

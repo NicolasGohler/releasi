@@ -235,7 +235,11 @@ export function useDeleteLeadList() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.deleteLeadList,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["lead-lists"] }),
+    onSuccess: async () => {
+      await Promise.all(["lead-lists", "lead-list-leads", "lead", "lead-activity", "activity", "leads", "global-leads", "campaigns", "broadcasts"].map(
+        (key) => qc.invalidateQueries({ queryKey: [key] }),
+      ));
+    },
   });
 }
 
@@ -243,7 +247,11 @@ export function useArchiveLeadList() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.archiveLeadList,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["lead-lists"] }),
+    onSuccess: async () => {
+      await Promise.all(["lead-lists", "lead", "activity", "leads", "global-leads", "campaigns", "broadcasts"].map(
+        (key) => qc.invalidateQueries({ queryKey: [key] }),
+      ));
+    },
   });
 }
 
@@ -251,7 +259,11 @@ export function useUnarchiveLeadList() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.unarchiveLeadList,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["lead-lists"] }),
+    onSuccess: async () => {
+      await Promise.all(["lead-lists", "lead", "activity", "leads", "global-leads", "campaigns", "broadcasts"].map(
+        (key) => qc.invalidateQueries({ queryKey: [key] }),
+      ));
+    },
   });
 }
 
@@ -353,6 +365,7 @@ export function useReorderCampaignLists() {
 // ── Global Leads ─────────────────────────────────────────────────────────
 
 export function useGlobalLeads(params?: {
+  include_archived?: boolean;
   page?: number; per_page?: number;
   lead_list_id?: string; campaign_id?: string;
   status?: string; search?: string;

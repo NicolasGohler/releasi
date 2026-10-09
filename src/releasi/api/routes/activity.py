@@ -26,6 +26,7 @@ async def list_activity(
     account_id: Optional[str] = Query(None),
     campaign_id: Optional[str] = Query(None),
     user_id: Optional[str] = Query(None, description="Filter to manual actions by this dashboard user"),
+    include_archived: bool = Query(False),
     repo: Repository = Depends(get_repo),
 ) -> ActivityPage:
     """Unified activity feed across all sources, newest first.
@@ -57,6 +58,14 @@ async def list_activity(
     sources_list = [s.strip() for s in sources.split(",")] if sources else None
     types_list   = [t.strip() for t in event_types.split(",")] if event_types else None
 
+    if campaign_id:
+        campaign = await repo.get_campaign(campaign_id)
+        account = await repo.get_account(campaign.account_id) if campaign else None
+        include_archived = include_archived or bool(campaign and campaign.archived) or bool(account and account.archived)
+    elif account_id:
+        account = await repo.get_account(account_id)
+        include_archived = include_archived or bool(account and account.archived)
+
     items_raw, total = await repo.list_activity(
         page=page,
         per_page=per_page,
@@ -67,6 +76,7 @@ async def list_activity(
         account_id=account_id,
         campaign_id=campaign_id,
         actor_user_id=user_id,
+        include_archived=include_archived,
     )
 
     items = [ActivityItem(**item) for item in items_raw]
