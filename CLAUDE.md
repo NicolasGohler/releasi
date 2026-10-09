@@ -451,8 +451,9 @@ A manual withdrawal panel lives in the account Settings tab. It lets you:
 `scripts/backup_db.sh` — uses the SQLite online backup API (`sqlite3.backup()`) which is WAL-safe and works on a live DB.
 
 - **Daily local backup**: keeps the 7 most recent snapshots in `/root/linauto/data/backups/`. Run as: `bash /root/linauto/scripts/backup_db.sh`
-- **Weekly offsite backup to Google Drive**: pass `--offsite` flag → `rclone copyto` uploads to `gdrive:releasi-backups/`. Cron on server: `0 3 * * 6` (Saturday 03:00 UTC).
-- rclone config lives at `/root/linauto/.config/rclone/rclone.conf` (server only, not in repo). Remote is named `gdrive`.
+- **Weekly offsite backup to Google Drive**: pass `--offsite` flag → `rclone copyto` uploads to `gdrive:releasi-backups/` (files older than 90 days are pruned from that folder). Cron on server: `0 3 * * 6` (Saturday 03:00 UTC).
+- rclone config lives at `/root/.config/rclone/rclone.conf` (server only, not in repo). Remote is named `gdrive`.
+- **The script fails loudly**: it integrity-checks each backup and exits non-zero (logging `BACKUP ERROR`) on any failure. `HOST_BACKUP_DIR` must stay the host path of the `/app/data` volume (`/root/linauto/data/backups`) — a wrong path once silently disabled pruning and offsite uploads for 4+ months. Check `grep -c "BACKUP ERROR" /root/linauto/data/backups/backup.log` after changing it.
 
 To run a one-off offsite backup: `ssh root@<your-server-ip> 'bash /root/linauto/scripts/backup_db.sh --offsite'`
 
