@@ -83,7 +83,10 @@ async def list_leads(
     )
 
 
-async def _enrich_leads(repo: Repository, leads) -> list[LeadOut]:
+async def _enrich_leads(
+    repo: Repository, leads, *, library: bool = False,
+    campaign_id: Optional[str] = None,
+) -> list[LeadOut]:
     """Attach campaign_name and lead_list_name to LeadOut.
 
     lead_list_name is sourced from lead_list_memberships (most-recent entry)
@@ -101,6 +104,7 @@ async def _enrich_leads(repo: Repository, leads) -> list[LeadOut]:
 
     # Batch lookup: most-recent list membership per lead
     recent_lists = await repo.get_most_recent_list_for_leads(lead_ids)
+    assignments = await repo.get_campaign_assignments_for_leads(lead_ids) if library else {}
 
     items: list[LeadOut] = []
     for l in leads:
@@ -109,6 +113,25 @@ async def _enrich_leads(repo: Repository, leads) -> list[LeadOut]:
             out.campaign_name = campaign_names[l.campaign_id]
         if l.id in recent_lists:
             out.lead_list_id, out.lead_list_name = recent_lists[l.id]
+        if library:
+            rows = assignments.get(l.id, [])
+            selected = next(
+                (row for row in rows if row[0].campaign_id == campaign_id),
+                None,
+            ) if campaign_id else (rows[0] if rows else None)
+            out.campaigns = [
+                CampaignRef(id=a.campaign_id, name=name, status=a.status, account_name=account)
+                for a, name, account in rows
+            ]
+            if selected:
+                assignment, name, _ = selected
+                out.campaign_id = assignment.campaign_id
+                out.campaign_name = name
+                for field in (
+                    "status", "scheduled_at", "connection_requested_at",
+                    "connection_accepted_at", "followup_sent_at", "error_message", "retry_count",
+                ):
+                    setattr(out, field, getattr(assignment, field))
         items.append(out)
     return items
 
@@ -476,7 +499,7 @@ async def list_leads_global(
         tg_contacted=tg_contacted,
     )
 
-    items = await _enrich_leads(repo, leads)
+    items = await _enrich_leads(repo, leads, library=True, campaign_id=campaign_id)
     return LeadPage(
         items=items,
         total=total,

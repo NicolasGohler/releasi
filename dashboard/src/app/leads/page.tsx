@@ -502,18 +502,39 @@ export default function GlobalLeadsPage() {
                             <span className="block truncate" title={lead.lead_list_name ?? undefined}>{lead.lead_list_name ?? "—"}</span>
                           </td>
                           <td className="py-2">
-                            {lead.error_message || (lead.status === "scheduled" && lead.scheduled_at) ? (
+                            {lead.campaigns?.length || lead.error_message || (lead.status === "scheduled" && lead.scheduled_at) ? (
                               <TooltipProvider delayDuration={200}>
                                 <Tooltip>
                                   <TooltipTrigger asChild>
-                                    <span className="cursor-help"><StatusBadge status={lead.status} /></span>
+                                    <button
+                                      type="button"
+                                      className="inline-flex items-center gap-1.5 cursor-help rounded focus-visible:outline-2 focus-visible:outline-ring"
+                                      aria-label={`${lead.campaign_name ?? "Lead"}: ${lead.status}${lead.campaigns?.length ? `, ${lead.campaigns.length} campaigns` : ""}`}
+                                      onClick={(event) => event.stopPropagation()}
+                                    >
+                                      <StatusBadge status={lead.status} />
+                                      {(lead.campaigns?.length ?? 0) > 1 && (
+                                        <span className="text-xs text-muted-foreground tabular-nums">
+                                          {Math.max(0, lead.campaigns!.findIndex((campaign) => campaign.id === lead.campaign_id)) + 1}/{lead.campaigns!.length}
+                                        </span>
+                                      )}
+                                    </button>
                                   </TooltipTrigger>
-                                  <TooltipContent side="top" className="max-w-xs">
-                                    <p className="text-xs">
+                                  <TooltipContent side="top" collisionPadding={8} className="max-w-xs space-y-2">
+                                    {lead.campaigns?.map((campaign) => (
+                                      <div key={campaign.id} className="flex items-start gap-3">
+                                        <div className="min-w-0 flex-1">
+                                          <p className="text-xs font-medium break-words">{campaign.name}</p>
+                                          {campaign.account_name && <p className="text-xs opacity-75 break-words">{campaign.account_name}</p>}
+                                        </div>
+                                        <StatusBadge status={campaign.status} />
+                                      </div>
+                                    ))}
+                                    {(lead.error_message || (lead.status === "scheduled" && lead.scheduled_at)) && <p className="text-xs">
                                       {lead.error_message
                                         ? formatErrorMessage(lead.error_message)
                                         : `Scheduled for ${new Date(lead.scheduled_at! + "Z").toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`}
-                                    </p>
+                                    </p>}
                                   </TooltipContent>
                                 </Tooltip>
                               </TooltipProvider>

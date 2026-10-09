@@ -363,6 +363,10 @@ class Repository:
                     title=incoming.title,
                     email=getattr(incoming, "email", None),
                     phone=getattr(incoming, "phone", None),
+                    twitter_url=getattr(incoming, "twitter_url", None),
+                    telegram_username=getattr(incoming, "telegram_username", None),
+                    location=getattr(incoming, "location", None),
+                    apollo_person_id=getattr(incoming, "apollo_person_id", None),
                     extra_data=incoming.extra_data,
                     # campaign_id intentionally omitted — canonical leads are URL-scoped
                 )
@@ -1717,6 +1721,27 @@ class Repository:
         )
         return result.all()
 
+    async def get_campaign_assignments_for_leads(self, lead_ids: list) -> dict:
+        """Batch campaign summaries, ordered by assignment creation time."""
+        if not lead_ids:
+            return {}
+        result = await self.session.execute(
+            select(CampaignLeadAssignment, Campaign.name, Account.name)
+            .join(Campaign, Campaign.id == CampaignLeadAssignment.campaign_id)
+            .outerjoin(Account, Account.id == Campaign.account_id)
+            .where(CampaignLeadAssignment.lead_id.in_(lead_ids))
+            .order_by(
+                CampaignLeadAssignment.created_at.desc(),
+                CampaignLeadAssignment.id.desc(),
+            )
+        )
+        grouped = {}
+        for assignment, name, account_name in result.all():
+            grouped.setdefault(assignment.lead_id, []).append(
+                (assignment, name, account_name)
+            )
+        return grouped
+
     async def get_most_recent_list_for_leads(self, lead_ids: list) -> dict:
         """Return {lead_id: (list_id, list_name)} for the most-recent membership per lead.
 
@@ -2199,14 +2224,37 @@ class Repository:
         tg_contacted: Optional[bool] = None,
     ) -> tuple:
         """Return (leads, total_count) across all lists/campaigns."""
+        assignment_query = select(
+            CampaignLeadAssignment.lead_id,
+            CampaignLeadAssignment.status,
+            CampaignLeadAssignment.error_message,
+            func.row_number().over(
+                partition_by=CampaignLeadAssignment.lead_id,
+                order_by=(
+                    CampaignLeadAssignment.created_at.desc(),
+                    CampaignLeadAssignment.id.desc(),
+                ),
+            ).label("position"),
+        )
+        if campaign_id:
+            assignment_query = assignment_query.where(
+                CampaignLeadAssignment.campaign_id == campaign_id
+            )
+        ranked_assignments = assignment_query.subquery()
+        assignment_join = and_(
+            ranked_assignments.c.lead_id == Lead.id,
+            ranked_assignments.c.position == 1,
+        )
+        display_status = func.coalesce(ranked_assignments.c.status, func.lower(Lead.status))
         last_activity_sq = _last_activity_subquery()
         stmt = select(Lead).outerjoin(
             last_activity_sq, last_activity_sq.c.lead_id == Lead.id
-        )
+        ).outerjoin(ranked_assignments, assignment_join)
         count_stmt = (
             select(func.count())
             .select_from(Lead)
             .outerjoin(last_activity_sq, last_activity_sq.c.lead_id == Lead.id)
+            .outerjoin(ranked_assignments, assignment_join)
         )
 
         list_ids = [s.strip() for s in lead_list_id.split(",") if s.strip()] if lead_list_id else []
@@ -2223,10 +2271,10 @@ class Repository:
             )
 
         if status_filter:
-            statuses = [s.strip() for s in status_filter.split(",") if s.strip()]
+            statuses = [s.strip().lower() for s in status_filter.split(",") if s.strip()]
             if statuses:
-                stmt = stmt.where(Lead.status.in_(statuses))
-                count_stmt = count_stmt.where(Lead.status.in_(statuses))
+                stmt = stmt.where(display_status.in_(statuses))
+                count_stmt = count_stmt.where(display_status.in_(statuses))
 
         if search:
             pattern = _lead_search_pattern(search)
@@ -2250,8 +2298,12 @@ class Repository:
             count_stmt = count_stmt.where(last_activity_sq.c.last_activity_at <= last_activity_before)
 
         if skip_reason:
-            stmt = stmt.where(Lead.error_message == skip_reason)
-            count_stmt = count_stmt.where(Lead.error_message == skip_reason)
+            display_error = case(
+                (ranked_assignments.c.lead_id.isnot(None), ranked_assignments.c.error_message),
+                else_=Lead.error_message,
+            )
+            stmt = stmt.where(display_error == skip_reason)
+            count_stmt = count_stmt.where(display_error == skip_reason)
 
         if unassigned_campaign:
             no_cla = not_(exists(
@@ -2263,15 +2315,21 @@ class Repository:
             count_stmt = count_stmt.where(no_cla)
 
         if list_ids or unassigned_list:
+            selected_mem = exists(
+                select(LeadListMembership.lead_id).where(
+                    LeadListMembership.lead_id == Lead.id,
+                    LeadListMembership.lead_list_id.in_(list_ids),
+                )
+            )
             no_mem = not_(exists(
                 select(LeadListMembership.lead_id).where(
                     LeadListMembership.lead_id == Lead.id
                 )
             ))
             if list_ids and unassigned_list:
-                list_cond = or_(Lead.lead_list_id.in_(list_ids), no_mem)
+                list_cond = or_(selected_mem, no_mem)
             elif list_ids:
-                list_cond = Lead.lead_list_id.in_(list_ids)
+                list_cond = selected_mem
             else:
                 list_cond = no_mem
             stmt = stmt.where(list_cond)
@@ -2311,7 +2369,7 @@ class Repository:
         _SORT_COLS = {
             "name": Lead.first_name,
             "company": Lead.company,
-            "status": Lead.status,
+            "status": display_status,
             "last_activity_at": last_activity_sq.c.last_activity_at,
             "created_at": Lead.created_at,
         }

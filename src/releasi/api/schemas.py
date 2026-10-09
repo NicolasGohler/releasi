@@ -334,7 +334,7 @@ class LeadOut(BaseModel):
     updated_at: Optional[datetime] = None
     campaign_name: Optional[str] = None
     lead_list_name: Optional[str] = None
-    # Detail-only: all list memberships and campaign assignments (empty in list view)
+    # Membership history is detail-only; the library includes campaign summaries.
     lead_lists: List[LeadListRef] = []
     campaigns: List[CampaignRef] = []
 
