@@ -1070,6 +1070,17 @@ class LinkedInActions:
         except Exception:
             pass  # timeout is fine — fall through to the element wait
 
+        # For fresh compose windows the ?recipient= URL pre-fills the "To:"
+        # field but the message text area only renders after the recipient chip
+        # is confirmed. Pressing Tab moves focus out of the recipient field and
+        # triggers the text area to appear. No-op for existing threads (focus
+        # is already in the reply box).
+        try:
+            await self.page.keyboard.press("Tab")
+            await asyncio.sleep(0.5)
+        except Exception:
+            pass
+
         # ── 3a. Conversation history check ──
         # LinkedIn renders prior message bubbles in the thread area below the
         # compose form. skip_prior_conversation_check=True for messages 2/3 in a
