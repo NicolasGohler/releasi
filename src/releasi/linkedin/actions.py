@@ -1061,25 +1061,15 @@ class LinkedInActions:
         except Exception as e:
             return ActionResult(ActionStatus.ERROR, reason=f"compose_nav_failed: {e}")
 
-        # Wait for the messaging app to hydrate. The compose page is a heavy
-        # JS SPA; networkidle is the most reliable signal that the form has
-        # rendered. Cap at 12 s — if it's still loading by then we let the
-        # element-wait timeout below handle it rather than aborting early.
+        # The compose page is a heavy JS SPA. networkidle never fires on messaging
+        # pages due to background XHR keep-alives, so waiting for it blocks
+        # element detection for a full 12 s. Instead, wait directly for the
+        # .msg-form container — it appears within ~8 s once the overlay loads.
+        # (The Tab press was a previous workaround attempt that didn't help.)
         try:
-            await self.page.wait_for_load_state("networkidle", timeout=12000)
+            await self.page.wait_for_selector(".msg-form", timeout=28000)
         except Exception:
-            pass  # timeout is fine — fall through to the element wait
-
-        # For fresh compose windows the ?recipient= URL pre-fills the "To:"
-        # field but the message text area only renders after the recipient chip
-        # is confirmed. Pressing Tab moves focus out of the recipient field and
-        # triggers the text area to appear. No-op for existing threads (focus
-        # is already in the reply box).
-        try:
-            await self.page.keyboard.press("Tab")
-            await asyncio.sleep(0.5)
-        except Exception:
-            pass
+            pass  # fall through — let the element-wait below surface the error
 
         # ── 3a. Conversation history check ──
         # LinkedIn renders prior message bubbles in the thread area below the
@@ -1158,9 +1148,8 @@ class LinkedInActions:
                 pass  # Fail open — don't block the send if the check errors
 
         # ── 3. Find message input ──
-        # Increase timeout: the compose form can take several more seconds to
-        # fully render after networkidle fires, especially on slower proxy routes.
-        msg_input = await self._find_element(selectors.MESSAGE_INPUT, timeout_ms=15000)
+        # .msg-form is already present (waited above); input should appear immediately.
+        msg_input = await self._find_element(selectors.MESSAGE_INPUT, timeout_ms=5000)
         if not msg_input:
             # JS broad fallback: any visible contenteditable textbox on the page
             # (catches LinkedIn UI variants that dropped the msg-form__ class names).
