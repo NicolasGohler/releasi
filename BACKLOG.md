@@ -20,10 +20,11 @@ Use this as a working doc — the bar to add is "I'd otherwise forget."
   would eliminate the drift risk. Best done after one more LinkedIn action
   is added so the right abstraction is obvious.
 
-- [ ] **Audit `navigator.go_to_feed` exception path** — The pre-dispatch
-  feed ping uses a `session_valid` boolean. Verify that a redirect-loop
-  exception inside `go_to_feed` propagates correctly to the classifier
-  rather than being swallowed by a generic log.
+- [x] **Audit `navigator.go_to_feed` exception path** — Confirmed correct: any
+  exception returns `NavigationResult(success=False)` which the dispatcher
+  treats as a network error (skip cycle, don't mark expired). A redirect to
+  /login does not throw; it's caught by `_check_session(url)` → `session_valid=False`.
+  No code change needed. (audited 2026-10-13)
 
 ## Medium priority
 

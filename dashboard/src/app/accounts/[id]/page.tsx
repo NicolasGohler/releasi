@@ -25,7 +25,7 @@ import { ActivityTimeline } from "@/components/activity-timeline";
 import { LocalTimeCard } from "@/components/accounts/local-time-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { startLoginSession, finishLoginSession, cancelLoginSession, startBrowseSession, closeBrowseSession, getBrowseSessionStatus, getAvatarUrl, checkConnection, replanAccount, fetchInvitationCount, startWithdrawal, pollWithdrawalStatus } from "@/lib/api";
+import { startLoginSession, finishLoginSession, cancelLoginSession, startBrowseSession, closeBrowseSession, getBrowseSessionStatus, getAvatarUrl, checkConnection, replanAccount, fetchInvitationCount, startWithdrawal, pollWithdrawalStatus, recoverStuckLeads } from "@/lib/api";
 import { ProxySettings, emptyProxyForm, type ProxyFormValue } from "@/components/proxy-settings";
 
 export default function AccountDetailPage({
@@ -83,6 +83,9 @@ export default function AccountDetailPage({
     db_updated: number;
     error: string | null;
   } | null>(null);
+  const [stuckLeadsCount, setStuckLeadsCount] = useState<number | null>(null);
+  const [stuckLeadsLoading, setStuckLeadsLoading] = useState(false);
+  const [stuckLeadsRecovered, setStuckLeadsRecovered] = useState<number | null>(null);
 
   if (account && !settingsInitialized) {
     setEditName(account.name);
@@ -588,6 +591,71 @@ export default function AccountDetailPage({
                 <p className="text-xs text-muted-foreground">
                   Created {new Date(account.created_at.endsWith("Z") ? account.created_at : account.created_at + "Z").toLocaleDateString(undefined, { timeZone: account.timezone ?? undefined })}
                 </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Stuck Leads</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4 max-w-lg">
+                <p className="text-sm text-muted-foreground">
+                  Leads that errored due to profile detection failures or proxy timeouts
+                  before the Oct 4 connection reliability fix. Safe to requeue — no invite was sent.
+                </p>
+                <div className="flex items-center gap-3">
+                  {stuckLeadsCount === null ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={stuckLeadsLoading}
+                      onClick={async () => {
+                        setStuckLeadsLoading(true);
+                        try {
+                          const res = await recoverStuckLeads(id, true);
+                          setStuckLeadsCount(res.count);
+                        } catch (err: unknown) {
+                          toast.error(err instanceof Error ? err.message : "Failed to fetch count");
+                        } finally {
+                          setStuckLeadsLoading(false);
+                        }
+                      }}
+                    >
+                      {stuckLeadsLoading ? "Checking…" : "Check for stuck leads"}
+                    </Button>
+                  ) : stuckLeadsRecovered !== null ? (
+                    <p className="text-sm text-green-400">
+                      ✓ Requeued {stuckLeadsRecovered} leads back to pending
+                    </p>
+                  ) : stuckLeadsCount === 0 ? (
+                    <p className="text-sm text-muted-foreground">No stuck leads found.</p>
+                  ) : (
+                    <>
+                      <p className="text-sm">
+                        <span className="font-semibold tabular-nums">{stuckLeadsCount}</span> recoverable leads found
+                      </p>
+                      <Button
+                        size="sm"
+                        disabled={stuckLeadsLoading}
+                        onClick={async () => {
+                          if (!confirm(`Requeue ${stuckLeadsCount} stuck leads back to pending?`)) return;
+                          setStuckLeadsLoading(true);
+                          try {
+                            const res = await recoverStuckLeads(id, false);
+                            setStuckLeadsRecovered(res.recovered);
+                            toast.success(`Requeued ${res.recovered} leads`);
+                          } catch (err: unknown) {
+                            toast.error(err instanceof Error ? err.message : "Failed to recover leads");
+                          } finally {
+                            setStuckLeadsLoading(false);
+                          }
+                        }}
+                      >
+                        {stuckLeadsLoading ? "Recovering…" : `Recover ${stuckLeadsCount} leads`}
+                      </Button>
+                    </>
+                  )}
+                </div>
               </CardContent>
             </Card>
 

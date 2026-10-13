@@ -2316,6 +2316,68 @@ class Repository:
         await self.session.commit()
         return result.rowcount
 
+    async def recover_stuck_leads_for_account(
+        self, account_id: str, dry_run: bool = False
+    ) -> dict:
+        """Find ERROR leads caused by DOM/proxy failures and requeue them to PENDING.
+
+        Targets errors safe to retry: profile detection failures
+        (send_button_not_found, no_connect_button) and transient network
+        errors (proxy connection failures, navigation timeouts). Excludes
+        state-machine errors, explicit skips, and uncertain post-send outcomes.
+
+        Returns {"count": N} for dry_run=True, {"recovered": N} otherwise.
+        """
+        _RECOVERABLE_EXACT = [
+            "send_button_not_found",
+            "no_connect_button",
+            "[profile_dom] no_connect_button",
+        ]
+        _RECOVERABLE_PREFIXES = [
+            "Navigation failed: Page.goto: net::ERR_PROXY_CONNECTION_FAILED",
+            "Navigation failed: Page.goto: Timeout",
+            "Locator.evaluate: Timeout",
+        ]
+
+        campaign_ids_sq = select(Campaign.id).where(
+            Campaign.account_id == account_id
+        )
+
+        conditions = [
+            CampaignLeadAssignment.campaign_id.in_(campaign_ids_sq),
+            CampaignLeadAssignment.status == "error",
+            or_(
+                CampaignLeadAssignment.error_message.in_(_RECOVERABLE_EXACT),
+                *[
+                    CampaignLeadAssignment.error_message.like(p + "%")
+                    for p in _RECOVERABLE_PREFIXES
+                ],
+            ),
+        ]
+
+        if dry_run:
+            count = (
+                await self.session.execute(
+                    select(func.count())
+                    .select_from(CampaignLeadAssignment)
+                    .where(*conditions)
+                )
+            ).scalar_one()
+            return {"count": count}
+
+        result = await self.session.execute(
+            update(CampaignLeadAssignment)
+            .where(*conditions)
+            .values(
+                status=LeadStatus.PENDING.value,
+                error_message=None,
+                retry_count=0,
+                scheduled_at=None,
+            )
+        )
+        await self.session.commit()
+        return {"recovered": result.rowcount}
+
     # ── Global Leads (Lead Library) ───────────────────────────────────────
 
     async def list_leads_global(

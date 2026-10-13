@@ -508,6 +508,12 @@ export const pollWithdrawalStatus = (accountId: string, taskId: string) =>
     `/accounts/${accountId}/invitations/withdraw/${taskId}`
   );
 
+export const recoverStuckLeads = (accountId: string, dryRun: boolean) =>
+  apiFetch<{ count: number } | { recovered: number }>(
+    `/accounts/${accountId}/recover-stuck-leads?dry_run=${dryRun}`,
+    { method: "POST" }
+  );
+
 // ── Connection Check ────────────────────────────────────────────────────
 
 export const checkConnection = (accountId: string) =>

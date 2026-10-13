@@ -1179,3 +1179,23 @@ async def get_withdrawal_status(account_id: str, task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
+
+
+@router.post("/accounts/{account_id}/recover-stuck-leads")
+async def recover_stuck_leads(
+    account_id: str,
+    dry_run: bool = Query(False, description="If true, return count without making changes"),
+    repo: Repository = Depends(get_repo),
+):
+    """Requeue ERROR leads caused by DOM/proxy failures back to PENDING.
+
+    Targets send_button_not_found, no_connect_button, and transient network
+    errors (proxy failures, navigation timeouts). Safe to retry — these failed
+    before any invite was sent.
+
+    Pass ?dry_run=true to preview the count without making changes.
+    """
+    account = await repo.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return await repo.recover_stuck_leads_for_account(account_id, dry_run=dry_run)
