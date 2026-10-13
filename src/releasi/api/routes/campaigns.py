@@ -139,7 +139,10 @@ async def activate_campaign(campaign_id: str, repo: Repository = Depends(get_rep
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    campaign = await repo.update_campaign(campaign, status=CampaignStatus.ACTIVE)
+    # Clear paused_at on resume — if no catchup is run, the clock resets so
+    # the next pause starts fresh rather than accumulating against the original
+    # pause date.
+    campaign = await repo.update_campaign(campaign, status=CampaignStatus.ACTIVE, paused_at=None)
 
     # Trigger a fresh plan on resume so leads are scheduled immediately
     # rather than waiting until 06:00 the next morning.
@@ -184,12 +187,9 @@ async def pause_campaign(campaign_id: str, repo: Repository = Depends(get_repo))
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    # Set paused_at only if NULL — preserves the earliest unscanned pause
-    # window across serial pause/resume cycles. Cleared only on successful
-    # acceptance catchup.
-    updates = {"status": CampaignStatus.PAUSED}
-    if campaign.paused_at is None:
-        updates["paused_at"] = _datetime.utcnow()
+    # Always stamp paused_at so the dialog threshold reflects the current
+    # pause, not a stale one from a previous cycle.
+    updates = {"status": CampaignStatus.PAUSED, "paused_at": _datetime.utcnow()}
     campaign = await repo.update_campaign(campaign, **updates)
     return await _enrich_campaign(repo, campaign)
 
