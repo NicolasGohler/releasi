@@ -394,6 +394,20 @@ async def _record_session_touch(
         )
 
 
+async def _mark_cookie_expired(account, repo, reason: str) -> None:
+    """Mark account cookie_expired and send Slack alert.
+
+    Centralised so all four expiry-detection sites stay in sync. Each call
+    site still owns its own control-flow (continue/break/stop_account) and
+    any additional log_action calls that carry context specific to that job.
+    """
+    await repo.update_account(account, status="cookie_expired")
+    await slack_notify(
+        f":warning: *Cookie expired* — account *{account.name}* (detected by {reason}). "
+        "Update the cookie in account settings."
+    )
+
+
 async def _attempt_li_rm_reauth(context, account, repo) -> bool:
     """Silently re-mint li_at from the stored li_rm token. Returns True on success.
 
@@ -1239,11 +1253,7 @@ async def dispatch():
                                 "re-minted li_at from li_rm (no manual login needed)."
                             )
                             continue  # session healthy again; dispatch resumes next cycle
-                        await repo.update_account(account, status="cookie_expired")
-                        await slack_notify(
-                            f":warning: *Cookie expired* — account *{account.name}* (detected at dispatch pre-check). "
-                            "li_rm re-auth failed; update the cookie in account settings."
-                        )
+                        await _mark_cookie_expired(account, repo, "dispatch pre-check (li_rm re-auth failed)")
                         await repo.log_action(
                             account_id=account.id,
                             action_type=ActionType.ERROR,
@@ -1453,10 +1463,7 @@ async def check_acceptances():
                             "re-minted li_at from li_rm (detected by acceptance checker)."
                         )
                         continue
-                    await repo.update_account(account, status="cookie_expired")
-                    await slack_notify(
-                        f":warning: *Cookie expired* — account *{account.name}* (detected by acceptance checker)."
-                    )
+                    await _mark_cookie_expired(account, repo, "acceptance checker")
                     await repo.log_action(
                         account_id=account.id,
                         action_type=ActionType.ERROR,
@@ -1632,11 +1639,7 @@ async def check_acceptances():
                 if is_session_expired_signal(err_str):
                     logger.error("acceptance.session_expired_detected", account=account.name)
                     try:
-                        await repo.update_account(account, status="cookie_expired")
-                        await slack_notify(
-                            f":warning: *Cookie expired* — account *{account.name}* "
-                            f"(detected by acceptance checker)."
-                        )
+                        await _mark_cookie_expired(account, repo, "acceptance checker (exception)")
                     except Exception as inner:
                         logger.warning("acceptance.cookie_expired_update_failed", error=str(inner))
             finally:
@@ -2005,11 +2008,7 @@ async def dispatch_broadcasts():
                                     account=account.name,
                                     consecutive=consecutive_session_errors,
                                 )
-                                await repo.update_account(account, status="cookie_expired")
-                                await slack_notify(
-                                    f":warning: *Cookie expired* — account *{account.name}* "
-                                    f"(detected during broadcast dispatch)."
-                                )
+                                await _mark_cookie_expired(account, repo, "broadcast dispatch")
                                 stop_account = True
                                 break
                         else:

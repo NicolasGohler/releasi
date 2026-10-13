@@ -13,12 +13,12 @@ Use this as a working doc — the bar to add is "I'd otherwise forget."
   fixed a latent bug: `_dispatch_continuous` was missing the explicit
   `session_expired` check. (commit `df5560d`, 2026-05-14)
 
-- [ ] **Centralize session-health detection** — Four places currently
-  duplicate variants of "classify exception → mark cookie_expired → notify":
-  connection dispatcher, followup dispatcher, daily acceptance checker,
-  acceptance catchup. A `with_session_guard(account, repo, action)` wrapper
-  would eliminate the drift risk. Best done after one more LinkedIn action
-  is added so the right abstraction is obvious.
+- [x] **Centralize session-health detection** — Extracted `_mark_cookie_expired(account, repo, reason)`
+  helper in `runner.py` covering the 3 call sites that both update DB and send Slack:
+  dispatch pre-check, acceptance checker (navigation), acceptance checker (exception), and
+  broadcast dispatch. Health-check and keepalive intentionally omit Slack and stay inline.
+  A full `with_session_guard` context manager is still possible if a 5th dispatcher is added,
+  but the shared abstraction is now in one place. (2026-10-13)
 
 - [x] **Audit `navigator.go_to_feed` exception path** — Confirmed correct: any
   exception returns `NavigationResult(success=False)` which the dispatcher
