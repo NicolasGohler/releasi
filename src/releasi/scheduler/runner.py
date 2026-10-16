@@ -2053,7 +2053,56 @@ async def dispatch_broadcasts():
                                     stop_account = True
                                     break
 
-                        # Small delay between sends (human-like)
+                        # When delay_between_hours == 0, complete the full sequence
+                        # in the same dispatch pass so msg2 fires immediately after
+                        # msg1 rather than waiting for the next cycle (20-30 min gap).
+                        if (
+                            bc_result.get("success")
+                            and broadcast.delay_between_hours == 0
+                            and not stop_account
+                        ):
+                            while True:
+                                cont = await repo.get_broadcast_lead_by_id(fresh.id)
+                                if cont is None or cont.status != "sent":
+                                    break
+                                await asyncio.sleep(random.uniform(3, 8))
+                                try:
+                                    cont_result = await asyncio.wait_for(
+                                        executor.execute_broadcast_lead(account, broadcast, cont),
+                                        timeout=180,
+                                    )
+                                except asyncio.TimeoutError:
+                                    logger.error(
+                                        "broadcast_dispatch.execute_timeout",
+                                        broadcast=broadcast.name,
+                                        broadcast_lead_id=cont.id,
+                                    )
+                                    break
+                                if cont_result.get("network_error"):
+                                    consecutive_network_errors += 1
+                                    consecutive_session_errors = 0
+                                    if consecutive_network_errors >= 3:
+                                        stop_account = True
+                                    break
+                                elif cont_result.get("session_expired") or cont_result.get("fatal"):
+                                    consecutive_session_errors += 1
+                                    consecutive_network_errors = 0
+                                    if cont_result.get("session_expired") or consecutive_session_errors >= 3:
+                                        await _mark_cookie_expired(account, repo, "broadcast dispatch")
+                                        stop_account = True
+                                    break
+                                else:
+                                    consecutive_session_errors = 0
+                                    consecutive_network_errors = 0
+                                if cont_result.get("success"):
+                                    successful_sends_this_broadcast += 1
+                                    sent_this_cycle += 1
+                                    await repo.add_proxy_mb(account.id, 1.0)
+                                    bc_result = cont_result
+                                else:
+                                    break
+
+                        # Small delay between leads
                         await asyncio.sleep(random.uniform(3, 8))
 
                     # After processing this broadcast, check if it completed
