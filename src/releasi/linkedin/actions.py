@@ -1083,6 +1083,17 @@ class LinkedInActions:
         #   "has_reply"→ they replied → return SKIPPED("existing_conversation_replied")
         #                 so the executor can mark manual_outreach.
         # Detection fails open: unknown/error → treat as "fresh" and send.
+        #
+        # Wait for conversation history to render before checking — .msg-form
+        # appears faster than the thread bubbles under the new wait strategy
+        # (replaced networkidle with wait_for_selector). Without this wait the
+        # check runs on an empty thread and falsely returns "fresh" for existing
+        # conversations, causing duplicate/unwanted messages.
+        if not skip_prior_conversation_check:
+            try:
+                await self.page.wait_for_selector(".msg-s-event-listitem", timeout=4000)
+            except Exception:
+                pass  # fresh conversation — no prior bubbles to wait for
         _prior_branch_used = False
         if not skip_prior_conversation_check:
             try:
