@@ -17,7 +17,7 @@ import {
   SortableContext,
   sortableKeyboardCoordinates,
   useSortable,
-  rectSortingStrategy,
+  verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical } from "lucide-react";
@@ -65,14 +65,12 @@ type AssignedList = {
 function SortableListRow({
   ll,
   idx,
-  total,
   listsCount,
   onUnassign,
   isUnassigning,
 }: {
   ll: AssignedList;
   idx: number;
-  total: number;
   listsCount: number;
   onUnassign: () => void;
   isUnassigning: boolean;
@@ -80,75 +78,113 @@ function SortableListRow({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: ll.id });
 
   const counts = ll.status_counts ?? {};
-  const accepted = (counts["connected"] ?? 0) + (counts["followup_scheduled"] ?? 0) + (counts["followup_sent"] ?? 0) + (counts["completed"] ?? 0);
+  const pending = counts["pending"] ?? 0;
+  const scheduled = counts["scheduled"] ?? 0;
   const sent = counts["connection_requested"] ?? 0;
-  const other = total - (counts["pending"] ?? 0) - (counts["scheduled"] ?? 0) - accepted - sent;
-  const acceptedPct = total > 0 ? Math.round((accepted / total) * 100) : 0;
-  const sentPct = total > 0 ? Math.round((sent / total) * 100) : 0;
-  const otherPct = total > 0 ? Math.round((other / total) * 100) : 0;
-  const processedPct = acceptedPct + sentPct + otherPct;
+  const accepted = (counts["connected"] ?? 0) + (counts["followup_scheduled"] ?? 0) + (counts["followup_sent"] ?? 0) + (counts["completed"] ?? 0);
+  const error = counts["error"] ?? 0;
+  const invalid = counts["invalid"] ?? 0;
+  const total = ll.total_leads;
+  const done = sent + accepted + error + invalid;
+  const donePct = total > 0 ? (done / total) * 100 : 0;
+  const acceptedPct = total > 0 ? (accepted / total) * 100 : 0;
+  const sentPct = total > 0 ? (sent / total) * 100 : 0;
+
+  // Status: dispatching today > queued (has pending) > done > empty
+  const isDispatching = scheduled > 0;
+  const isQueued = pending > 0 && !isDispatching;
+  const isDone = pending === 0 && scheduled === 0 && total > 0;
 
   return (
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`rounded-md bg-muted px-3 py-2 space-y-2 ${isDragging ? "opacity-50 shadow-lg" : ""}`}
+      className={`flex items-center gap-3 rounded-md border px-3 py-2.5 text-sm transition-colors ${
+        isDispatching
+          ? "border-emerald-200 bg-emerald-50/50 dark:border-emerald-800/50 dark:bg-emerald-950/20"
+          : "border-border bg-background"
+      } ${isDragging ? "opacity-50 shadow-lg" : ""}`}
     >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {listsCount > 1 && (
-            <button
-              type="button"
-              className="cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground touch-none"
-              {...attributes}
-              {...listeners}
-            >
-              <GripVertical className="h-4 w-4" />
-            </button>
-          )}
-          <div>
-            <Link
-              href={`/lead-lists/${ll.id}`}
-              className="text-sm font-medium hover:underline"
-            >
-              {ll.name}
-            </Link>
-            {idx === 0 && listsCount > 1 && (
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-600 ml-2">
-                Priority
-              </span>
-            )}
-            <span className="text-xs text-muted-foreground ml-2">{ll.total_leads} leads</span>
-          </div>
-        </div>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={isUnassigning}
-          onClick={onUnassign}
+      {/* Drag handle */}
+      {listsCount > 1 ? (
+        <button
+          type="button"
+          className="shrink-0 cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground touch-none"
+          {...attributes}
+          {...listeners}
         >
-          Unassign
-        </Button>
-      </div>
-      {total > 0 && (
-        <div className="space-y-1">
-          <div className="flex justify-between text-xs text-muted-foreground">
-            <span>{accepted + sent + other} / {total} processed</span>
-            <span>{processedPct}%</span>
-          </div>
-          <div className="flex h-1.5 w-full rounded-full bg-background overflow-hidden">
-            {acceptedPct > 0 && (
-              <div className="h-full bg-emerald-500 transition-all" style={{ width: `${acceptedPct}%` }} />
-            )}
-            {sentPct > 0 && (
-              <div className="h-full bg-blue-500 transition-all" style={{ width: `${sentPct}%` }} />
-            )}
-            {otherPct > 0 && (
-              <div className="h-full bg-zinc-500 transition-all" style={{ width: `${otherPct}%` }} />
-            )}
-          </div>
-        </div>
+          <GripVertical className="h-4 w-4" />
+        </button>
+      ) : (
+        <div className="w-4 shrink-0" />
       )}
+
+      {/* Rank */}
+      <span className="shrink-0 w-7 text-right text-xs font-mono text-muted-foreground">
+        #{idx + 1}
+      </span>
+
+      {/* Name + status */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Link
+            href={`/lead-lists/${ll.id}`}
+            className="font-medium hover:underline truncate"
+          >
+            {ll.name}
+          </Link>
+          {isDispatching && (
+            <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              Active today
+            </span>
+          )}
+          {isQueued && (
+            <span className="shrink-0 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-700 dark:bg-blue-900/40 dark:text-blue-400">
+              Queued
+            </span>
+          )}
+          {isDone && (
+            <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Done
+            </span>
+          )}
+        </div>
+
+        {/* Progress bar */}
+        {total > 0 && (
+          <div className="mt-1.5 flex items-center gap-2">
+            <div className="flex h-1.5 flex-1 rounded-full bg-muted overflow-hidden">
+              <div className="h-full bg-emerald-500 transition-all" style={{ width: `${acceptedPct}%` }} />
+              <div className="h-full bg-blue-400 transition-all" style={{ width: `${sentPct}%` }} />
+            </div>
+            <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+              {Math.round(donePct)}%
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Counts */}
+      <div className="shrink-0 text-right text-xs tabular-nums space-y-0.5 hidden sm:block">
+        {(pending > 0 || scheduled > 0) && (
+          <div className={scheduled > 0 ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-muted-foreground"}>
+            {scheduled > 0 ? `${scheduled} sched` : `${pending} pending`}
+          </div>
+        )}
+        <div className="text-muted-foreground">{total} total</div>
+      </div>
+
+      {/* Unassign */}
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={isUnassigning}
+        onClick={onUnassign}
+        className="shrink-0 text-xs text-muted-foreground hover:text-destructive"
+      >
+        Unassign
+      </Button>
     </div>
   );
 }
@@ -634,51 +670,59 @@ export default function CampaignDetailPage({
 
           <TabsContent value="lists" className="mt-4">
             <Card>
-              <CardHeader>
-                <CardTitle>Assigned Lists</CardTitle>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <CardTitle>Assigned Lists</CardTitle>
+                  {(campaign.assigned_lists ?? []).length > 0 && (
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                      <span className="flex items-center gap-1">
+                        <span className="h-2 w-2 rounded-full bg-emerald-500" /> Connected
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="h-2 w-2 rounded-full bg-blue-400" /> Requested
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="h-2 w-2 rounded-full bg-muted-foreground/30 border border-border" /> Remaining
+                      </span>
+                    </div>
+                  )}
+                </div>
+                {(campaign.assigned_lists ?? []).length > 1 && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Dispatched top-to-bottom. Daily budget fills from #1 first — drag to reorder.
+                  </p>
+                )}
               </CardHeader>
               <CardContent className="space-y-3">
                 {(campaign.assigned_lists ?? []).length === 0 && (
                   <p className="text-sm text-muted-foreground">No lists assigned to this campaign.</p>
                 )}
                 {(campaign.assigned_lists ?? []).length > 0 && (
-                  <div className="space-y-2">
-                    {(campaign.assigned_lists ?? []).length > 1 && (
-                      <p className="text-xs text-muted-foreground">
-                        Leads are dispatched in reading order (left-to-right, top-to-bottom) — drag to reorder.
-                      </p>
-                    )}
-                    <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleListDragEnd}>
-                      <SortableContext items={(campaign.assigned_lists ?? []).map((l) => l.id)} strategy={rectSortingStrategy}>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                          {(campaign.assigned_lists ?? []).map((ll, idx) => {
-                            const counts = ll.status_counts ?? {};
-                            const total = Object.values(counts).reduce((a: number, b: number) => a + b, 0);
-                            return (
-                              <SortableListRow
-                                key={ll.id}
-                                ll={ll}
-                                idx={idx}
-                                total={total}
-                                listsCount={(campaign.assigned_lists ?? []).length}
-                                isUnassigning={unassign.isPending}
-                                onUnassign={() =>
-                                  unassign.mutate(
-                                    { listId: ll.id, campaignId: id },
-                                    {
-                                      onSuccess: (data) =>
-                                        toast.success(`Unassigned — ${data.leads_removed} leads removed`),
-                                      onError: (err) => toast.error(err.message),
-                                    }
-                                  )
+                  <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleListDragEnd}>
+                    <SortableContext items={(campaign.assigned_lists ?? []).map((l) => l.id)} strategy={verticalListSortingStrategy}>
+                      <div className="space-y-1.5">
+                        {(campaign.assigned_lists ?? []).map((ll, idx) => (
+                          <SortableListRow
+                            key={ll.id}
+                            ll={ll}
+                            idx={idx}
+                            listsCount={(campaign.assigned_lists ?? []).length}
+                            isUnassigning={unassign.isPending}
+                            onUnassign={() =>
+                              unassign.mutate(
+                                { listId: ll.id, campaignId: id },
+                                {
+                                  onSuccess: (data) =>
+                                    toast.success(`Unassigned — ${data.leads_removed} leads removed`),
+                                  onError: (err) => toast.error(err.message),
                                 }
-                              />
-                            );
-                          })}
-                        </div>
-                      </SortableContext>
-                    </DndContext>
-                  </div>
+                              )
+                            }
+                          />
+                        ))}
+                      </div>
+                    </SortableContext>
+                  </DndContext>
                 )}
 
                 {availableLists.length > 0 && (
