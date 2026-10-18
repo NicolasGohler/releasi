@@ -62,9 +62,29 @@ type AssignedList = {
   status_counts?: Record<string, number> | null;
 };
 
+function listInCampaignCount(counts: Record<string, number>): number {
+  return (
+    (counts["pending"] ?? 0) +
+    (counts["scheduled"] ?? 0) +
+    (counts["connection_requested"] ?? 0) +
+    (counts["connected"] ?? 0) +
+    (counts["followup_scheduled"] ?? 0) +
+    (counts["followup_sent"] ?? 0) +
+    (counts["completed"] ?? 0) +
+    (counts["error"] ?? 0) +
+    (counts["invalid"] ?? 0) +
+    (counts["skipped"] ?? 0) +
+    (counts["removed"] ?? 0) +
+    (counts["withdrawn"] ?? 0)
+  );
+}
+
 function isListDone(ll: AssignedList): boolean {
   const counts = ll.status_counts ?? {};
-  return (counts["pending"] ?? 0) === 0 && (counts["scheduled"] ?? 0) === 0 && ll.total_leads > 0;
+  const inCampaign = listInCampaignCount(counts);
+  // A list is done when it has in-campaign leads but none are pending/scheduled.
+  // Falls back to ll.total_leads > 0 for lists with no assignments yet.
+  return (counts["pending"] ?? 0) === 0 && (counts["scheduled"] ?? 0) === 0 && (inCampaign > 0 || ll.total_leads > 0);
 }
 
 function SortableListRow({
@@ -89,13 +109,13 @@ function SortableListRow({
   const accepted = (counts["connected"] ?? 0) + (counts["followup_scheduled"] ?? 0) + (counts["followup_sent"] ?? 0) + (counts["completed"] ?? 0);
   const error = counts["error"] ?? 0;
   const invalid = counts["invalid"] ?? 0;
-  // Use leads actually in this campaign as denominator, not the list's full size
-  // (the list may have grown since assignment — new leads aren't auto-synced)
-  const inCampaign = pending + scheduled + sent + accepted + error + invalid + (counts["removed"] ?? 0) + (counts["withdrawn"] ?? 0);
-  // Use leads-in-campaign as denominator: the gap vs ll.total_leads is deduplication
-  // (leads already present from another list), not missing data.
+  const skipped = counts["skipped"] ?? 0;
+  // Leads actually assigned to this campaign from this list.
+  // Gap vs ll.total_leads = duplicates already present from another list — not missing data.
+  const inCampaign = listInCampaignCount(counts);
   const total = inCampaign > 0 ? inCampaign : ll.total_leads;
-  const done = sent + accepted + error + invalid;
+  // skipped/error/invalid are terminal states — count as "processed" for progress
+  const done = sent + accepted + error + invalid + skipped;
   const donePct = total > 0 ? (done / total) * 100 : 0;
   const acceptedPct = total > 0 ? (accepted / total) * 100 : 0;
   const sentPct = total > 0 ? (sent / total) * 100 : 0;
@@ -641,10 +661,11 @@ export default function CampaignDetailPage({
                           const listWithdrawn = sc["withdrawn"] ?? 0;
                           const listProcessed = listConnected + listSent + listWithdrawn;
                           const listRate = listProcessed > 0 ? Math.round((listConnected / listProcessed) * 100) : null;
+                          const listInCampaign = listInCampaignCount(sc);
                           return (
                             <tr key={ll.id} className="border-b border-border/50 last:border-0">
                               <td className="py-2 font-medium">{ll.name}</td>
-                              <td className="py-2 text-right text-muted-foreground">{ll.total_leads}</td>
+                              <td className="py-2 text-right text-muted-foreground">{listInCampaign || ll.total_leads}</td>
                               <td className="py-2 text-right text-muted-foreground">{listSent + listConnected + listWithdrawn}</td>
                               <td className="py-2 text-right text-muted-foreground">{listConnected}</td>
                               <td className="py-2 text-right">
@@ -763,13 +784,12 @@ export default function CampaignDetailPage({
                                 const counts = ll.status_counts ?? {};
                                 const accepted = (counts["connected"] ?? 0) + (counts["followup_scheduled"] ?? 0) + (counts["followup_sent"] ?? 0) + (counts["completed"] ?? 0);
                                 const sent = counts["connection_requested"] ?? 0;
-                                const err = counts["error"] ?? 0;
-                                const inv = counts["invalid"] ?? 0;
-                                const inCamp = Object.values(counts).reduce((a, b) => a + b, 0);
+                                const err = (counts["error"] ?? 0) + (counts["invalid"] ?? 0) + (counts["skipped"] ?? 0);
+                                const inCamp = listInCampaignCount(counts);
                                 const total = inCamp > 0 ? inCamp : ll.total_leads;
                                 const acceptedPct = total > 0 ? (accepted / total) * 100 : 0;
                                 const sentPct = total > 0 ? (sent / total) * 100 : 0;
-                                const donePct = total > 0 ? ((sent + accepted + err + inv) / total) * 100 : 0;
+                                const donePct = total > 0 ? ((sent + accepted + err) / total) * 100 : 0;
                                 const rank = activeLists.length + doneIdx + 1;
                                 return (
                                   <div
