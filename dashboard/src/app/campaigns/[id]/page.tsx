@@ -92,8 +92,9 @@ function SortableListRow({
   // Use leads actually in this campaign as denominator, not the list's full size
   // (the list may have grown since assignment — new leads aren't auto-synced)
   const inCampaign = pending + scheduled + sent + accepted + error + invalid + (counts["removed"] ?? 0) + (counts["withdrawn"] ?? 0);
+  // Use leads-in-campaign as denominator: the gap vs ll.total_leads is deduplication
+  // (leads already present from another list), not missing data.
   const total = inCampaign > 0 ? inCampaign : ll.total_leads;
-  const unimported = ll.total_leads - inCampaign;
   const done = sent + accepted + error + invalid;
   const donePct = total > 0 ? (done / total) * 100 : 0;
   const acceptedPct = total > 0 ? (accepted / total) * 100 : 0;
@@ -182,11 +183,6 @@ function SortableListRow({
           </div>
         )}
         <div className="text-muted-foreground">{total} in campaign</div>
-        {unimported > 0 && (
-          <div className="text-amber-500/80 dark:text-amber-400/70" title="Leads added to this list after it was assigned — not yet imported into this campaign">
-            +{unimported} not imported
-          </div>
-        )}
       </div>
 
       {/* Unassign */}
@@ -771,7 +767,6 @@ export default function CampaignDetailPage({
                                 const inv = counts["invalid"] ?? 0;
                                 const inCamp = Object.values(counts).reduce((a, b) => a + b, 0);
                                 const total = inCamp > 0 ? inCamp : ll.total_leads;
-                                const unimportedDone = ll.total_leads - inCamp;
                                 const acceptedPct = total > 0 ? (accepted / total) * 100 : 0;
                                 const sentPct = total > 0 ? (sent / total) * 100 : 0;
                                 const donePct = total > 0 ? ((sent + accepted + err + inv) / total) * 100 : 0;
@@ -808,11 +803,6 @@ export default function CampaignDetailPage({
                                     </div>
                                     <div className="shrink-0 text-right text-xs tabular-nums space-y-0.5 hidden sm:block">
                                       <div className="text-muted-foreground">{total} in campaign</div>
-                                      {unimportedDone > 0 && (
-                                        <div className="text-amber-500/80 dark:text-amber-400/70" title="Leads added to this list after it was assigned">
-                                          +{unimportedDone} not imported
-                                        </div>
-                                      )}
                                     </div>
                                     <Button
                                       size="sm"
