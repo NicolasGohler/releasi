@@ -62,6 +62,11 @@ type AssignedList = {
   status_counts?: Record<string, number> | null;
 };
 
+function isListDone(ll: AssignedList): boolean {
+  const counts = ll.status_counts ?? {};
+  return (counts["pending"] ?? 0) === 0 && (counts["scheduled"] ?? 0) === 0 && ll.total_leads > 0;
+}
+
 function SortableListRow({
   ll,
   idx,
@@ -119,9 +124,9 @@ function SortableListRow({
         <div className="w-4 shrink-0" />
       )}
 
-      {/* Rank */}
-      <span className="shrink-0 w-7 text-right text-xs font-mono text-muted-foreground">
-        #{idx + 1}
+      {/* Rank badge */}
+      <span className="shrink-0 flex h-5 min-w-[22px] items-center justify-center rounded bg-muted px-1.5 text-[10px] font-semibold tabular-nums text-foreground">
+        {idx + 1}
       </span>
 
       {/* Name + status */}
@@ -221,12 +226,14 @@ export default function CampaignDetailPage({
   const handleListDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-    const lists = campaign?.assigned_lists ?? [];
-    const oldIndex = lists.findIndex((l) => l.id === active.id);
-    const newIndex = lists.findIndex((l) => l.id === over.id);
-    const reordered = arrayMove(lists, oldIndex, newIndex);
+    const allAssigned = campaign?.assigned_lists ?? [];
+    const activeLists = allAssigned.filter((l) => !isListDone(l));
+    const doneLists = allAssigned.filter((l) => isListDone(l));
+    const oldIndex = activeLists.findIndex((l) => l.id === active.id);
+    const newIndex = activeLists.findIndex((l) => l.id === over.id);
+    const reordered = arrayMove(activeLists, oldIndex, newIndex);
     reorderLists.mutate(
-      { campaignId: id, orderedListIds: reordered.map((l) => l.id) },
+      { campaignId: id, orderedListIds: [...reordered, ...doneLists].map((l) => l.id) },
       { onError: (err) => toast.error(err.message) }
     );
   };
@@ -271,6 +278,7 @@ export default function CampaignDetailPage({
     return rates;
   }, [leadSample]);
 
+  const [showDoneLists, setShowDoneLists] = useState(false);
   const [selectedList, setSelectedList] = useState("");
   const [editName, setEditName] = useState("");
   const [editConnMsg, setEditConnMsg] = useState("");
@@ -697,33 +705,124 @@ export default function CampaignDetailPage({
                 {(campaign.assigned_lists ?? []).length === 0 && (
                   <p className="text-sm text-muted-foreground">No lists assigned to this campaign.</p>
                 )}
-                {(campaign.assigned_lists ?? []).length > 0 && (
-                  <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleListDragEnd}>
-                    <SortableContext items={(campaign.assigned_lists ?? []).map((l) => l.id)} strategy={verticalListSortingStrategy}>
-                      <div className="space-y-1.5">
-                        {(campaign.assigned_lists ?? []).map((ll, idx) => (
-                          <SortableListRow
-                            key={ll.id}
-                            ll={ll}
-                            idx={idx}
-                            listsCount={(campaign.assigned_lists ?? []).length}
-                            isUnassigning={unassign.isPending}
-                            onUnassign={() =>
-                              unassign.mutate(
-                                { listId: ll.id, campaignId: id },
-                                {
-                                  onSuccess: (data) =>
-                                    toast.success(`Unassigned — ${data.leads_removed} leads removed`),
-                                  onError: (err) => toast.error(err.message),
+                {(campaign.assigned_lists ?? []).length > 0 && (() => {
+                  const allAssigned = campaign.assigned_lists ?? [];
+                  const activeLists = allAssigned.filter((l) => !isListDone(l));
+                  const doneLists = allAssigned.filter((l) => isListDone(l));
+                  return (
+                    <>
+                      <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleListDragEnd}>
+                        <SortableContext items={activeLists.map((l) => l.id)} strategy={verticalListSortingStrategy}>
+                          <div className="space-y-1.5">
+                            {activeLists.map((ll, idx) => (
+                              <SortableListRow
+                                key={ll.id}
+                                ll={ll}
+                                idx={idx}
+                                listsCount={activeLists.length}
+                                isUnassigning={unassign.isPending}
+                                onUnassign={() =>
+                                  unassign.mutate(
+                                    { listId: ll.id, campaignId: id },
+                                    {
+                                      onSuccess: (data) =>
+                                        toast.success(`Unassigned — ${data.leads_removed} leads removed`),
+                                      onError: (err) => toast.error(err.message),
+                                    }
+                                  )
                                 }
-                              )
-                            }
-                          />
-                        ))}
-                      </div>
-                    </SortableContext>
-                  </DndContext>
-                )}
+                              />
+                            ))}
+                          </div>
+                        </SortableContext>
+                      </DndContext>
+
+                      {doneLists.length > 0 && (
+                        <div className="pt-1">
+                          <button
+                            type="button"
+                            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                            onClick={() => setShowDoneLists((v) => !v)}
+                          >
+                            <svg
+                              className={`h-3 w-3 transition-transform ${showDoneLists ? "rotate-90" : ""}`}
+                              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                            </svg>
+                            {showDoneLists ? "Hide" : "Show"} {doneLists.length} done list{doneLists.length !== 1 ? "s" : ""}
+                          </button>
+                          {showDoneLists && (
+                            <div className="mt-1.5 space-y-1.5">
+                              {doneLists.map((ll, doneIdx) => {
+                                const counts = ll.status_counts ?? {};
+                                const accepted = (counts["connected"] ?? 0) + (counts["followup_scheduled"] ?? 0) + (counts["followup_sent"] ?? 0) + (counts["completed"] ?? 0);
+                                const sent = counts["connection_requested"] ?? 0;
+                                const total = ll.total_leads;
+                                const acceptedPct = total > 0 ? (accepted / total) * 100 : 0;
+                                const sentPct = total > 0 ? (sent / total) * 100 : 0;
+                                const donePct = total > 0 ? ((sent + accepted) / total) * 100 : 0;
+                                const rank = activeLists.length + doneIdx + 1;
+                                return (
+                                  <div
+                                    key={ll.id}
+                                    className="flex items-center gap-3 rounded-md border border-border/50 bg-muted/20 px-3 py-2.5 text-sm opacity-60"
+                                  >
+                                    <div className="w-4 shrink-0" />
+                                    <span className="shrink-0 flex h-5 min-w-[22px] items-center justify-center rounded bg-muted px-1.5 text-[10px] font-semibold tabular-nums text-foreground">
+                                      {rank}
+                                    </span>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <Link href={`/lead-lists/${ll.id}`} className="font-medium hover:underline truncate">
+                                          {ll.name}
+                                        </Link>
+                                        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                          Done
+                                        </span>
+                                      </div>
+                                      {total > 0 && (
+                                        <div className="mt-1.5 flex items-center gap-2">
+                                          <div className="flex h-1.5 flex-1 rounded-full bg-muted overflow-hidden">
+                                            <div className="h-full bg-emerald-500 transition-all" style={{ width: `${acceptedPct}%` }} />
+                                            <div className="h-full bg-blue-400 transition-all" style={{ width: `${sentPct}%` }} />
+                                          </div>
+                                          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                                            {Math.round(donePct)}%
+                                          </span>
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div className="shrink-0 text-right text-xs tabular-nums text-muted-foreground hidden sm:block">
+                                      {total} total
+                                    </div>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      disabled={unassign.isPending}
+                                      onClick={() =>
+                                        unassign.mutate(
+                                          { listId: ll.id, campaignId: id },
+                                          {
+                                            onSuccess: (data) => toast.success(`Unassigned — ${data.leads_removed} leads removed`),
+                                            onError: (err) => toast.error(err.message),
+                                          }
+                                        )
+                                      }
+                                      className="shrink-0 text-xs text-muted-foreground hover:text-destructive"
+                                    >
+                                      Unassign
+                                    </Button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
 
                 {availableLists.length > 0 && (
                   <div className="flex gap-2 pt-2">
