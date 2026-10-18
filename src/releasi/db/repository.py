@@ -346,11 +346,16 @@ class Repository:
                     )
                 )
                 if existing_asgn.scalar_one_or_none() is None:
+                    initial_status = (
+                        LeadStatus.INVALID.value
+                        if not canonical.linkedin_url
+                        else LeadStatus.PENDING.value
+                    )
                     self.session.add(CampaignLeadAssignment(
                         lead_id=canonical.id,
                         campaign_id=incoming.campaign_id,
                         lead_list_id=incoming.lead_list_id,
-                        status=LeadStatus.PENDING.value,
+                        status=initial_status,
                     ))
                     assignments_added += 1
             if incoming.lead_list_id:
