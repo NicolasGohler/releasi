@@ -942,9 +942,10 @@ async def _dispatch_planned(
                 day_remaining=max(0, day_target - day_sent),
             )
         _last_session_end[account.id] = datetime.utcnow()
-        resume = _last_session_end[account.id] + timedelta(seconds=get_settings().inter_session_delay[0])
-        if not account.paused_until or account.paused_until < resume:
-            await repo.update_account(account, paused_until=resume)
+        # Inter-session gap is enforced via _last_session_end (in-memory) in the
+        # main dispatcher loop — no need to write paused_until here. Writing it
+        # would block the broadcast dispatcher (which reads paused_until as a
+        # cooldown guard) for the full inter-session window.
 
         if stop_account:
             break
@@ -1285,9 +1286,9 @@ async def dispatch():
                         pool.confirm_session(account.id)
                     _last_session_end[account.id] = datetime.utcnow()
                     _state["next_gap_sec"] = _next_continuous_gap(_state["target_gap_sec"])
-                    resume = _last_session_end[account.id] + timedelta(seconds=_state["next_gap_sec"])
-                    if not account.paused_until or account.paused_until < resume:
-                        await repo.update_account(account, paused_until=resume)
+                    # Gap enforced via _last_session_end (in-memory) above.
+                    # Don't write paused_until — broadcast dispatcher reads it
+                    # as a real cooldown and would skip for the full gap window.
                 else:
                     # ── Legacy planned-mode dispatch (explicit dispatch_mode='planned' only) ──
                     await _dispatch_planned(account, repo, pool_context, pool, remaining, now, sent_today_count)
