@@ -110,15 +110,19 @@ function SortableListRow({
   const error = counts["error"] ?? 0;
   const invalid = counts["invalid"] ?? 0;
   const skipped = counts["skipped"] ?? 0;
+  const removed = counts["removed"] ?? 0;
+  const withdrawn = counts["withdrawn"] ?? 0;
   // Leads actually assigned to this campaign from this list.
   // Gap vs ll.total_leads = duplicates already present from another list — not missing data.
   const inCampaign = listInCampaignCount(counts);
   const total = inCampaign > 0 ? inCampaign : ll.total_leads;
-  // skipped/error/invalid are terminal states — count as "processed" for progress
-  const done = sent + accepted + error + invalid + skipped;
+  // skipped/error/invalid/removed/withdrawn are terminal states — count as "processed" for progress
+  const other = error + invalid + skipped + removed + withdrawn;
+  const done = sent + accepted + other;
   const donePct = total > 0 ? (done / total) * 100 : 0;
   const acceptedPct = total > 0 ? (accepted / total) * 100 : 0;
   const sentPct = total > 0 ? (sent / total) * 100 : 0;
+  const otherPct = total > 0 ? (other / total) * 100 : 0;
 
   // Status: dispatching today > queued (has pending) > done > empty
   const isDispatching = scheduled > 0;
@@ -187,6 +191,7 @@ function SortableListRow({
             <div className="flex h-1.5 flex-1 rounded-full bg-muted overflow-hidden">
               <div className="h-full bg-emerald-500 transition-all" style={{ width: `${acceptedPct}%` }} />
               <div className="h-full bg-blue-400 transition-all" style={{ width: `${sentPct}%` }} />
+              <div className="h-full bg-muted-foreground/25 transition-all" style={{ width: `${otherPct}%` }} />
             </div>
             <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
               {Math.round(donePct)}%
