@@ -6,6 +6,7 @@ import {
   useAccounts,
   useLeadLists,
   useLeadList,
+  useLeadListLeads,
   useCreateBroadcast,
 } from "@/hooks/use-queries";
 import { PageHeader } from "@/components/layout/page-header";
@@ -159,6 +160,41 @@ function NewBroadcastPageInner() {
     );
   }
 
+  // Fetch a sample of leads from the selected list to derive custom variables.
+  const { data: listLeadSample } = useLeadListLeads(
+    sourceListId,
+    { per_page: 100 },
+    { enabled: !!sourceListId && !fromSelection }
+  );
+
+  const { customVariables, fillRates } = useMemo(() => {
+    const leads = listLeadSample?.items;
+    if (!leads || leads.length === 0) return { customVariables: [] as string[], fillRates: undefined };
+    const total = leads.length;
+    const FIELD_MAP: Record<string, "first_name" | "last_name" | "company" | "title"> = {
+      first_name: "first_name", firstname: "first_name",
+      last_name: "last_name",  lastname: "last_name",
+      company: "company", title: "title",
+    };
+    const rates: Record<string, number> = {};
+    for (const [token, field] of Object.entries(FIELD_MAP)) {
+      rates[token] = leads.filter(l => l[field] != null && l[field] !== "").length / total;
+    }
+    const extraKeys = new Set<string>();
+    for (const lead of leads) {
+      if (lead.extra_data) {
+        for (const k of Object.keys(lead.extra_data)) extraKeys.add(k.toLowerCase());
+      }
+    }
+    for (const key of extraKeys) {
+      rates[key] = leads.filter(l =>
+        l.extra_data && key in l.extra_data && l.extra_data[key] != null && l.extra_data[key] !== ""
+      ).length / total;
+    }
+    const standardTokens = new Set(Object.keys(FIELD_MAP));
+    return { customVariables: [...extraKeys].filter(k => !standardTokens.has(k)), fillRates: rates };
+  }, [listLeadSample]);
+
   const availableLists = (lists ?? []).filter((l) => !l.archived);
   const selectedList = availableLists.find((l) => l.id === sourceListId);
 
@@ -266,6 +302,8 @@ function NewBroadcastPageInner() {
                 placeholder={"Hey {{first_name}}, quick update..."}
                 showCharLimit
                 minHeight={100}
+                customVariables={customVariables}
+                fillRates={fillRates}
               />
             </div>
 
@@ -288,6 +326,8 @@ function NewBroadcastPageInner() {
                   placeholder={"Optional follow-up..."}
                   showCharLimit
                   minHeight={90}
+                  customVariables={customVariables}
+                  fillRates={fillRates}
                 />
               </div>
             ) : (
@@ -320,6 +360,8 @@ function NewBroadcastPageInner() {
                   placeholder={"Optional third follow-up..."}
                   showCharLimit
                   minHeight={90}
+                  customVariables={customVariables}
+                  fillRates={fillRates}
                 />
               </div>
             ) : (
@@ -419,6 +461,8 @@ function NewBroadcastPageInner() {
                       placeholder={"Hey {{first_name}}, just following up on my last message…"}
                       showCharLimit
                       minHeight={90}
+                      customVariables={customVariables}
+                      fillRates={fillRates}
                     />
                     <p className="text-xs text-muted-foreground">
                       Leave blank to skip these leads instead of sending an alternative message.
@@ -431,7 +475,7 @@ function NewBroadcastPageInner() {
                         <Label>Prior-branch message 2</Label>
                         <button type="button" onClick={() => { setShowPrior2(false); setShowPrior3(false); setMessagePriorOnly2(""); setMessagePriorOnly3(""); }} className="text-xs text-muted-foreground hover:text-foreground">remove</button>
                       </div>
-                      <MessageTemplateEditor value={messagePriorOnly2} onChange={setMessagePriorOnly2} placeholder={"Optional follow-up for prior-branch leads…"} showCharLimit minHeight={80} />
+                      <MessageTemplateEditor value={messagePriorOnly2} onChange={setMessagePriorOnly2} placeholder={"Optional follow-up for prior-branch leads…"} showCharLimit minHeight={80} customVariables={customVariables} fillRates={fillRates} />
                     </div>
                   ) : (
                     messagePriorOnly.trim() && (
@@ -447,7 +491,7 @@ function NewBroadcastPageInner() {
                         <Label>Prior-branch message 3</Label>
                         <button type="button" onClick={() => { setShowPrior3(false); setMessagePriorOnly3(""); }} className="text-xs text-muted-foreground hover:text-foreground">remove</button>
                       </div>
-                      <MessageTemplateEditor value={messagePriorOnly3} onChange={setMessagePriorOnly3} placeholder={"Optional third follow-up for prior-branch leads…"} showCharLimit minHeight={80} />
+                      <MessageTemplateEditor value={messagePriorOnly3} onChange={setMessagePriorOnly3} placeholder={"Optional third follow-up for prior-branch leads…"} showCharLimit minHeight={80} customVariables={customVariables} fillRates={fillRates} />
                     </div>
                   ) : (
                     messagePriorOnly2.trim() && (

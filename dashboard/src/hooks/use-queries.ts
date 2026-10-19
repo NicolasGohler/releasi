@@ -319,11 +319,13 @@ export function useImportCSVToList(listId: string) {
 
 export function useLeadListLeads(
   listId: string,
-  params?: { page?: number; per_page?: number }
+  params?: { page?: number; per_page?: number },
+  options?: { enabled?: boolean }
 ) {
   return useQuery({
     queryKey: ["lead-list-leads", listId, params],
     queryFn: () => api.fetchLeadListLeads(listId, params),
+    enabled: options?.enabled ?? true,
   });
 }
 

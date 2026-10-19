@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, use } from "react";
+import { useState, use, useMemo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -11,6 +11,7 @@ import {
   useArchiveBroadcast,
   useDeleteBroadcast,
   useUpdateBroadcast,
+  useLeadListLeads,
 } from "@/hooks/use-queries";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
@@ -60,6 +61,41 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
   const archive = useArchiveBroadcast();
   const del = useDeleteBroadcast();
   const update = useUpdateBroadcast(id);
+
+  // Lead sample for variable chips — fetched from the broadcast's source list.
+  const { data: listLeadSample } = useLeadListLeads(
+    bc?.source_list_id ?? "",
+    { per_page: 100 },
+    { enabled: !!bc?.source_list_id }
+  );
+
+  const { customVariables, fillRates } = useMemo(() => {
+    const leads = listLeadSample?.items;
+    if (!leads || leads.length === 0) return { customVariables: [] as string[], fillRates: undefined };
+    const total = leads.length;
+    const FIELD_MAP: Record<string, "first_name" | "last_name" | "company" | "title"> = {
+      first_name: "first_name", firstname: "first_name",
+      last_name: "last_name",  lastname: "last_name",
+      company: "company", title: "title",
+    };
+    const rates: Record<string, number> = {};
+    for (const [token, field] of Object.entries(FIELD_MAP)) {
+      rates[token] = leads.filter(l => l[field] != null && l[field] !== "").length / total;
+    }
+    const extraKeys = new Set<string>();
+    for (const lead of leads) {
+      if (lead.extra_data) {
+        for (const k of Object.keys(lead.extra_data)) extraKeys.add(k.toLowerCase());
+      }
+    }
+    for (const key of extraKeys) {
+      rates[key] = leads.filter(l =>
+        l.extra_data && key in l.extra_data && l.extra_data[key] != null && l.extra_data[key] !== ""
+      ).length / total;
+    }
+    const standardTokens = new Set(Object.keys(FIELD_MAP));
+    return { customVariables: [...extraKeys].filter(k => !standardTokens.has(k)), fillRates: rates };
+  }, [listLeadSample]);
 
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -322,7 +358,7 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
 
               <div className="space-y-1.5">
                 <Label className="text-xs">Message 1</Label>
-                <MessageTemplateEditor value={seqMsg1} onChange={setSeqMsg1} showCharLimit minHeight={90} />
+                <MessageTemplateEditor value={seqMsg1} onChange={setSeqMsg1} showCharLimit minHeight={90} customVariables={customVariables} fillRates={fillRates} />
               </div>
 
               {showSeqMsg2 ? (
@@ -331,7 +367,7 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
                     <Label className="text-xs">Message 2</Label>
                     <button type="button" onClick={() => { setShowSeqMsg2(false); setShowSeqMsg3(false); setSeqMsg2(""); setSeqMsg3(""); }} className="text-xs text-muted-foreground hover:text-foreground">remove</button>
                   </div>
-                  <MessageTemplateEditor value={seqMsg2} onChange={setSeqMsg2} showCharLimit minHeight={80} />
+                  <MessageTemplateEditor value={seqMsg2} onChange={setSeqMsg2} showCharLimit minHeight={80} customVariables={customVariables} fillRates={fillRates} />
                 </div>
               ) : (
                 <Button type="button" variant="outline" size="sm" onClick={() => setShowSeqMsg2(true)}>+ Add message 2</Button>
@@ -343,7 +379,7 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
                     <Label className="text-xs">Message 3</Label>
                     <button type="button" onClick={() => { setShowSeqMsg3(false); setSeqMsg3(""); }} className="text-xs text-muted-foreground hover:text-foreground">remove</button>
                   </div>
-                  <MessageTemplateEditor value={seqMsg3} onChange={setSeqMsg3} showCharLimit minHeight={80} />
+                  <MessageTemplateEditor value={seqMsg3} onChange={setSeqMsg3} showCharLimit minHeight={80} customVariables={customVariables} fillRates={fillRates} />
                 </div>
               ) : (
                 <Button type="button" variant="outline" size="sm" onClick={() => setShowSeqMsg3(true)}>+ Add message 3</Button>
@@ -401,7 +437,7 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
                     </div>
                     <div className="space-y-1.5">
                       <Label className="text-xs">Prior-branch message 1</Label>
-                      <MessageTemplateEditor value={seqPriorOnly} onChange={setSeqPriorOnly} placeholder="Hey {{first_name}}, just following up on my earlier message…" showCharLimit minHeight={80} />
+                      <MessageTemplateEditor value={seqPriorOnly} onChange={setSeqPriorOnly} placeholder="Hey {{first_name}}, just following up on my earlier message…" showCharLimit minHeight={80} customVariables={customVariables} fillRates={fillRates} />
                       <p className="text-xs text-muted-foreground">Leave blank to skip these leads entirely.</p>
                     </div>
 
@@ -411,7 +447,7 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
                           <Label className="text-xs">Prior-branch message 2</Label>
                           <button type="button" onClick={() => { setShowSeqPrior2(false); setShowSeqPrior3(false); setSeqPriorOnly2(""); setSeqPriorOnly3(""); }} className="text-xs text-muted-foreground hover:text-foreground">remove</button>
                         </div>
-                        <MessageTemplateEditor value={seqPriorOnly2} onChange={setSeqPriorOnly2} placeholder="Optional second follow-up…" showCharLimit minHeight={70} />
+                        <MessageTemplateEditor value={seqPriorOnly2} onChange={setSeqPriorOnly2} placeholder="Optional second follow-up…" showCharLimit minHeight={70} customVariables={customVariables} fillRates={fillRates} />
                       </div>
                     ) : (
                       seqPriorOnly.trim() && <Button type="button" variant="outline" size="sm" onClick={() => setShowSeqPrior2(true)}>+ Add prior-branch msg 2</Button>
@@ -423,7 +459,7 @@ export default function BroadcastDetailPage({ params }: { params: Promise<{ id: 
                           <Label className="text-xs">Prior-branch message 3</Label>
                           <button type="button" onClick={() => { setShowSeqPrior3(false); setSeqPriorOnly3(""); }} className="text-xs text-muted-foreground hover:text-foreground">remove</button>
                         </div>
-                        <MessageTemplateEditor value={seqPriorOnly3} onChange={setSeqPriorOnly3} placeholder="Optional third follow-up…" showCharLimit minHeight={70} />
+                        <MessageTemplateEditor value={seqPriorOnly3} onChange={setSeqPriorOnly3} placeholder="Optional third follow-up…" showCharLimit minHeight={70} customVariables={customVariables} fillRates={fillRates} />
                       </div>
                     ) : (
                       seqPriorOnly2.trim() && <Button type="button" variant="outline" size="sm" onClick={() => setShowSeqPrior3(true)}>+ Add prior-branch msg 3</Button>
