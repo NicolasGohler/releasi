@@ -167,7 +167,7 @@ function NewBroadcastPageInner() {
     { enabled: !!sourceListId && !fromSelection }
   );
 
-  const { customVariables, fillRates } = useMemo(() => {
+  const { customVariables, fillRates, customVariableExamples } = useMemo(() => {
     const leads = listLeadSample?.items;
     if (!leads || leads.length === 0) return { customVariables: [] as string[], fillRates: undefined };
     const total = leads.length;
@@ -192,7 +192,12 @@ function NewBroadcastPageInner() {
       ).length / total;
     }
     const standardTokens = new Set(Object.keys(FIELD_MAP));
-    return { customVariables: [...extraKeys].filter(k => !standardTokens.has(k)), fillRates: rates };
+    const examples: Record<string, string> = {};
+    for (const key of extraKeys) {
+      const lead = leads.find(l => l.extra_data && l.extra_data[key] != null && l.extra_data[key] !== "");
+      if (lead?.extra_data) examples[key] = String(lead.extra_data[key]);
+    }
+    return { customVariables: [...extraKeys].filter(k => !standardTokens.has(k)), fillRates: rates, customVariableExamples: examples };
   }, [listLeadSample]);
 
   const availableLists = (lists ?? []).filter((l) => !l.archived);
@@ -304,6 +309,7 @@ function NewBroadcastPageInner() {
                 minHeight={100}
                 customVariables={customVariables}
                 fillRates={fillRates}
+                customVariableExamples={customVariableExamples}
               />
             </div>
 
@@ -328,6 +334,7 @@ function NewBroadcastPageInner() {
                   minHeight={90}
                   customVariables={customVariables}
                   fillRates={fillRates}
+                  customVariableExamples={customVariableExamples}
                 />
               </div>
             ) : (
@@ -362,6 +369,7 @@ function NewBroadcastPageInner() {
                   minHeight={90}
                   customVariables={customVariables}
                   fillRates={fillRates}
+                  customVariableExamples={customVariableExamples}
                 />
               </div>
             ) : (
@@ -463,6 +471,7 @@ function NewBroadcastPageInner() {
                       minHeight={90}
                       customVariables={customVariables}
                       fillRates={fillRates}
+                      customVariableExamples={customVariableExamples}
                     />
                     <p className="text-xs text-muted-foreground">
                       Leave blank to skip these leads instead of sending an alternative message.
@@ -475,7 +484,7 @@ function NewBroadcastPageInner() {
                         <Label>Prior-branch message 2</Label>
                         <button type="button" onClick={() => { setShowPrior2(false); setShowPrior3(false); setMessagePriorOnly2(""); setMessagePriorOnly3(""); }} className="text-xs text-muted-foreground hover:text-foreground">remove</button>
                       </div>
-                      <MessageTemplateEditor value={messagePriorOnly2} onChange={setMessagePriorOnly2} placeholder={"Optional follow-up for prior-branch leads…"} showCharLimit minHeight={80} customVariables={customVariables} fillRates={fillRates} />
+                      <MessageTemplateEditor value={messagePriorOnly2} onChange={setMessagePriorOnly2} placeholder={"Optional follow-up for prior-branch leads…"} showCharLimit minHeight={80} customVariables={customVariables} fillRates={fillRates} customVariableExamples={customVariableExamples} />
                     </div>
                   ) : (
                     messagePriorOnly.trim() && (
@@ -491,7 +500,7 @@ function NewBroadcastPageInner() {
                         <Label>Prior-branch message 3</Label>
                         <button type="button" onClick={() => { setShowPrior3(false); setMessagePriorOnly3(""); }} className="text-xs text-muted-foreground hover:text-foreground">remove</button>
                       </div>
-                      <MessageTemplateEditor value={messagePriorOnly3} onChange={setMessagePriorOnly3} placeholder={"Optional third follow-up for prior-branch leads…"} showCharLimit minHeight={80} customVariables={customVariables} fillRates={fillRates} />
+                      <MessageTemplateEditor value={messagePriorOnly3} onChange={setMessagePriorOnly3} placeholder={"Optional third follow-up for prior-branch leads…"} showCharLimit minHeight={80} customVariables={customVariables} fillRates={fillRates} customVariableExamples={customVariableExamples} />
                     </div>
                   ) : (
                     messagePriorOnly2.trim() && (

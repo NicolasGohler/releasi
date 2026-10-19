@@ -40,6 +40,8 @@ export interface MessageTemplateEditorProps {
   id?: string;
   /** Additional custom variable tokens (e.g. extra_data keys) to offer alongside the standard set. */
   customVariables?: string[];
+  /** Example values for custom variables, shown in the live preview (keyed by lowercased token). */
+  customVariableExamples?: Record<string, string>;
   /**
    * Fill-rate per token name (0–1). When provided:
    *  - chips show a % badge for any token below 100%
@@ -61,7 +63,7 @@ type PreviewSegment =
   | { kind: "filled"; leading: string; example: string; token: string }
   | { kind: "empty";  leading: string; token: string };
 
-function buildPreview(template: string, fillRates?: Record<string, number>): PreviewSegment[] {
+function buildPreview(template: string, fillRates?: Record<string, number>, customVariableExamples?: Record<string, string>): PreviewSegment[] {
   const segs: PreviewSegment[] = [];
   // Mirror the Python regex: optional leading horizontal space + {{token}}
   const pattern = /([ \t]?)\{\{(\w+)\}\}/g;
@@ -77,7 +79,7 @@ function buildPreview(template: string, fillRates?: Record<string, number>): Pre
     const token = rawToken.toLowerCase();
     const rate = fillRates?.[token];
     const isEmpty = rate === 0;
-    const example = EXAMPLE_BY_TOKEN[token] ?? `[${rawToken}]`;
+    const example = EXAMPLE_BY_TOKEN[token] ?? customVariableExamples?.[token] ?? `[${rawToken}]`;
 
     // Compute the space that will be prepended to a resolved value — mirrors
     // the Python _with_space() logic so the preview matches actual rendering.
@@ -116,7 +118,7 @@ export const MessageTemplateEditor = forwardRef<
   MessageTemplateEditorHandle,
   MessageTemplateEditorProps
 >(function MessageTemplateEditor(
-  { value, onChange, placeholder, disabled, showCharLimit, minHeight = 96, id, customVariables, fillRates },
+  { value, onChange, placeholder, disabled, showCharLimit, minHeight = 96, id, customVariables, customVariableExamples, fillRates },
   ref,
 ) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -169,7 +171,7 @@ export const MessageTemplateEditor = forwardRef<
     .filter(Boolean)
     .filter((t) => !STANDARD_VARIABLES.some((v) => v.token === t));
 
-  const previewSegs = value.trim() ? buildPreview(value, fillRates) : null;
+  const previewSegs = value.trim() ? buildPreview(value, fillRates, customVariableExamples) : null;
 
   function FillRateBadge({ token }: { token: string }) {
     if (!fillRates) return null;

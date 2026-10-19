@@ -274,7 +274,7 @@ export default function CampaignDetailPage({
   const [cloneAccountId, setCloneAccountId] = useState("");
 
   // Compute per-variable fill rates from the lead sample (0–1).
-  const { fillRates, customVariables } = useMemo(() => {
+  const { fillRates, customVariables, customVariableExamples } = useMemo(() => {
     const leads = leadSample?.items;
     if (!leads || leads.length === 0) return { fillRates: undefined, customVariables: [] as string[] };
     const total = leads.length;
@@ -306,7 +306,12 @@ export default function CampaignDetailPage({
       rates[key] = filled / total;
     }
     const standardTokens = new Set(Object.keys(FIELD_MAP));
-    return { fillRates: rates, customVariables: [...extraKeys].filter(k => !standardTokens.has(k)) };
+    const examples: Record<string, string> = {};
+    for (const key of extraKeys) {
+      const lead = leads.find(l => l.extra_data && l.extra_data[key] != null && l.extra_data[key] !== "");
+      if (lead?.extra_data) examples[key] = String(lead.extra_data[key]);
+    }
+    return { fillRates: rates, customVariables: [...extraKeys].filter(k => !standardTokens.has(k)), customVariableExamples: examples };
   }, [leadSample]);
 
   const [showDoneLists, setShowDoneLists] = useState(false);
@@ -935,6 +940,7 @@ export default function CampaignDetailPage({
                     showCharLimit
                     fillRates={fillRates}
                     customVariables={customVariables}
+                    customVariableExamples={customVariableExamples}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -1021,6 +1027,7 @@ export default function CampaignDetailPage({
                     minHeight={96}
                     fillRates={fillRates}
                     customVariables={customVariables}
+                    customVariableExamples={customVariableExamples}
                   />
                 </div>
                 <div>
@@ -1035,6 +1042,7 @@ export default function CampaignDetailPage({
                     minHeight={96}
                     fillRates={fillRates}
                     customVariables={customVariables}
+                    customVariableExamples={customVariableExamples}
                   />
                 </div>
                 <div>
@@ -1049,6 +1057,7 @@ export default function CampaignDetailPage({
                     minHeight={96}
                     fillRates={fillRates}
                     customVariables={customVariables}
+                    customVariableExamples={customVariableExamples}
                   />
                 </div>
               </CardContent>
