@@ -274,9 +274,9 @@ export default function CampaignDetailPage({
   const [cloneAccountId, setCloneAccountId] = useState("");
 
   // Compute per-variable fill rates from the lead sample (0–1).
-  const fillRates = useMemo(() => {
+  const { fillRates, customVariables } = useMemo(() => {
     const leads = leadSample?.items;
-    if (!leads || leads.length === 0) return undefined;
+    if (!leads || leads.length === 0) return { fillRates: undefined, customVariables: [] as string[] };
     const total = leads.length;
     const FIELD_MAP: Record<string, "first_name" | "last_name" | "company" | "title"> = {
       first_name: "first_name",
@@ -305,7 +305,8 @@ export default function CampaignDetailPage({
       ).length;
       rates[key] = filled / total;
     }
-    return rates;
+    const standardTokens = new Set(Object.keys(FIELD_MAP));
+    return { fillRates: rates, customVariables: [...extraKeys].filter(k => !standardTokens.has(k)) };
   }, [leadSample]);
 
   const [showDoneLists, setShowDoneLists] = useState(false);
@@ -933,6 +934,7 @@ export default function CampaignDetailPage({
                     minHeight={110}
                     showCharLimit
                     fillRates={fillRates}
+                    customVariables={customVariables}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -1018,6 +1020,7 @@ export default function CampaignDetailPage({
                     disabled={!editFollowupEnabled}
                     minHeight={96}
                     fillRates={fillRates}
+                    customVariables={customVariables}
                   />
                 </div>
                 <div>
@@ -1031,6 +1034,7 @@ export default function CampaignDetailPage({
                     disabled={!editFollowupEnabled || !editFollowupMsg1}
                     minHeight={96}
                     fillRates={fillRates}
+                    customVariables={customVariables}
                   />
                 </div>
                 <div>
@@ -1044,6 +1048,7 @@ export default function CampaignDetailPage({
                     disabled={!editFollowupEnabled || !editFollowupMsg2}
                     minHeight={96}
                     fillRates={fillRates}
+                    customVariables={customVariables}
                   />
                 </div>
               </CardContent>
