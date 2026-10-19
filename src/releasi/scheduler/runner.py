@@ -1167,6 +1167,20 @@ async def dispatch():
 
             # Quick DB pre-check: skip browser entirely if no work to do.
             campaigns_preview = await repo.get_active_campaigns(account.id)
+
+            # For continuous accounts, reset any stale scheduled leads back to
+            # pending here since the planner (which normally does this) skips them.
+            if _is_continuous:
+                for _c in campaigns_preview:
+                    stale = await repo.reset_stale_scheduled_leads(_c.id)
+                    if stale:
+                        logger.info(
+                            "dispatch.stale_scheduled_reset",
+                            account=account.name,
+                            campaign=_c.name,
+                            count=stale,
+                        )
+
             any_due = False
             if _is_continuous:
                 # Continuous: look for any PENDING leads.
