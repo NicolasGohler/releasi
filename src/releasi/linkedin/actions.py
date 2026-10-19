@@ -1145,6 +1145,19 @@ class LinkedInActions:
                                     reason="existing_conversation",
                                 )
                         # Any other unexpected conv_state → fail open, send normally.
+                    elif conversation_routing == "reply_only":
+                        # Used for messages 2+: only block when the lead has replied.
+                        # sent_only (only our own bubbles) is expected and proceeds.
+                        if conv_state == "has_reply":
+                            logger.info(
+                                "action.message_skipped_prior_reply",
+                                url=profile_url,
+                            )
+                            return ActionResult(
+                                ActionStatus.SKIPPED,
+                                reason="existing_conversation_replied",
+                            )
+                        # sent_only → fall through and send message 2+
                     else:
                         # Default "skip" routing: any prior conversation → skip.
                         logger.info(

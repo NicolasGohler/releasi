@@ -574,13 +574,15 @@ class CampaignExecutor:
         last_index = broadcast_lead.last_message_index or 0
         next_index = last_index + 1
 
-        # Select the right message pool: prior-branch leads use the prior_only
-        # sequence for all their messages; main-branch leads use message_1/2/3.
+        # Select the right message pool.
+        # Prior-branch: message_prior_only replaces message_1 (different opener for
+        # warm leads). message_prior_only_2/_3 override messages 2/3 if set; otherwise
+        # fall back to message_2/3 so the sequence always continues to completion.
         if broadcast_lead.is_prior_branch:
             messages = [
                 broadcast.message_prior_only,
-                broadcast.message_prior_only_2,
-                broadcast.message_prior_only_3,
+                broadcast.message_prior_only_2 or broadcast.message_2,
+                broadcast.message_prior_only_3 or broadcast.message_3,
             ]
         else:
             messages = [broadcast.message_1, broadcast.message_2, broadcast.message_3]
@@ -648,14 +650,24 @@ class CampaignExecutor:
 
         try:
             actions = LinkedInActions(page)
-            # Conversation routing only applies to the first message; messages 2/3
-            # skip the check entirely (their bubbles are our own from this sequence).
+            # Message 1: full conversation routing — classifies fresh/sent_only/has_reply.
+            # Messages 2+: use "reply_only" routing — blocks only on has_reply (inbound
+            # messages), allows sent_only (our own bubbles) to proceed. skip_prior_conversation_check
+            # stays False so we wait for the thread to render and can detect replies.
+            if next_index == 1:
+                routing = broadcast.conversation_routing
+                skip_check = False
+                prior_only_msg = broadcast.message_prior_only
+            else:
+                routing = "reply_only"
+                skip_check = False
+                prior_only_msg = None
             action_result = await actions.send_message(
                 lead.linkedin_url,
                 rendered,
-                skip_prior_conversation_check=(next_index > 1),
-                conversation_routing=broadcast.conversation_routing if next_index == 1 else "skip",
-                message_prior_only=broadcast.message_prior_only if next_index == 1 else None,
+                skip_prior_conversation_check=skip_check,
+                conversation_routing=routing,
+                message_prior_only=prior_only_msg,
             )
 
             if action_result.status == ActionStatus.SUCCESS:
