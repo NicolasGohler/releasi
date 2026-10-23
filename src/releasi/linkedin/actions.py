@@ -1887,6 +1887,31 @@ class LinkedInActions:
         seen_ids: set = set()
         pages_needed = (count + page_size - 1) // page_size  # ceil
 
+        # For oldest order, warm up the SDUI pager at startIndex=0 before
+        # jumping to a high startIndex. LinkedIn's server-side pager returns
+        # HTTP 500 if the first request skips ahead without being initialized.
+        if order == "oldest" and pages_needed > 0:
+            warmup = await self.page.evaluate(
+                """async ([url, hdrs, body]) => {
+                    try {
+                        const r = await fetch(url, {
+                            method: "POST", headers: hdrs,
+                            credentials: "include", body: JSON.stringify(body),
+                        });
+                        return {status: r.status, body: await r.text()};
+                    } catch (e) { return {error: e.message}; }
+                }""",
+                [PAGINATION_URL, SDUI_HEADERS, _build_pag_payload(0)],
+            )
+            if warmup.get("error") or warmup.get("status") != 200:
+                logger.warning(
+                    "action.withdraw_pagination_warmup_failed",
+                    status=warmup.get("status"),
+                    error=warmup.get("error"),
+                )
+                return await self._withdraw_invitations_dom(min(count, 20), order=order)
+            await asyncio.sleep(1.0)
+
         for page_num in range(pages_needed):
             if len(all_pairs) >= count:
                 break
