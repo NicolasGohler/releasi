@@ -1909,7 +1909,7 @@ class LinkedInActions:
                     status=warmup.get("status"),
                     error=warmup.get("error"),
                 )
-                return await self._withdraw_invitations_dom(min(count, 20), order=order)
+                return await self._withdraw_invitations_dom(count, order=order)
             await asyncio.sleep(1.0)
 
         for page_num in range(pages_needed):
@@ -1944,7 +1944,7 @@ class LinkedInActions:
                         error=pag_result.get("error"),
                     )
                     logger.info("action.withdraw_sdui_fallback_dom", count=count)
-                    return await self._withdraw_invitations_dom(min(count, 20), order=order)
+                    return await self._withdraw_invitations_dom(count, order=order)
                 else:
                     logger.warning(
                         "action.withdraw_pagination_page_failed",
@@ -2086,8 +2086,7 @@ class LinkedInActions:
     ) -> list:
         """
         DOM-scroll fallback for withdraw_invitations. Used only when the SDUI
-        pagination endpoint is unavailable. IMPORTANT: never call with count > 20
-        — loading all invitation cards into the DOM can OOM the 3 GB host.
+        pagination endpoint is unavailable.
 
         Assumes the caller has already navigated to the invitation manager page.
         """
